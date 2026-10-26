@@ -263,6 +263,31 @@ void wlmtk_workspace_raise_window(
     wlmtk_workspace_t *workspace_ptr,
     wlmtk_window_t *window_ptr);
 
+/** Hints for placing a window, see @ref wlmtk_workspace_map_window_with_hint. */
+typedef struct {
+    /** Whether the client requested a position: @ref x, @ref y. */
+    bool                      has_position;
+    /** Requested position of the window's top-left, in layout coordinates. */
+    int                       x;
+    /** Requested position of the window's top-left, in layout coordinates. */
+    int                       y;
+    /** For transient windows (eg. dialogs): Parent to center on. Or NULL. */
+    wlmtk_window_t            *parent_ptr;
+} wlmtk_window_placement_hint_t;
+
+/**
+ * Maps the window, as @ref wlmtk_workspace_map_window, with hints for its
+ * initial placement.
+ *
+ * @param workspace_ptr
+ * @param window_ptr
+ * @param hint_ptr            May be NULL.
+ */
+void wlmtk_workspace_map_window_with_hint(
+    wlmtk_workspace_t *workspace_ptr,
+    wlmtk_window_t *window_ptr,
+    const wlmtk_window_placement_hint_t *hint_ptr);
+
 /**
  * Minimizes `window_ptr`: Hides it, but keeps it on the workspace. If it was
  * activated, the topmost visible window gets activated instead. Restore it

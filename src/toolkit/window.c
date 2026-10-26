@@ -138,6 +138,8 @@ struct _wlmtk_window_t {
     bool                      shaded;
     /** Whether this window is currently minimized (hidden). */
     bool                      minimized;
+    /** Whether the window received its initial position. */
+    bool                      placed;
     /** Whether this window is currently activated (has keyboard focus). */
     bool                      activated;
 };
@@ -578,6 +580,18 @@ void wlmtk_window_request_minimize(wlmtk_window_t *window_ptr)
     wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(window_ptr);
     if (NULL == workspace_ptr) return;
     wlmtk_workspace_minimize_window(workspace_ptr, window_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_window_is_placed(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->placed;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_set_placed(wlmtk_window_t *window_ptr)
+{
+    window_ptr->placed = true;
 }
 
 /* ------------------------------------------------------------------------- */

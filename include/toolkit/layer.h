@@ -109,6 +109,21 @@ void wlmtk_layer_reconfigure(wlmtk_layer_t *layer_ptr);
  */
 void wlmtk_layer_output_reconfigure(wlmtk_layer_output_t *layer_output_ptr);
 
+/**
+ * Retrieves the usable area of `wlr_output_ptr` in this layer: The output's
+ * extents, minus the exclusive zones of the layer's panels on that output.
+ *
+ * @param layer_ptr
+ * @param wlr_output_ptr
+ * @param usable_area_ptr
+ *
+ * @return false if the layer does not track `wlr_output_ptr`.
+ */
+bool wlmtk_layer_get_usable_area(
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *usable_area_ptr);
+
 /** Layer unit test. */
 extern const bs_test_set_t wlmtk_layer_test_set;
 

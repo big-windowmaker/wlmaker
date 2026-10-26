@@ -346,6 +346,15 @@ void wlmtk_window_request_close(wlmtk_window_t *window_ptr);
  */
 void wlmtk_window_request_minimize(wlmtk_window_t *window_ptr);
 
+/**
+ * @return Whether the window was placed already, ie. received its initial
+ *     position from @ref wlmtk_workspace_map_window. Private: For workspace.
+ */
+bool wlmtk_window_is_placed(wlmtk_window_t *window_ptr);
+
+/** Marks the window as placed. Private: To be called by workspace only. */
+void wlmtk_window_set_placed(wlmtk_window_t *window_ptr);
+
 /** @return Whether the window is minimized. */
 bool wlmtk_window_is_minimized(wlmtk_window_t *window_ptr);
 

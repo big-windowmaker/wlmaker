@@ -87,7 +87,8 @@ struct _wlmtk_desktop_t {
     // Elements below not owned by wlmtk_desktop_t.
     /** wlroots output layout. */
     struct wlr_output_layout  *wlr_output_layout_ptr;
-
+    /** Policy for placing new windows. */
+    wlmtk_window_placement_t  window_placement;
 };
 
 static void _wlmtk_desktop_switch_to_workspace(
@@ -530,6 +531,59 @@ void wlmtk_desktop_lock_unreference(
         &desktop_ptr->container,
         desktop_ptr->lock_element_ptr);
     desktop_ptr->lock_element_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_box wlmtk_desktop_get_usable_area(
+    wlmtk_desktop_t *desktop_ptr,
+    struct wlr_output *wlr_output_ptr)
+{
+    struct wlr_box area = {};
+    if (NULL == desktop_ptr->wlr_output_layout_ptr) return area;
+    if (NULL == wlr_output_ptr) {
+        if (wl_list_empty(&desktop_ptr->wlr_output_layout_ptr->outputs)) {
+            return area;
+        }
+        struct wlr_output_layout_output *wolo_ptr = BS_CONTAINER_OF(
+            desktop_ptr->wlr_output_layout_ptr->outputs.next,
+            struct wlr_output_layout_output,
+            link);
+        wlr_output_ptr = wolo_ptr->output;
+    }
+    wlr_output_layout_get_box(
+        desktop_ptr->wlr_output_layout_ptr, wlr_output_ptr, &area);
+
+    // Each layer arranges its panels independently: The usable area is what
+    // remains from all of them.
+    for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
+        struct wlr_box layer_area;
+        if (NULL == desktop_ptr->layer_ptrs[i] ||
+            !wlmtk_layer_get_usable_area(
+                desktop_ptr->layer_ptrs[i], wlr_output_ptr, &layer_area)) {
+            continue;
+        }
+        struct wlr_box intersection;
+        if (!wlr_box_intersection(&intersection, &area, &layer_area)) {
+            return (struct wlr_box){};
+        }
+        area = intersection;
+    }
+    return area;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_desktop_set_window_placement(
+    wlmtk_desktop_t *desktop_ptr,
+    wlmtk_window_placement_t placement)
+{
+    desktop_ptr->window_placement = placement;
+}
+
+/* ------------------------------------------------------------------------- */
+wlmtk_window_placement_t wlmtk_desktop_get_window_placement(
+    wlmtk_desktop_t *desktop_ptr)
+{
+    return desktop_ptr->window_placement;
 }
 
 /* ------------------------------------------------------------------------- */
