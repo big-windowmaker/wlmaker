@@ -90,6 +90,8 @@ struct _wlmtk_desktop_t {
     // Elements below not owned by wlmtk_desktop_t.
     /** wlroots output layout. */
     struct wlr_output_layout  *wlr_output_layout_ptr;
+    /** Policy for placing new windows. */
+    wlmtk_window_placement_t  window_placement;
 };
 
 static void _wlmtk_desktop_element_layout(wlmtk_element_t *element_ptr);
@@ -535,6 +537,33 @@ void wlmtk_desktop_lock_unreference(
         &desktop_ptr->container,
         desktop_ptr->lock_element_ptr);
     desktop_ptr->lock_element_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_box wlmtk_desktop_get_usable_area(
+    wlmtk_desktop_t *desktop_ptr,
+    struct wlr_output *wlr_output_ptr)
+{
+    // The desktop's layout computes it, across all layers, and stores it as
+    // the workspaces' maximization extents.
+    if (NULL == desktop_ptr->current_workspace_ptr) return (struct wlr_box){};
+    return wlmtk_workspace_get_maximize_extents(
+        desktop_ptr->current_workspace_ptr, wlr_output_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_desktop_set_window_placement(
+    wlmtk_desktop_t *desktop_ptr,
+    wlmtk_window_placement_t placement)
+{
+    desktop_ptr->window_placement = placement;
+}
+
+/* ------------------------------------------------------------------------- */
+wlmtk_window_placement_t wlmtk_desktop_get_window_placement(
+    wlmtk_desktop_t *desktop_ptr)
+{
+    return desktop_ptr->window_placement;
 }
 
 /* ------------------------------------------------------------------------- */

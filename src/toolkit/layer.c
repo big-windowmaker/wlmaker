@@ -231,6 +231,7 @@ void wlmtk_layer_reconfigure_output(
     }
 }
 
+
 /* ------------------------------------------------------------------------- */
 // TODO(kaeser@gubbe.ch): Remove.
 void wlmtk_layer_output_reconfigure(
