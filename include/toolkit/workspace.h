@@ -255,8 +255,23 @@ void wlmtk_workspace_activate_previous_window(
 void wlmtk_workspace_activate_next_window(
     wlmtk_workspace_t *workspace_ptr);
 
-/** Raises `window_ptr`: Will show it atop all other windows. */
+/**
+ * Raises `window_ptr`: Will show it atop all other windows. A minimized
+ * window is restored.
+ */
 void wlmtk_workspace_raise_window(
+    wlmtk_workspace_t *workspace_ptr,
+    wlmtk_window_t *window_ptr);
+
+/**
+ * Minimizes `window_ptr`: Hides it, but keeps it on the workspace. If it was
+ * activated, the topmost visible window gets activated instead. Restore it
+ * through @ref wlmtk_workspace_raise_window.
+ *
+ * @param workspace_ptr
+ * @param window_ptr
+ */
+void wlmtk_workspace_minimize_window(
     wlmtk_workspace_t *workspace_ptr,
     wlmtk_window_t *window_ptr);
 

@@ -339,9 +339,24 @@ void wlmtk_window_request_close(wlmtk_window_t *window_ptr);
 /**
  * Requests to minimize (iconify) the window.
  *
+ * The window is hidden, but remains on its workspace, and in the task list.
+ * Raising the window (@ref wlmtk_workspace_raise_window) restores it.
+ *
  * @param window_ptr
  */
 void wlmtk_window_request_minimize(wlmtk_window_t *window_ptr);
+
+/** @return Whether the window is minimized. */
+bool wlmtk_window_is_minimized(wlmtk_window_t *window_ptr);
+
+/**
+ * Sets the window's minimized state. Private: To be called by the workspace
+ * only. Emits @ref wlmtk_window_events_t::state_changed.
+ *
+ * @param window_ptr
+ * @param minimized
+ */
+void wlmtk_window_set_minimized(wlmtk_window_t *window_ptr, bool minimized);
 
 /**
  * Requests the window to be fullscreen (or end fullscreen).

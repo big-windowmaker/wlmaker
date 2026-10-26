@@ -618,7 +618,7 @@ void _wlmaker_xdg_toplevel_handle_request_minimize(
     struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr = BS_CONTAINER_OF(
         listener_ptr, struct wlmaker_xdg_toplevel, request_minimize_listener);
 
-    bs_log(BS_ERROR, "TODO: Request minimize %p", wlmaker_xdg_toplevel_ptr);
+    wlmtk_window_request_minimize(wlmaker_xdg_toplevel_ptr->window_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
