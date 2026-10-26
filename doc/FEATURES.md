@@ -247,6 +247,10 @@ TBD: Raise/Lower.
 
 * [ ] Implement.
 
+### `wlr-gamma-control-unstable-v1`
+
+* [x] :white_check_mark: Implemented, applied by the wlroots scene graph.
+
 ### `wlr-layer-shell-unstable-v1`
 
 * [x] :white_check_mark: Support layer panels.
