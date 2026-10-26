@@ -88,6 +88,42 @@ struct wlmcl_client_events {
     struct wl_signal          pointer_changed;
     /** Indicates the outputs have changed. A bs_dllist_t of outputs. */
     struct bs_signal          outputs_changed;
+    /**
+     * A pointer button was pressed or released over one of the client's
+     * surfaces. Provides struct @ref wlmcl_client_pointer_button_event *.
+     */
+    struct wl_signal          pointer_button;
+    /**
+     * A pointer axis (eg. the scroll wheel) was moved over one of the client's
+     * surfaces. Emitted once per axis and pointer frame. Provides
+     * struct @ref wlmcl_client_pointer_axis_event *.
+     */
+    struct wl_signal          pointer_axis;
+};
+
+/** Event argument for @ref wlmcl_client_events::pointer_button. */
+struct wlmcl_client_pointer_button_event {
+    /** The surface that has pointer focus. NULL if unknown. */
+    struct wl_surface         *wl_surface_ptr;
+    /** The button, as linux input event code. Eg. `BTN_LEFT`. */
+    uint32_t                  button;
+    /** Whether the button was pressed (true) or released. */
+    bool                      pressed;
+};
+
+/** Event argument for @ref wlmcl_client_events::pointer_axis. */
+struct wlmcl_client_pointer_axis_event {
+    /** The surface that has pointer focus. NULL if unknown. */
+    struct wl_surface         *wl_surface_ptr;
+    /** The axis. A value of `enum wl_pointer_axis`. */
+    uint32_t                  axis;
+    /** Length of the motion along the axis, in surface coordinates. */
+    double                    value;
+    /**
+     * Number of discrete steps (eg. wheel clicks). Positive values are
+     * scrolling down or right. 0 if the source is not discrete.
+     */
+    int32_t                   discrete;
 };
 
 /** Key event. */
