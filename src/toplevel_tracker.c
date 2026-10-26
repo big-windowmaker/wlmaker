@@ -25,7 +25,10 @@
 #include <wayland-server-core.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #undef WLR_USE_UNSTABLE
+
+#include "toolkit/toolkit.h"
 
 /* == Declarations ========================================================= */
 
@@ -36,6 +39,8 @@ struct wlmaker_toplevel_tracker {
 
     /** Handle for the `ext-foreign-toplevel-list-v1` protocol. */
     struct wlr_ext_foreign_toplevel_list_v1 *ext_foreign_toplevel_list_ptr;
+    /** Handle for `wlr-foreign-toplevel-management-unstable-v1` (docks, taskbars). */
+    struct wlr_foreign_toplevel_manager_v1 *wlr_foreign_toplevel_manager_ptr;
 
     /** Connects to a `struct wl_display` destroy notification. */
     struct wl_listener        display_destroy_listener;
@@ -58,7 +63,27 @@ struct wlmaker_toplevel_tracker_handle {
 
     /** The window for this toplevel. */
     wlmtk_window_t            *window_ptr;
+
+    /** Handle for wlr-foreign-toplevel-management. */
+    struct wlr_foreign_toplevel_handle_v1 *wlr_handle_ptr;
+    /** Listeners for requests from wlr-foreign-toplevel-management clients. */
+    struct wl_listener        request_activate_listener;
+    /** See above. */
+    struct wl_listener        request_minimize_listener;
+    /** See above. */
+    struct wl_listener        request_close_listener;
+    /** Window activation changes, mirrored as the `activated` state. */
+    struct wl_listener        window_set_activated_listener;
 };
+
+static void _wlmaker_toplevel_tracker_handle_request_activate(
+    struct wl_listener *listener_ptr, void *data_ptr);
+static void _wlmaker_toplevel_tracker_handle_request_minimize(
+    struct wl_listener *listener_ptr, void *data_ptr);
+static void _wlmaker_toplevel_tracker_handle_request_close(
+    struct wl_listener *listener_ptr, void *data_ptr);
+static void _wlmaker_toplevel_tracker_handle_window_set_activated(
+    struct wl_listener *listener_ptr, void *data_ptr);
 
 static void _wlmaker_toplevel_tracker_destroy(
     struct wlmaker_toplevel_tracker *toplevel_tracker_ptr);
@@ -81,6 +106,8 @@ struct wlmaker_toplevel_tracker *wlmaker_toplevel_tracker_create(
     // Note: Will automatically be destroyed when wl_display_ptr destroys.
     toplevel_tracker_ptr->ext_foreign_toplevel_list_ptr =
         wlr_ext_foreign_toplevel_list_v1_create(wl_display_ptr, 1);
+    toplevel_tracker_ptr->wlr_foreign_toplevel_manager_ptr =
+        wlr_foreign_toplevel_manager_v1_create(wl_display_ptr);
 
     toplevel_tracker_ptr->display_destroy_listener.notify =
         _wlmaker_toplevel_tracker_handle_display_destroy;
@@ -105,6 +132,31 @@ struct wlmaker_toplevel_tracker_handle *wlmaker_toplevel_tracker_handle_create(
             toplevel_tracker_ptr->ext_foreign_toplevel_list_ptr,
             &state);
 
+    if (NULL != toplevel_tracker_ptr->wlr_foreign_toplevel_manager_ptr) {
+        handle_ptr->wlr_handle_ptr = wlr_foreign_toplevel_handle_v1_create(
+            toplevel_tracker_ptr->wlr_foreign_toplevel_manager_ptr);
+    }
+    if (NULL != handle_ptr->wlr_handle_ptr) {
+        wlmtk_util_connect_listener_signal(
+            &handle_ptr->wlr_handle_ptr->events.request_activate,
+            &handle_ptr->request_activate_listener,
+            _wlmaker_toplevel_tracker_handle_request_activate);
+        wlmtk_util_connect_listener_signal(
+            &handle_ptr->wlr_handle_ptr->events.request_minimize,
+            &handle_ptr->request_minimize_listener,
+            _wlmaker_toplevel_tracker_handle_request_minimize);
+        wlmtk_util_connect_listener_signal(
+            &handle_ptr->wlr_handle_ptr->events.request_close,
+            &handle_ptr->request_close_listener,
+            _wlmaker_toplevel_tracker_handle_request_close);
+        if (NULL != window_ptr) {
+            wlmtk_util_connect_listener_signal(
+                &wlmtk_window_events(window_ptr)->set_activated,
+                &handle_ptr->window_set_activated_listener,
+                _wlmaker_toplevel_tracker_handle_window_set_activated);
+        }
+    }
+
     bs_dllist_push_back(
         &toplevel_tracker_ptr->toplevels,
         &handle_ptr->dlnode);
@@ -116,6 +168,17 @@ struct wlmaker_toplevel_tracker_handle *wlmaker_toplevel_tracker_handle_create(
 void wlmaker_toplevel_tracker_handle_destroy(
     struct wlmaker_toplevel_tracker_handle *handle_ptr)
 {
+    if (NULL != handle_ptr->wlr_handle_ptr) {
+        wlmtk_util_disconnect_listener(&handle_ptr->request_activate_listener);
+        wlmtk_util_disconnect_listener(&handle_ptr->request_minimize_listener);
+        wlmtk_util_disconnect_listener(&handle_ptr->request_close_listener);
+        if (NULL != handle_ptr->window_ptr) {
+            wlmtk_util_disconnect_listener(
+                &handle_ptr->window_set_activated_listener);
+        }
+        wlr_foreign_toplevel_handle_v1_destroy(handle_ptr->wlr_handle_ptr);
+        handle_ptr->wlr_handle_ptr = NULL;
+    }
     if (NULL != handle_ptr->ext_foreign_toplevel_handle_ptr) {
         wlr_ext_foreign_toplevel_handle_v1_destroy(
             handle_ptr->ext_foreign_toplevel_handle_ptr);
@@ -165,6 +228,10 @@ bool wlmaker_toplevel_tracker_handle_set_title(
         wlr_ext_foreign_toplevel_handle_v1_update_state(
             handle_ptr->ext_foreign_toplevel_handle_ptr, &state);
     }
+    if (NULL != handle_ptr->wlr_handle_ptr && NULL != handle_ptr->title_ptr) {
+        wlr_foreign_toplevel_handle_v1_set_title(
+            handle_ptr->wlr_handle_ptr, handle_ptr->title_ptr);
+    }
     return true;
 }
 
@@ -192,10 +259,88 @@ bool wlmaker_toplevel_tracker_handle_set_app_id(
         wlr_ext_foreign_toplevel_handle_v1_update_state(
             handle_ptr->ext_foreign_toplevel_handle_ptr, &state);
     }
+    if (NULL != handle_ptr->wlr_handle_ptr && NULL != handle_ptr->app_id_ptr) {
+        wlr_foreign_toplevel_handle_v1_set_app_id(
+            handle_ptr->wlr_handle_ptr, handle_ptr->app_id_ptr);
+    }
     return true;
 }
 
 /* == Local (static) methods =============================================== */
+
+/* ------------------------------------------------------------------------- */
+/** Handles `request_activate`: raises and activates, restoring if minimized. */
+void _wlmaker_toplevel_tracker_handle_request_activate(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    struct wlmaker_toplevel_tracker_handle *handle_ptr = BS_CONTAINER_OF(
+        listener_ptr, struct wlmaker_toplevel_tracker_handle,
+        request_activate_listener);
+    if (NULL == handle_ptr->window_ptr) return;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+        handle_ptr->window_ptr);
+    if (NULL == workspace_ptr) return;
+    wlmtk_workspace_raise_window(workspace_ptr, handle_ptr->window_ptr);
+    wlmtk_workspace_activate_window(workspace_ptr, handle_ptr->window_ptr);
+    wlr_foreign_toplevel_handle_v1_set_minimized(handle_ptr->wlr_handle_ptr, false);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles `request_minimize` (set_minimized / unset_minimized). */
+void _wlmaker_toplevel_tracker_handle_request_minimize(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    struct wlmaker_toplevel_tracker_handle *handle_ptr = BS_CONTAINER_OF(
+        listener_ptr, struct wlmaker_toplevel_tracker_handle,
+        request_minimize_listener);
+    struct wlr_foreign_toplevel_handle_v1_minimized_event *event_ptr = data_ptr;
+    if (NULL == handle_ptr->window_ptr) return;
+    if (event_ptr->minimized) {
+        wlmtk_window_request_minimize(handle_ptr->window_ptr);
+    } else {
+        wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+            handle_ptr->window_ptr);
+        if (NULL != workspace_ptr) {
+            wlmtk_workspace_raise_window(workspace_ptr, handle_ptr->window_ptr);
+        }
+    }
+    wlr_foreign_toplevel_handle_v1_set_minimized(
+        handle_ptr->wlr_handle_ptr, event_ptr->minimized);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles `request_close`. */
+void _wlmaker_toplevel_tracker_handle_request_close(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    struct wlmaker_toplevel_tracker_handle *handle_ptr = BS_CONTAINER_OF(
+        listener_ptr, struct wlmaker_toplevel_tracker_handle,
+        request_close_listener);
+    if (NULL != handle_ptr->window_ptr) {
+        wlmtk_window_request_close(handle_ptr->window_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Mirrors the window's activation into the `activated` state. */
+void _wlmaker_toplevel_tracker_handle_window_set_activated(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    struct wlmaker_toplevel_tracker_handle *handle_ptr = BS_CONTAINER_OF(
+        listener_ptr, struct wlmaker_toplevel_tracker_handle,
+        window_set_activated_listener);
+    bool activated = wlmtk_window_is_activated(handle_ptr->window_ptr);
+    if (activated) {
+        wlr_foreign_toplevel_handle_v1_set_minimized(
+            handle_ptr->wlr_handle_ptr, false);
+    }
+    wlr_foreign_toplevel_handle_v1_set_activated(
+        handle_ptr->wlr_handle_ptr, activated);
+}
 
 /* ------------------------------------------------------------------------- */
 /** Destroys the toplevel tracker. */
