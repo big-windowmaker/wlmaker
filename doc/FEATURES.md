@@ -262,6 +262,10 @@ TBD: Raise/Lower.
 * [x] :white_check_mark: Scale, transformation and mode of output is configurable
   in *config* file, by matching output attributes.
 
+### `wlr-output-power-management-unstable-v1`
+
+* [x] :white_check_mark: Implemented: Powers outputs off and on by disabling, resp. enabling them.
+
 ### `wlr-screencopy-unstable-v1`
 
 * [x] :white_check_mark: Implemented, works for `wdisplays`.

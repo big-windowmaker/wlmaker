@@ -37,6 +37,13 @@ add_custom_command(
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../protocols/wlr-layer-shell-unstable-v1.xml"
   VERBATIM)
 
+# Server header, as included by wlroots' wlr_output_power_management_v1.h.
+add_custom_command(
+  OUTPUT wlr-output-power-management-unstable-v1-protocol.h
+  COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" server-header "${CMAKE_CURRENT_SOURCE_DIR}/wlr-output-power-management-unstable-v1.xml" "wlr-output-power-management-unstable-v1-protocol.h"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/wlr-output-power-management-unstable-v1.xml"
+  VERBATIM)
+
 add_custom_command(
   OUTPUT xdg-shell-protocol.h
   COMMAND "${WAYLAND_SCANNER_EXECUTABLE}" client-header "${protocol_dir}/stable/xdg-shell/xdg-shell.xml" "xdg-shell-protocol.h"
@@ -48,6 +55,7 @@ add_library(
   OBJECT
   cursor-shape-v1-protocol.h
   wlr-layer-shell-unstable-v1-protocol.h
+  wlr-output-power-management-unstable-v1-protocol.h
   xdg-shell-protocol.h)
 set_target_properties(
   protocol_headers PROPERTIES

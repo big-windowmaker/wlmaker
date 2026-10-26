@@ -31,6 +31,7 @@ target_include_directories(
   "${WAYLAND_SERVER_INCLUDE_DIRS}"
   "${WLROOTS_INCLUDE_DIRS}"
   "${PROJECT_SOURCE_DIR}/include"
+  "${PROJECT_BINARY_DIR}/third_party/protocols"
 )
 target_include_directories(
   wlmbackend_lib
@@ -56,6 +57,7 @@ target_link_libraries(
   PRIVATE
   wlmtoolkit_lib
   PkgConfig::WLROOTS)
+add_dependencies(wlmbackend_lib protocol_headers)
 if(iwyu_path_and_options)
   set_target_properties(
     wlmbackend_lib PROPERTIES
