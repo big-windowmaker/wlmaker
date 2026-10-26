@@ -50,14 +50,16 @@ endif()
 
 add_library(wlm_calendar STATIC wlm_calendar.c wlm_calendar.h)
 target_link_libraries(wlm_calendar libbase)
+add_library(wlm_volume STATIC wlm_volume.c wlm_volume.h)
+target_link_libraries(wlm_volume libbase)
 if(iwyu_path_and_options)
   set_target_properties(
-    wlm_calendar PROPERTIES
+    wlm_calendar wlm_volume PROPERTIES
     C_INCLUDE_WHAT_YOU_USE "${iwyu_path_and_options}")
 endif()
 
 add_executable(apps_test apps_test.c)
-target_link_libraries(apps_test wlm_calendar libbase)
+target_link_libraries(apps_test wlm_calendar wlm_volume libbase)
 add_test(NAME apps_test COMMAND apps_test)
 
 add_wlm_app(wlmclock wlmclient_lib primitives m)
@@ -72,3 +74,11 @@ install(
   TARGETS wlmclock wlmeyes wlmcpugraph wlmmemgraph wlmnetgraph wlmbattery
   wlmcalclock
   DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+# The mixer talks to PulseAudio, or to PipeWire through pipewire-pulse.
+if(LIBPULSE_FOUND)
+  add_wlm_app(wlmmixer wlm_volume wlmclient_lib primitives PkgConfig::LIBPULSE m)
+  install(TARGETS wlmmixer DESTINATION "${CMAKE_INSTALL_BINDIR}")
+else()
+  message(STATUS "libpulse not found. Will not build wlmmixer.")
+endif()

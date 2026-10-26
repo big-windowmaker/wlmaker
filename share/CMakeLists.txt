@@ -52,6 +52,10 @@ configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmmemgraph.desktop"
   @ONLY)
 configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/wlmaker.wlmmixer.desktop.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmmixer.desktop"
+  @ONLY)
+configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/wlmaker.wlmnetgraph.desktop.in"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmnetgraph.desktop"
   @ONLY)
@@ -71,6 +75,15 @@ install(FILES
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmnetgraph.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmdock.desktop"
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
+if(LIBPULSE_FOUND)
+  install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmmixer.desktop"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
+  install(FILES
+    "wlmmixer-64x64.png"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/64x64/apps"
+    RENAME "wlmmixer.png")
+endif()
 
 # Install `wlmaker.desktop` both to wayland-sessions/ and applications/ -- it
 # can run both as main compositor, and in windowed mode.
@@ -135,6 +148,13 @@ if(DESKTOP_FILE_VALIDATOR)
   # We also want to report errors that are not "fatal" yet.
   set_property(
     TEST wlmmemgraph_desktop_test
+    PROPERTY FAIL_REGULAR_EXPRESSION " error: ")
+  add_test(
+    NAME wlmmixer_desktop_test
+    COMMAND "${DESKTOP_FILE_VALIDATOR}" "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmmixer.desktop")
+  # We also want to report errors that are not "fatal" yet.
+  set_property(
+    TEST wlmmixer_desktop_test
     PROPERTY FAIL_REGULAR_EXPRESSION " error: ")
   add_test(
     NAME wlmeyes_desktop_test
