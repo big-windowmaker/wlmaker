@@ -709,7 +709,7 @@ void _wlmaker_xdg_toplevel_handle_set_title(
 
     wlmaker_toplevel_tracker_handle_set_title(
         wlmaker_xdg_toplevel_ptr->tracker_handle_ptr,
-        wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->app_id);
+        wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->title);
     wlmtk_window_set_title(
         wlmaker_xdg_toplevel_ptr->window_ptr,
         wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->title);
