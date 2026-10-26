@@ -50,6 +50,15 @@ draw backgrounds and solid areas, eg. by GTK4 and video players.
 * Status: Supported.
 * Reference: https://wayland.app/protocols/single-pixel-buffer-v1
 
+# wlr gamma control
+
+Permits clients to set the gamma tables of an output. Used by "night light"
+tools such as `wlsunset` or `gammastep`.
+
+* Status: Supported. Applied through the wlroots scene graph, either via the
+  output's gamma LUT or, if the output has none, when rendering.
+* Reference: https://wayland.app/protocols/wlr-gamma-control-unstable-v1
+
 # wlr layer shell {#protocols_wlr_layer_shell}
 
 Clients can use this interface to associate `wl_surface` with a *layer* of the

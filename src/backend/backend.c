@@ -40,6 +40,7 @@
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_ext_image_capture_source_v1.h>
 #include <wlr/types/wlr_ext_image_copy_capture_v1.h>
+#include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_presentation_time.h>
@@ -84,6 +85,8 @@ struct _wlmbe_backend_t {
     struct wlr_presentation   *wlr_presentation_ptr;
     /** Single-pixel buffer manager. wl_display will take ownership. */
     struct wlr_single_pixel_buffer_manager_v1 *wlr_single_pixel_buffer_manager_ptr;
+    /** Gamma control manager. wl_display will take ownership. */
+    struct wlr_gamma_control_manager_v1 *wlr_gamma_control_manager_ptr;
     /** The output manager(s). */
     wlmbe_output_manager_t    *output_manager_ptr;
 
@@ -339,6 +342,23 @@ wlmbe_backend_t *wlmbe_backend_create(
         wlmbe_backend_destroy(backend_ptr);
         return NULL;
     }
+
+    // Gamma tables are applied by the scene, when committing the output. If
+    // the output has no gamma LUT, the scene can apply it when rendering.
+    backend_ptr->wlr_gamma_control_manager_ptr =
+        wlr_gamma_control_manager_v1_create(wl_display_ptr);
+    if (NULL == backend_ptr->wlr_gamma_control_manager_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_gamma_control_manager_v1_create(%p)",
+               wl_display_ptr);
+        wlmbe_backend_destroy(backend_ptr);
+        return NULL;
+    }
+    if (backend_ptr->wlr_renderer_ptr->features.output_color_transform) {
+        backend_ptr->wlr_gamma_control_manager_ptr->fallback_gamma_size = 256;
+    }
+    wlr_scene_set_gamma_control_manager_v1(
+        wlr_scene_ptr,
+        backend_ptr->wlr_gamma_control_manager_ptr);
 
     backend_ptr->output_manager_ptr = wlmbe_output_manager_create(
         wl_display_ptr,
