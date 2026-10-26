@@ -81,6 +81,11 @@ struct wlmcl_client_events {
     struct wl_signal          keymap;
     /** Keyboard repeat information was updated. No argument. */
     struct wl_signal          keyboard_repeat_info;
+    /**
+     * The seat's pointer appeared or disappeared: Check
+     * @ref wlmcl_client_attributes::wl_pointer_ptr. No argument.
+     */
+    struct wl_signal          pointer_changed;
     /** Indicates the outputs have changed. A bs_dllist_t of outputs. */
     struct bs_signal          outputs_changed;
 };
