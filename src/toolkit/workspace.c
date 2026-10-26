@@ -198,6 +198,9 @@ static const wlmtk_fsm_transition_t pfsm_transitions[] = {
 /** For window placement: Pixel distance between each stacked position. */
 static const int _wlmtk_workspace_placement_step = 24;
 
+static wlmtk_window_t *_wlmtk_workspace_topmost_visible_window(
+    wlmtk_workspace_t *workspace_ptr);
+
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -480,15 +483,12 @@ void wlmtk_workspace_unmap_window(wlmtk_workspace_t *workspace_ptr,
             window_ptr);
     }
 
+    wlmtk_window_set_minimized(window_ptr, false);
+
     if (need_activation) {
         // FIXME: What about raising?
-        bs_dllist_node_t *dlnode_ptr =
-            workspace_ptr->window_container.elements.head_ptr;
-        if (NULL != dlnode_ptr) {
-            wlmtk_element_t *element_ptr = wlmtk_element_from_dlnode(dlnode_ptr);
-            wlmtk_window_t *window_ptr = wlmtk_window_from_element(element_ptr);
-            wlmtk_workspace_activate_window(workspace_ptr, window_ptr);
-        }
+        wlmtk_workspace_activate_window(
+            workspace_ptr, _wlmtk_workspace_topmost_visible_window(workspace_ptr));
     }
 }
 
@@ -666,6 +666,12 @@ void wlmtk_workspace_raise_window(
 {
     BS_ASSERT(workspace_ptr == wlmtk_window_get_workspace(window_ptr));
 
+    // Raising a minimized window restores it.
+    if (wlmtk_window_is_minimized(window_ptr)) {
+        wlmtk_element_set_visible(wlmtk_window_element(window_ptr), true);
+        wlmtk_window_set_minimized(window_ptr, false);
+    }
+
     // No raising if this window isn't int the window container, eg. when
     // being full-screen.
     if (wlmtk_window_element(window_ptr)->parent_container_ptr !=
@@ -677,6 +683,28 @@ void wlmtk_workspace_raise_window(
                          wlmtk_dlnode_from_window(window_ptr));
     wlmtk_container_raise_element_to_top(&workspace_ptr->window_container,
                                          wlmtk_window_element(window_ptr));
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_workspace_minimize_window(
+    wlmtk_workspace_t *workspace_ptr,
+    wlmtk_window_t *window_ptr)
+{
+    BS_ASSERT(workspace_ptr == wlmtk_window_get_workspace(window_ptr));
+    if (wlmtk_window_is_minimized(window_ptr)) return;
+
+    if (workspace_ptr->grabbed_window_ptr == window_ptr) {
+        wlmtk_fsm_event(&workspace_ptr->fsm, PFSME_RESET, NULL);
+    }
+
+    wlmtk_element_set_visible(wlmtk_window_element(window_ptr), false);
+    wlmtk_window_set_minimized(window_ptr, true);
+
+    if (workspace_ptr->activated_window_ptr == window_ptr) {
+        wlmtk_workspace_activate_window(
+            workspace_ptr,
+            _wlmtk_workspace_topmost_visible_window(workspace_ptr));
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -722,6 +750,25 @@ wlmtk_workspace_t *wlmtk_workspace_from_dlnode(
 }
 
 /* == Local (static) methods =============================================== */
+
+/* ------------------------------------------------------------------------- */
+/**
+ * @return The topmost visible (ie. not minimized) window in the workspace's
+ *     window container, or NULL if there is none.
+ */
+wlmtk_window_t *_wlmtk_workspace_topmost_visible_window(
+    wlmtk_workspace_t *workspace_ptr)
+{
+    for (bs_dllist_node_t *dlnode_ptr =
+             workspace_ptr->window_container.elements.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = dlnode_ptr->next_ptr) {
+        wlmtk_element_t *element_ptr = wlmtk_element_from_dlnode(dlnode_ptr);
+        if (!element_ptr->visible) continue;
+        return wlmtk_window_from_element(element_ptr);
+    }
+    return NULL;
+}
 
 /* ------------------------------------------------------------------------- */
 /** Virtual destructor, wraps to our dtor. */
@@ -1096,6 +1143,7 @@ static void test_resize(bs_test_t *test_ptr);
 static void test_enable(bs_test_t *test_ptr);
 static void test_activate(bs_test_t *test_ptr);
 static void test_activate_cycling(bs_test_t *test_ptr);
+static void test_minimize(bs_test_t *test_ptr);
 static void test_multi_output_extents(bs_test_t *test_ptr);
 static void test_multi_output_reposition(bs_test_t *test_ptr);
 static void test_window_position(bs_test_t *test_ptr);
@@ -1115,6 +1163,7 @@ static const bs_test_case_t _wlmtk_workspace_test_cases[] = {
     { 1, "enable", test_enable } ,
     { 1, "activate", test_activate },
     { 1, "activate_cycling", test_activate_cycling },
+    { 1, "minimize", test_minimize },
     { 1, "multi_output_extents", test_multi_output_extents },
     { 1, "multi_output_reposition", test_multi_output_reposition },
     { 1, "window_position", test_window_position },
@@ -2004,6 +2053,73 @@ void test_window_position(bs_test_t *test_ptr)
     }
 
     wlr_output_layout_remove(c_ptr->wlr_output_layout_ptr, &o1);
+}
+
+
+/* ------------------------------------------------------------------------- */
+/** Tests minimizing and restoring windows. */
+void test_minimize(bs_test_t *test_ptr)
+{
+    struct wl_display *display_ptr = wl_display_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, display_ptr);
+    struct wlr_output_layout *wlr_output_layout_ptr =
+        wlr_output_layout_create(display_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wlr_output_layout_ptr);
+    struct wlr_output output = { .width = 1024, .height = 768, .scale = 1 };
+    wlmtk_test_wlr_output_init(&output);
+    wlr_output_layout_add(wlr_output_layout_ptr, &output, 0, 0);
+    wlmtk_workspace_t *ws_ptr = wlmtk_workspace_create(
+        wlr_output_layout_ptr, "t", &_wlmtk_workspace_test_tile_style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws_ptr);
+    wlmtk_element_set_visible(wlmtk_workspace_window_element(ws_ptr), true);
+    wlmtk_workspace_enable(ws_ptr, true);
+
+    wlmtk_fake_element_t *fe1_ptr = wlmtk_fake_element_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, fe1_ptr);
+    wlmtk_fake_element_set_dimensions(fe1_ptr, 100, 100);
+    wlmtk_window_t *w1 = wlmtk_test_window_create(&fe1_ptr->element);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w1);
+    wlmtk_fake_element_t *fe2_ptr = wlmtk_fake_element_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, fe2_ptr);
+    wlmtk_fake_element_set_dimensions(fe2_ptr, 100, 100);
+    wlmtk_window_t *w2 = wlmtk_test_window_create(&fe2_ptr->element);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w2);
+
+    wlmtk_workspace_map_window(ws_ptr, w1);
+    wlmtk_workspace_map_window(ws_ptr, w2);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_activated(w2));
+
+    // Minimize w2: Hidden, w1 gets activated. Stays on the workspace.
+    wlmtk_window_request_minimize(w2);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_minimized(w2));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_element(w2)->visible);
+    BS_TEST_VERIFY_EQ(test_ptr, ws_ptr, wlmtk_window_get_workspace(w2));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_activated(w2));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_activated(w1));
+
+    // Minimize w1 too: Nothing is activated.
+    wlmtk_window_request_minimize(w1);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_activated(w1));
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlmtk_workspace_get_activated_window(ws_ptr));
+
+    // Raising (eg. from the task list, or xdg-activation) restores.
+    wlmtk_workspace_activate_window(ws_ptr, w2);
+    wlmtk_workspace_raise_window(ws_ptr, w2);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_minimized(w2));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_element(w2)->visible);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_activated(w2));
+
+    // Unmapping a minimized window clears the state.
+    wlmtk_workspace_unmap_window(ws_ptr, w1);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_minimized(w1));
+
+    wlmtk_workspace_unmap_window(ws_ptr, w2);
+    wlmtk_window_destroy(w2);
+    wlmtk_element_destroy(&fe2_ptr->element);
+    wlmtk_window_destroy(w1);
+    wlmtk_element_destroy(&fe1_ptr->element);
+    wlmtk_workspace_destroy(ws_ptr);
+    wl_display_destroy(display_ptr);
 }
 
 /* == End of workspace.c =================================================== */
