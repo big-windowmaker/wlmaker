@@ -797,7 +797,8 @@ void _wlmaker_toplevel_icon_open_menu(
  * Implements @ref wlmtk_element_vmt_t::pointer_button.
  *
  * Dragging the icon with the left button and the window-move modifier held
- * (the same as for moving windows) moves it to another place in the dock.
+ * (the same as for moving windows), or on the tile's border, moves it to
+ * another place in the dock. The right button there opens the tile's menu.
  * Other button events go to the dock-app.
  *
  * @param element_ptr
@@ -852,11 +853,16 @@ bool _wlmaker_toplevel_icon_element_pointer_button(
         return true;
     }
 
+    // Dragging with the move modifier held, or on the tile's border (not
+    // on the dock-app itself), moves it to another place in the dock.
     if (NULL != server_ptr->dockapps_ptr &&
-        0 != modifier &&
         BTN_LEFT == button_event_ptr->button &&
         WLMTK_BUTTON_DOWN == button_event_ptr->type &&
-        modifier == button_event_ptr->keyboard_modifiers &&
+        ((0 != modifier &&
+          modifier == button_event_ptr->keyboard_modifiers) ||
+         NULL == toplevel_icon_ptr->content_surface_ptr ||
+         !wlmtk_surface_element(
+             toplevel_icon_ptr->content_surface_ptr)->pointer_inside) &&
         NULL != element_ptr->parent_container_ptr) {
         toplevel_icon_ptr->dragging = true;
         toplevel_icon_ptr->drag_start_x = element_ptr->last_pointer_motion_event.x;
