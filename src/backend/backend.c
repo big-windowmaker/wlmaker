@@ -42,6 +42,7 @@
 #include <wlr/types/wlr_ext_image_copy_capture_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_subcompositor.h>
@@ -78,6 +79,8 @@ struct _wlmbe_backend_t {
     struct wlr_ext_output_image_capture_source_manager_v1 *wlr_ext_output_source_manager_ptr;
     /** Capture manager for sessions and frames. wl_display owns it */
     struct wlr_ext_image_copy_capture_manager_v1 *wlr_ext_image_copy_capture_manager_ptr;
+    /** Presentation time feedback. wl_display will take ownership. */
+    struct wlr_presentation   *wlr_presentation_ptr;
     /** The output manager(s). */
     wlmbe_output_manager_t    *output_manager_ptr;
 
@@ -310,6 +313,16 @@ wlmbe_backend_t *wlmbe_backend_create(
     if (NULL == backend_ptr->wlr_ext_image_copy_capture_manager_ptr) {
         bs_log(BS_ERROR,
                "Failed wlr_ext_image_copy_capture_manager_v1_create()");
+        wlmbe_backend_destroy(backend_ptr);
+        return NULL;
+    }
+
+    // Feedback is sent by the scene, for surfaces it renders. See wlr_scene.h.
+    backend_ptr->wlr_presentation_ptr = wlr_presentation_create(
+        wl_display_ptr, backend_ptr->wlr_backend_ptr, 2);
+    if (NULL == backend_ptr->wlr_presentation_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_presentation_create(%p, %p, 2)",
+               wl_display_ptr, backend_ptr->wlr_backend_ptr);
         wlmbe_backend_destroy(backend_ptr);
         return NULL;
     }

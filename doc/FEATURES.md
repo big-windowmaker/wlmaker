@@ -235,6 +235,10 @@ TBD: Raise/Lower.
 * [x] :white_check_mark: Implement.
 * [ ] Test it. Didn't have a tool when adding it.
 
+### `presentation-time`
+
+* [x] :white_check_mark: Implemented, feedback provided by the wlroots scene graph.
+
 ### `wlr-foreign-toplevel-management-unstable-v1`
 
 * [ ] Implement.
