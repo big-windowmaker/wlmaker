@@ -27,6 +27,9 @@
 #include <stdlib.h>
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <wayland-server-protocol.h>
 #include <wayland-util.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_compositor.h>
@@ -1370,7 +1373,8 @@ static void _test_ptr_grab_cancel(
 /* ------------------------------------------------------------------------- */
 /**
  * Tests that locking ends seat grabs (eg. held by an xdg_popup of a panel),
- * so that the lock surface can obtain keyboard focus.
+ * so that the lock surface obtains keyboard focus. Also when the seat does
+ * not currently have a keyboard.
  */
 void test_lock_ends_grabs(bs_test_t *test_ptr)
 {
@@ -1408,12 +1412,28 @@ void test_lock_ends_grabs(bs_test_t *test_ptr)
     wlr_seat_pointer_start_grab(server.wlr_seat_ptr, &ptr_grab);
     _test_grab_cancels = 0;
 
+    // The seat's keyboard focus needs a surface with a client resource.
+    int fds[2];
+    BS_TEST_VERIFY_EQ_OR_RETURN(
+        test_ptr, 0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+    struct wl_client *wl_client_ptr = wl_client_create(
+        server.wl_display_ptr, fds[0]);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wl_client_ptr);
     struct wlr_session_lock_v1 lock = {};
-    struct wlr_surface surface = {};
+    struct wlr_surface surface = {
+        .resource = wl_resource_create(
+            wl_client_ptr, &wl_surface_interface, 4, 0) };
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, surface.resource);
     struct wlr_session_lock_surface_v1 lock_surface;
     wlmaker_lock_t *lock_ptr = _test_lock_and_commit(
         test_ptr, &server, &output, &lock, &surface, &lock_surface);
     BS_TEST_VERIFY_EQ(test_ptr, &lock, _mock_send_locked_lock);
+
+    // The lock surface has keyboard focus, even though there's no keyboard.
+    BS_TEST_VERIFY_EQ(
+        test_ptr,
+        &surface,
+        server.wlr_seat_ptr->keyboard_state.focused_surface);
 
     // Both grabs got cancelled, the seat is back to its default grabs.
     BS_TEST_VERIFY_EQ(test_ptr, 2, _test_grab_cancels);
@@ -1428,10 +1448,12 @@ void test_lock_ends_grabs(bs_test_t *test_ptr)
 
     wl_signal_emit(&lock.events.unlock, NULL);
     _wlmaker_lock_destroy(lock_ptr);
+    wlr_seat_keyboard_clear_focus(server.wlr_seat_ptr);
     wlmtk_desktop_remove_workspace(server.desktop_ptr, workspace_ptr);
     wlmtk_workspace_destroy(workspace_ptr);
     wlmtk_desktop_destroy(server.desktop_ptr);
     wl_display_destroy(server.wl_display_ptr);
+    close(fds[1]);
 }
 
 /* == End of lock_mgr.c ==================================================== */
