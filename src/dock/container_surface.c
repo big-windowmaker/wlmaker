@@ -224,8 +224,14 @@ void wlmdock_container_surface_commit_size(
     wlr_output_state_set_custom_mode(&state, width, height, 0);
     if (!wlr_output_commit_state(
             container_surface_ptr->wlr_output_ptr, &state)) {
-        bs_log(BS_WARNING, "Failed wlr_output_commit_state(%p, %p) for %dx%d",
-               container_surface_ptr->wlr_output_ptr, &state, width, height);
+        // Report once: The dock will not be visible.
+        static bool reported = false;
+        if (!reported) {
+            bs_log(BS_ERROR, "Failed to configure the dock's output to "
+                   "%dx%d: The dock cannot draw. Check the renderer "
+                   "(WLR_RENDERER) and buffer allocation.", width, height);
+            reported = true;
+        }
     }
     wlr_output_state_finish(&state);
 
