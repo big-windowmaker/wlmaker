@@ -69,6 +69,15 @@ as configured.
 * Status: Supported, except popups and input semantics.
 * Reference: https://wayland.app/protocols/wlr-layer-shell-unstable-v1
 
+# wlr output power management
+
+Permits clients to power outputs off and on (DPMS), for example
+`wlopm --off '*'` triggered from `swayidle`.
+
+* Status: Supported. Powering off disables the output, but keeps it in the
+  output layout. Outputs disabled through configuration are not affected.
+* Reference: https://wayland.app/protocols/wlr-output-power-management-unstable-v1
+
 # wlr screencopy
 
 This protocol allows clients to ask the compositor to copy part of the screen
