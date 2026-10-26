@@ -30,6 +30,7 @@
 #include <wayland-util.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_idle_inhibit_v1.h>
+#include <wlr/types/wlr_idle_notify_v1.h>
 #undef WLR_USE_UNSTABLE
 
 #include "util/subprocess_monitor.h"
@@ -71,6 +72,8 @@ struct _wlmaker_idle_monitor_t {
 
     /** The wlroots idle inhibit manager. */
     struct wlr_idle_inhibit_manager_v1 *wlr_idle_inhibit_manager_v1_ptr;
+    /** The wlroots idle notifier, for ext-idle-notify-v1. */
+    struct wlr_idle_notifier_v1 *wlr_idle_notifier_v1_ptr;
 
     /** Whether the idle monitor is locked. Prevents timer registry. */
     bool                      locked;
@@ -142,6 +145,15 @@ wlmaker_idle_monitor_t *wlmaker_idle_monitor_create(
         &monitor_ptr->new_inhibitor_listener,
         _wlmaker_idle_monitor_handle_new_inhibitor);
 
+    monitor_ptr->wlr_idle_notifier_v1_ptr =
+        wlr_idle_notifier_v1_create(server_ptr->wl_display_ptr);
+    if (NULL == monitor_ptr->wlr_idle_notifier_v1_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_idle_notifier_v1_create(%p)",
+               server_ptr->wl_display_ptr);
+        wlmaker_idle_monitor_destroy(monitor_ptr);
+        return NULL;
+    }
+
     monitor_ptr->timer_event_source_ptr = wl_event_loop_add_timer(
         monitor_ptr->wl_event_loop_ptr,
         _wlmaker_idle_monitor_timer,
@@ -184,7 +196,7 @@ void wlmaker_idle_monitor_destroy(wlmaker_idle_monitor_t *idle_monitor_ptr)
         idle_monitor_ptr->lock_config_dict_ptr = NULL;
     }
 
-    // Note: The idle inhibit manager does not have a dtor.
+    // Note: The idle inhibit manager and the idle notifier do not have a dtor.
 
     free(idle_monitor_ptr);
 }
@@ -192,6 +204,12 @@ void wlmaker_idle_monitor_destroy(wlmaker_idle_monitor_t *idle_monitor_ptr)
 /* ------------------------------------------------------------------------- */
 void wlmaker_idle_monitor_reset(wlmaker_idle_monitor_t *idle_monitor_ptr)
 {
+    // Notify ext-idle-notify-v1 clients also while locked: They may want to
+    // eg. power on the outputs again.
+    wlr_idle_notifier_v1_notify_activity(
+        idle_monitor_ptr->wlr_idle_notifier_v1_ptr,
+        idle_monitor_ptr->server_ptr->wlr_seat_ptr);
+
     if (idle_monitor_ptr->locked) return;
 
     int rv = wl_event_source_timer_update(
@@ -243,6 +261,8 @@ bool wlmaker_idle_monitor_lock(wlmaker_idle_monitor_t *idle_monitor_ptr)
 void wlmaker_idle_monitor_inhibit(wlmaker_idle_monitor_t *idle_monitor_ptr)
 {
     ++idle_monitor_ptr->inhibits;
+    wlr_idle_notifier_v1_set_inhibited(
+        idle_monitor_ptr->wlr_idle_notifier_v1_ptr, true);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -250,6 +270,9 @@ void wlmaker_idle_monitor_uninhibit(wlmaker_idle_monitor_t *idle_monitor_ptr)
 {
     BS_ASSERT(0 < idle_monitor_ptr->inhibits);
     --idle_monitor_ptr->inhibits;
+    wlr_idle_notifier_v1_set_inhibited(
+        idle_monitor_ptr->wlr_idle_notifier_v1_ptr,
+        0 < idle_monitor_ptr->inhibits);
     _wlmaker_idle_monitor_consider_locking(idle_monitor_ptr);
 }
 

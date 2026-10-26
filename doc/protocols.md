@@ -6,6 +6,16 @@ This page documents which of the Wayland protocols (beyond the core
 [Wayland protocol](https://wayland.app/protocols/wayland)) are supported
 by wlmaker.
 
+# Idle notify
+
+Lets clients get notified when the user is idle for a given time, and when
+activity resumes. Used by idle management daemons such as
+[swayidle](https://github.com/swaywm/swayidle).
+
+* Status: Supported. Activity is reported from keyboard and pointer input.
+  Idle notifications are inhibited while an idle inhibitor is active.
+* Reference: https://wayland.app/protocols/ext-idle-notify-v1
+
 # Idle inhibit
 
 Permits inhibiting the idle behaviour, such as locking the screen.
