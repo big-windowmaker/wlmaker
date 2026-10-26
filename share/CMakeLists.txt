@@ -32,6 +32,10 @@ configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmbattery.desktop"
   @ONLY)
 configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/wlmaker.wlmcalclock.desktop.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmcalclock.desktop"
+  @ONLY)
+configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/wlmaker.wlmclock.desktop.in"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmclock.desktop"
   @ONLY)
@@ -59,6 +63,7 @@ configure_file(
 install(FILES
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmbattery.desktop"
+  "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmcalclock.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmclock.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmcpugraph.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmeyes.desktop"
@@ -88,6 +93,13 @@ if(DESKTOP_FILE_VALIDATOR)
   # We also want to report errors that are not "fatal" yet.
   set_property(
     TEST wlmbattery_desktop_test
+    PROPERTY FAIL_REGULAR_EXPRESSION " error: ")
+  add_test(
+    NAME wlmcalclock_desktop_test
+    COMMAND "${DESKTOP_FILE_VALIDATOR}" "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmcalclock.desktop")
+  # We also want to report errors that are not "fatal" yet.
+  set_property(
+    TEST wlmcalclock_desktop_test
     PROPERTY FAIL_REGULAR_EXPRESSION " error: ")
   add_test(
     NAME wlmclock_desktop_test
@@ -189,6 +201,10 @@ install(FILES
   "wlmbattery-64x64.png"
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/64x64/apps"
   RENAME "wlmbattery.png")
+install(FILES
+  "wlmcalclock-64x64.png"
+  DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/64x64/apps"
+  RENAME "wlmcalclock.png")
 install(FILES
   "wlmclock-64x64.png"
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/64x64/apps"
