@@ -28,8 +28,11 @@
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_keyboard.h>
 #undef WLR_USE_UNSTABLE
@@ -155,6 +158,110 @@ bspl_dict_t *wlmaker_state_load(
 }
 
 /* ------------------------------------------------------------------------- */
+char *wlmaker_state_fname(wlm_util_files_t *files_ptr, const char *fname_ptr)
+{
+    if (NULL != fname_ptr) return logged_strdup(fname_ptr);
+    if (NULL == files_ptr) return NULL;
+    return wlm_util_files_xdg_config_fname(files_ptr, "State.plist");
+}
+
+/** Arguments for @ref _wlmaker_state_copy_entry. */
+typedef struct {
+    /** Dict to copy into. */
+    bspl_dict_t               *dest_dict_ptr;
+    /** Dict with the values that replace the original ones. Or NULL. */
+    bspl_dict_t               *replace_dict_ptr;
+    /** A key that gets skipped. Or NULL. */
+    const char                *skip_key_ptr;
+} _wlmaker_state_copy_arg_t;
+
+/** Copies an entry into a dict, unless it gets replaced or skipped. */
+static bool _wlmaker_state_copy_entry(
+    const char *key_ptr,
+    bspl_object_t *object_ptr,
+    void *userdata_ptr)
+{
+    _wlmaker_state_copy_arg_t *arg_ptr = userdata_ptr;
+    if (NULL != arg_ptr->skip_key_ptr &&
+        0 == strcmp(key_ptr, arg_ptr->skip_key_ptr)) return true;
+    if (NULL != arg_ptr->replace_dict_ptr &&
+        NULL != bspl_dict_get(arg_ptr->replace_dict_ptr, key_ptr)) return true;
+    return bspl_dict_add(arg_ptr->dest_dict_ptr, key_ptr, object_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_state_store_section(
+    wlm_util_files_t *files_ptr,
+    const char *fname_ptr,
+    const char *section_ptr,
+    bspl_dict_t *values_dict_ptr)
+{
+    bool rv = false;
+    bspl_dict_t *state_dict_ptr = NULL, *new_state_dict_ptr = NULL;
+    bspl_dict_t *new_section_dict_ptr = NULL;
+    char *target_fname_ptr = wlmaker_state_fname(files_ptr, fname_ptr);
+    if (NULL == target_fname_ptr) return false;
+
+    bspl_object_t *o = wlmaker_config_object_load(
+        files_ptr, "wlmaker state", fname_ptr, "State.plist",
+        embedded_binary_default_state_data,
+        embedded_binary_default_state_size);
+    state_dict_ptr = bspl_dict_from_object(o);
+    if (NULL == state_dict_ptr) {
+        if (NULL != o) bspl_object_unref(o);
+        goto done;
+    }
+
+    // The section: Its values, then all others it had.
+    new_section_dict_ptr = bspl_dict_create();
+    if (NULL == new_section_dict_ptr) goto done;
+    _wlmaker_state_copy_arg_t arg = {
+        .dest_dict_ptr = new_section_dict_ptr,
+        .replace_dict_ptr = NULL,
+        .skip_key_ptr = NULL };
+    if (!bspl_dict_foreach(values_dict_ptr, _wlmaker_state_copy_entry, &arg)) {
+        goto done;
+    }
+    bspl_dict_t *section_dict_ptr = bspl_dict_get_dict(
+        state_dict_ptr, section_ptr);
+    arg.replace_dict_ptr = values_dict_ptr;
+    if (NULL != section_dict_ptr &&
+        !bspl_dict_foreach(section_dict_ptr, _wlmaker_state_copy_entry, &arg)) {
+        goto done;
+    }
+
+    // The state: All as it was, with the section replaced.
+    new_state_dict_ptr = bspl_dict_create();
+    if (NULL == new_state_dict_ptr ||
+        !bspl_dict_add(new_state_dict_ptr, section_ptr,
+                       bspl_object_from_dict(new_section_dict_ptr))) goto done;
+    arg = (_wlmaker_state_copy_arg_t){
+        .dest_dict_ptr = new_state_dict_ptr,
+        .replace_dict_ptr = NULL,
+        .skip_key_ptr = section_ptr };
+    if (!bspl_dict_foreach(state_dict_ptr, _wlmaker_state_copy_entry, &arg)) {
+        goto done;
+    }
+
+    bs_dynbuf_t dynbuf = {};
+    if (!bs_dynbuf_init(&dynbuf, 4096, SIZE_MAX)) goto done;
+    rv = bspl_object_write(bspl_object_from_dict(new_state_dict_ptr), &dynbuf) &&
+        bs_dynbuf_write_file(&dynbuf, target_fname_ptr, S_IRUSR | S_IWUSR);
+    bs_dynbuf_fini(&dynbuf);
+    if (!rv) {
+        bs_log(BS_WARNING, "Failed to store state in \"%s\"",
+               target_fname_ptr);
+    }
+
+done:
+    if (NULL != new_state_dict_ptr) bspl_dict_unref(new_state_dict_ptr);
+    if (NULL != new_section_dict_ptr) bspl_dict_unref(new_section_dict_ptr);
+    if (NULL != state_dict_ptr) bspl_dict_unref(state_dict_ptr);
+    free(target_fname_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
 bool wlmaker_theme_load(
     wlm_util_files_t *files_ptr,
     const char *arg_fname_ptr,
@@ -249,12 +356,14 @@ bspl_dict_t *_wlmaker_config_from_plist(const char *fname_ptr)
 static void test_embedded(bs_test_t *test_ptr);
 static void test_file(bs_test_t *test_ptr);
 static void test_style_file(bs_test_t *test_ptr);
+static void test_state_store(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t wlmaker_config_test_cases[] = {
     { true, "embedded", test_embedded },
     { true, "file", test_file },
     { true, "style_file", test_style_file },
+    { true, "state_store", test_state_store },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -339,6 +448,54 @@ void test_style_file(bs_test_t *test_ptr)
     f = WLMAKER_SOURCE_DIR "/share/Themes/Debian.plist";
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_theme_load(NULL, f, &cs));
     bspl_decoded_destroy(wlmaker_config_style_desc, &cs);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Stores values into a section, keeping the rest of the state file. */
+void test_state_store(bs_test_t *test_ptr)
+{
+    const char *fname_ptr = bs_test_temp_path(test_ptr, "State.plist");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, fname_ptr);
+    bs_dynbuf_t dynbuf = {};
+    BS_TEST_VERIFY_TRUE_OR_RETURN(
+        test_ptr, bs_dynbuf_init(&dynbuf, 4096, SIZE_MAX));
+    const char *initial = "{ Dock = { Edge = RIGHT; Anchor = TOP; "
+        "Launchers = (); }; Workspaces = ( { Name = Main; } ); }";
+    BS_TEST_VERIFY_TRUE(test_ptr, bs_dynbuf_append(
+                            &dynbuf, initial, strlen(initial)));
+    BS_TEST_VERIFY_TRUE(test_ptr, bs_dynbuf_write_file(
+                            &dynbuf, fname_ptr, S_IRUSR | S_IWUSR));
+    bs_dynbuf_fini(&dynbuf);
+
+    bspl_object_t *v = bspl_create_object_from_plist_string(
+        "{ Edge = LEFT; Margin = 3; }");
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_state_store_section(
+                            NULL, fname_ptr, "Dock", bspl_dict_from_object(v)));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_state_store_section(
+                            NULL, fname_ptr, "Clip", bspl_dict_from_object(v)));
+    bspl_object_unref(v);
+
+    bspl_dict_t *d = bspl_dict_from_object(
+        bspl_create_object_from_plist_file(fname_ptr));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    bspl_dict_t *dock_ptr = bspl_dict_get_dict(d, "Dock");
+    BS_TEST_VERIFY_STREQ(
+        test_ptr, "LEFT", bspl_dict_get_string_value(dock_ptr, "Edge"));
+    BS_TEST_VERIFY_STREQ(
+        test_ptr, "TOP", bspl_dict_get_string_value(dock_ptr, "Anchor"));
+    BS_TEST_VERIFY_STREQ(
+        test_ptr, "3", bspl_dict_get_string_value(dock_ptr, "Margin"));
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, bspl_dict_get_array(dock_ptr, "Launchers"));
+    BS_TEST_VERIFY_STREQ(test_ptr, "LEFT", bspl_dict_get_string_value(
+                             bspl_dict_get_dict(d, "Clip"), "Edge"));
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, bspl_dict_get_array(d, "Workspaces"));
+    bspl_dict_unref(d);
+    unlink(fname_ptr);
+    char *old_ptr = bs_strdupf("%s.old", fname_ptr);
+    if (NULL != old_ptr) {
+        unlink(old_ptr);
+        free(old_ptr);
+    }
 }
 
 /* == End of config.c ====================================================== */

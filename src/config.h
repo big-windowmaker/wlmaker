@@ -137,6 +137,37 @@ bspl_dict_t *wlmaker_state_load(
     const char *fname_ptr);
 
 /**
+ * Returns the path of the state file to store to: `fname_ptr` if given (eg.
+ * from `--state_file`), otherwise `State.plist` in the user's XDG config
+ * directory (eg. ~/.config/wlmaker/State.plist).
+ *
+ * @param files_ptr
+ * @param fname_ptr
+ *
+ * @return A path, to be free()-ed by the caller. NULL on error.
+ */
+char *wlmaker_state_fname(wlm_util_files_t *files_ptr, const char *fname_ptr);
+
+/**
+ * Stores values into a section of the state: Loads the current state (like
+ * @ref wlmaker_state_load), replaces or adds each key of `values_dict_ptr`
+ * in the dict `section_ptr` (eg. "Dock"), keeping all other contents, and
+ * writes the result atomically to @ref wlmaker_state_fname.
+ *
+ * @param files_ptr
+ * @param fname_ptr           As for @ref wlmaker_state_load. May be NULL.
+ * @param section_ptr
+ * @param values_dict_ptr
+ *
+ * @return true on success.
+ */
+bool wlmaker_state_store_section(
+    wlm_util_files_t *files_ptr,
+    const char *fname_ptr,
+    const char *section_ptr,
+    bspl_dict_t *values_dict_ptr);
+
+/**
  * Loads the theme file for wlmaker, stores into `style_ptr`.
  *
  * @param files_ptr
