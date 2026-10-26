@@ -115,6 +115,24 @@ The `LockScreen` action is wired to execute `Command` of `ScreenLock`.
 Example:
 @snippet{trimleft} etc/ExampleConfig.plist ScreenLock
 
+## WindowPlacement {#config_windowplacement}
+
+*Optional*: Where new windows are placed.
+
+* `Center`: Centered in the area usable for windows on the output under the
+  pointer. A window that would exactly cover another one is cascaded. Like
+  Window Maker's `WindowPlacement = center`.
+* `Smart`: Placed in the first free spot, filling the usable area row by row.
+  This is the default, if not set.
+
+The usable area is the output minus the exclusive zones of panels (eg. the
+Clip, `wlmdock`, layer-shell panels). Windows are kept within it, so that the
+title bar is always reachable; windows larger than the area are placed at its
+top-left. Maximized windows use the usable area, too.
+
+X11 windows go to the position the user or the program requested, if any.
+Dialogs (transient windows) are centered on their parent.
+
 ## Autostart {#config_autostart}
 
 An array of strings, each denoting an executable that will be executed once
