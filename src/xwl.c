@@ -140,14 +140,18 @@ wlmaker_xwl_t *wlmaker_xwl_create(wlmaker_server_t *server_ptr)
     xwl_ptr->server_ptr = server_ptr;
 
 #if defined(WLMAKER_HAVE_XWAYLAND)
+    // In lazy mode, wlroots reserves the X11 display socket right away (so
+    // DISPLAY can be set), but starts the server only on first connection.
+    bool lazy = server_ptr->options_ptr->lazy_xwayland;
     xwl_ptr->wlr_xwayland_ptr = wlr_xwayland_create(
         server_ptr->wl_display_ptr,
         wlmbe_backend_compositor(server_ptr->backend_ptr),
-        false);
+        lazy);
     if (NULL == xwl_ptr->wlr_xwayland_ptr) {
-        bs_log(BS_ERROR, "Failed wlr_xwayland_create(%p, %p, false).",
+        bs_log(BS_ERROR, "Failed wlr_xwayland_create(%p, %p, %d).",
                server_ptr->wl_display_ptr,
-               wlmbe_backend_compositor(server_ptr->backend_ptr));
+               wlmbe_backend_compositor(server_ptr->backend_ptr),
+               lazy);
         wlmaker_xwl_destroy(xwl_ptr);
         return NULL;
     }
