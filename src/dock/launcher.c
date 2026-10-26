@@ -26,11 +26,13 @@
 #include <libbase/plist.h>
 #include <libbase/signal.h>
 #include <linux/input-event-codes.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 #include "toplevel.h"
 #include "toolkit/toolkit.h"
@@ -73,6 +75,13 @@ struct _wlmdock_launcher_t {
 
     /** Listener for @ref wlmdock_toplevel_tracker_events::app_id_changed. */
     struct bs_listener        app_id_changed_listener;
+
+    /** The plist dict the launcher was created from. */
+    bspl_dict_t               *dict_ptr;
+    /** Handler for a right-click. */
+    wlmdock_launcher_menu_handler_t menu_handler;
+    /** Argument for @ref wlmdock_launcher_t::menu_handler. */
+    void                      *menu_handler_ud_ptr;
 };
 
 /** Plist descroptor for a launcher. */
@@ -148,6 +157,7 @@ wlmdock_launcher_t *wlmdock_launcher_create_from_plist(
         wlmdock_launcher_destroy(launcher_ptr);
         return NULL;
     }
+    launcher_ptr->dict_ptr = bspl_dict_ref(dict_ptr);
 
      if (!wlmtk_tile_init(&launcher_ptr->super_tile, style_ptr)) {
          return NULL;
@@ -296,6 +306,11 @@ void wlmdock_launcher_destroy(wlmdock_launcher_t *launcher_ptr)
         launcher_ptr->tracker_ptr = NULL;
     }
 
+    if (NULL != launcher_ptr->dict_ptr) {
+        bspl_dict_unref(launcher_ptr->dict_ptr);
+        launcher_ptr->dict_ptr = NULL;
+    }
+
     wlmtk_tile_fini(&launcher_ptr->super_tile);
     free(launcher_ptr);
 }
@@ -304,6 +319,65 @@ void wlmdock_launcher_destroy(wlmdock_launcher_t *launcher_ptr)
 wlmtk_tile_t *wlmdock_launcher_tile(wlmdock_launcher_t *launcher_ptr)
 {
     return &launcher_ptr->super_tile;
+}
+
+/* ------------------------------------------------------------------------- */
+wlmdock_launcher_t *wlmdock_launcher_from_tile(wlmtk_tile_t *tile_ptr)
+{
+    if (wlmtk_tile_element(tile_ptr)->vmt.destroy !=
+        _wlmdock_launcher_element_destroy) return NULL;
+    return BS_CONTAINER_OF(tile_ptr, wlmdock_launcher_t, super_tile);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmdock_launcher_set_menu_handler(
+    wlmdock_launcher_t *launcher_ptr,
+    wlmdock_launcher_menu_handler_t handler,
+    void *ud_ptr)
+{
+    launcher_ptr->menu_handler = handler;
+    launcher_ptr->menu_handler_ud_ptr = ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmdock_launcher_launch(wlmdock_launcher_t *launcher_ptr)
+{
+    _wlmdock_launcher_start(launcher_ptr);
+    _wlmdock_launcher_update_overlay(launcher_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmdock_launcher_has_processes(wlmdock_launcher_t *launcher_ptr)
+{
+    return NULL != bs_ptr_set_any(launcher_ptr->subprocesses_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmdock_launcher_kill(wlmdock_launcher_t *launcher_ptr)
+{
+    // The set has no iterator: Move all over to `others`, and back.
+    bs_ptr_set_t *others_ptr = bs_ptr_set_create();
+    if (NULL == others_ptr) return;
+    struct wlm_util_subprocess *sp_ptr;
+    while (NULL != (sp_ptr = bs_ptr_set_any(launcher_ptr->subprocesses_ptr))) {
+        pid_t pid = wlm_util_subprocess_pid(sp_ptr);
+        if (1 < pid && 0 != kill(pid, SIGTERM)) {
+            bs_log(BS_WARNING | BS_ERRNO, "Failed kill(%d, SIGTERM)", (int)pid);
+        }
+        bs_ptr_set_erase(launcher_ptr->subprocesses_ptr, sp_ptr);
+        bs_ptr_set_insert(others_ptr, sp_ptr);
+    }
+    while (NULL != (sp_ptr = bs_ptr_set_any(others_ptr))) {
+        bs_ptr_set_erase(others_ptr, sp_ptr);
+        bs_ptr_set_insert(launcher_ptr->subprocesses_ptr, sp_ptr);
+    }
+    bs_ptr_set_destroy(others_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bspl_dict_t *wlmdock_launcher_dict(wlmdock_launcher_t *launcher_ptr)
+{
+    return launcher_ptr->dict_ptr;
 }
 
 /* == Local (static) methods =============================================== */
@@ -401,6 +475,14 @@ bool _wlmdock_launcher_pointer_button(
     wlmdock_launcher_t *launcher_ptr = BS_CONTAINER_OF(
         element_ptr, wlmdock_launcher_t,
         super_tile.super_container.super_element);
+
+    if (BTN_RIGHT == button_event_ptr->button &&
+        WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        NULL != launcher_ptr->menu_handler) {
+        launcher_ptr->menu_handler(launcher_ptr,
+                                   launcher_ptr->menu_handler_ud_ptr);
+        return true;
+    }
 
     if (BTN_LEFT != button_event_ptr->button) return true;
     if (WLMTK_BUTTON_CLICK != button_event_ptr->type) return true;

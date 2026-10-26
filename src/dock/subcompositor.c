@@ -55,6 +55,8 @@ struct _wlmdock_subcompositor_t {
     struct zwlr_layer_shell_v1 *zwlr_layer_shell_ptr;
     /** The positioning data. */
     wlmtk_dock_positioning_t  positioning;
+    /** Namespace of the layer surface. */
+    char                      *namespace_ptr;
 
     /** The wayland display. */
     struct wl_display *wl_display_ptr;
@@ -107,6 +109,8 @@ static void _wlmdock_subcompositor_stop(
 
 static void _wlmdock_subcompositor_request_size(
     wlmdock_subcompositor_t *subcompositor_ptr);
+static void _wlmdock_subcompositor_apply_positioning(
+    wlmdock_subcompositor_t *subcompositor_ptr);
 
 static void _wlmdock_subcompositor_handle_wlclient_keymap(
     struct wl_listener *listener_ptr,
@@ -153,11 +157,17 @@ wlmdock_subcompositor_t *wlmdock_subcompositor_create(
     struct zwlr_layer_shell_v1 *zwlr_layer_shell_ptr,
     struct wlmim_cursor_style *cursor_style_ptr,
     wlmtk_container_t *container_ptr,
-    const wlmtk_dock_positioning_t *positioning_ptr)
+    const wlmtk_dock_positioning_t *positioning_ptr,
+    const char *namespace_ptr)
 {
     wlmdock_subcompositor_t *subcompositor_ptr = logged_calloc(
         1, sizeof(*subcompositor_ptr));
     if (NULL == subcompositor_ptr) return NULL;
+    subcompositor_ptr->namespace_ptr = logged_strdup(namespace_ptr);
+    if (NULL == subcompositor_ptr->namespace_ptr) {
+        free(subcompositor_ptr);
+        return NULL;
+    }
     subcompositor_ptr->wl_display_ptr = wl_display_ptr;
     subcompositor_ptr->zwlr_layer_shell_ptr = zwlr_layer_shell_ptr;
     subcompositor_ptr->positioning = *positioning_ptr;
@@ -283,7 +293,20 @@ void wlmdock_subcompositor_destroy(wlmdock_subcompositor_t *subcompositor_ptr)
     wlmtk_util_disconnect_listener(
         &subcompositor_ptr->wlclient_keyboard_repeat_info_listener);
 
+    free(subcompositor_ptr->namespace_ptr);
     free(subcompositor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmdock_subcompositor_set_positioning(
+    wlmdock_subcompositor_t *subcompositor_ptr,
+    const wlmtk_dock_positioning_t *positioning_ptr)
+{
+    subcompositor_ptr->positioning = *positioning_ptr;
+    if (NULL == subcompositor_ptr->zwlr_layer_surface_ptr) return;
+    _wlmdock_subcompositor_apply_positioning(subcompositor_ptr);
+    // The compositor configures the surface for the new position.
+    wl_surface_commit(subcompositor_ptr->wl_surface_ptr);
 }
 
 
@@ -309,7 +332,7 @@ bool _wlmdock_subcompositor_start(wlmdock_subcompositor_t *subcompositor_ptr)
             subcompositor_ptr->wl_surface_ptr,
             NULL,  // Let compositor choose output.
             ZWLR_LAYER_SHELL_V1_LAYER_TOP,
-            "wlmdock");
+            subcompositor_ptr->namespace_ptr);
     if (NULL == subcompositor_ptr->zwlr_layer_surface_ptr) {
         bs_log(BS_ERROR, "Failed zwlr_layer_shell_v1_get_layer_surface(...)");
         _wlmdock_subcompositor_stop(subcompositor_ptr);
@@ -319,24 +342,7 @@ bool _wlmdock_subcompositor_start(wlmdock_subcompositor_t *subcompositor_ptr)
     // Configure.
     zwlr_layer_surface_v1_set_size(
         subcompositor_ptr->zwlr_layer_surface_ptr, 64, 64);
-    zwlr_layer_surface_v1_set_anchor(
-        subcompositor_ptr->zwlr_layer_surface_ptr,
-        subcompositor_ptr->positioning.anchor |
-        subcompositor_ptr->positioning.edge);
-    zwlr_layer_surface_v1_set_exclusive_zone(
-        subcompositor_ptr->zwlr_layer_surface_ptr,
-        subcompositor_ptr->positioning.overlay ? -1 : 64);
-    zwlr_layer_surface_v1_set_exclusive_edge(
-        subcompositor_ptr->zwlr_layer_surface_ptr,
-        subcompositor_ptr->positioning.edge);
-    int m = subcompositor_ptr->positioning.margin;
-    uint32_t anchor = subcompositor_ptr->positioning.anchor;
-    zwlr_layer_surface_v1_set_margin(
-        subcompositor_ptr->zwlr_layer_surface_ptr,
-        anchor == WLR_EDGE_TOP ? m : 0,
-        anchor == WLR_EDGE_RIGHT ? m : 0,
-        anchor == WLR_EDGE_BOTTOM ? m : 0,
-        anchor == WLR_EDGE_LEFT ? m : 0);
+    _wlmdock_subcompositor_apply_positioning(subcompositor_ptr);
     wl_surface_commit(subcompositor_ptr->wl_surface_ptr);
 
     if (0 != zwlr_layer_surface_v1_add_listener(
@@ -384,6 +390,31 @@ void _wlmdock_subcompositor_stop(wlmdock_subcompositor_t *subcompositor_ptr)
         wl_surface_destroy(subcompositor_ptr->wl_surface_ptr);
         subcompositor_ptr->wl_surface_ptr = NULL;
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Sets the layer surface's anchor, exclusive zone and margin. */
+void _wlmdock_subcompositor_apply_positioning(
+    wlmdock_subcompositor_t *subcompositor_ptr)
+{
+    zwlr_layer_surface_v1_set_anchor(
+        subcompositor_ptr->zwlr_layer_surface_ptr,
+        subcompositor_ptr->positioning.anchor |
+        subcompositor_ptr->positioning.edge);
+    zwlr_layer_surface_v1_set_exclusive_zone(
+        subcompositor_ptr->zwlr_layer_surface_ptr,
+        subcompositor_ptr->positioning.overlay ? -1 : 64);
+    zwlr_layer_surface_v1_set_exclusive_edge(
+        subcompositor_ptr->zwlr_layer_surface_ptr,
+        subcompositor_ptr->positioning.edge);
+    int m = subcompositor_ptr->positioning.margin;
+    uint32_t anchor = subcompositor_ptr->positioning.anchor;
+    zwlr_layer_surface_v1_set_margin(
+        subcompositor_ptr->zwlr_layer_surface_ptr,
+        anchor == WLR_EDGE_TOP ? m : 0,
+        anchor == WLR_EDGE_RIGHT ? m : 0,
+        anchor == WLR_EDGE_BOTTOM ? m : 0,
+        anchor == WLR_EDGE_LEFT ? m : 0);
 }
 
 /* ------------------------------------------------------------------------- */

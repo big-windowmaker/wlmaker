@@ -65,6 +65,32 @@ void wlmdock_launcher_destroy(wlmdock_launcher_t *launcher_ptr);
 /** @return A pointer to the @ref wlmtk_tile_t superclass of `launcher_ptr`. */
 wlmtk_tile_t *wlmdock_launcher_tile(wlmdock_launcher_t *launcher_ptr);
 
+/** @return The launcher for the tile `tile_ptr`, if it is one. Else NULL. */
+wlmdock_launcher_t *wlmdock_launcher_from_tile(wlmtk_tile_t *tile_ptr);
+
+/** Handler for a right-click on the launcher, eg. to open its menu. */
+typedef void (*wlmdock_launcher_menu_handler_t)(
+    wlmdock_launcher_t *launcher_ptr,
+    void *ud_ptr);
+
+/** Sets the handler for a right-click on the launcher. */
+void wlmdock_launcher_set_menu_handler(
+    wlmdock_launcher_t *launcher_ptr,
+    wlmdock_launcher_menu_handler_t handler,
+    void *ud_ptr);
+
+/** Launches (another instance of) the launcher's application. */
+void wlmdock_launcher_launch(wlmdock_launcher_t *launcher_ptr);
+
+/** @return Whether processes launched by the launcher are running. */
+bool wlmdock_launcher_has_processes(wlmdock_launcher_t *launcher_ptr);
+
+/** Terminates (SIGTERM) the processes launched by the launcher. */
+void wlmdock_launcher_kill(wlmdock_launcher_t *launcher_ptr);
+
+/** @return The plist dict the launcher was created from. */
+bspl_dict_t *wlmdock_launcher_dict(wlmdock_launcher_t *launcher_ptr);
+
 /** Unit test set. */
 extern const bs_test_set_t wlmdock_launcher_test_set;
 

@@ -23,12 +23,17 @@
 
 #include <inttypes.h>
 #include <libbase/libbase.h>
+#include <linux/input-event-codes.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/util/edges.h>
 #undef WLR_USE_UNSTABLE
@@ -36,6 +41,9 @@
 #include "toolkit/toolkit.h"
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "xdg_popup.h"
+#include "clip.h"
+#include "dock_position.h"
+#include "input/manager.h"
 #include "server.h"
 
 /* == Declarations ========================================================= */
@@ -64,6 +72,19 @@ struct _wlmaker_layer_panel_t {
     struct wl_listener        destroy_listener;
     /** Listener for `new_popup` signal raised by `wlr_layer_surface_v1`. */
     struct wl_listener        new_popup_listener;
+
+    /** The superclass element's original virtual method table. */
+    wlmtk_element_vmt_t       orig_element_vmt;
+    /** Whether this is the Dock (namespace "wlmdock"): It can be dragged. */
+    bool                      is_dock;
+    /** Whether the left button is held on the Dock: May become a drag. */
+    bool                      drag_pending;
+    /** Whether the Dock is being dragged to another corner. */
+    bool                      dragging;
+    /** Pointer position where the button was pressed, in layout coords. */
+    double                    drag_start_x;
+    /** Pointer position where the button was pressed, in layout coords. */
+    double                    drag_start_y;
 };
 
 wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
@@ -75,6 +96,16 @@ wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
     wlmaker_layer_panel_t *layer_panel_ptr);
 static void _wlmaker_layer_panel_element_destroy(
     wlmtk_element_t *element_ptr);
+static bool _wlmaker_layer_panel_element_pointer_button(
+    wlmtk_element_t *element_ptr,
+    const wlmtk_button_event_t *button_event_ptr);
+static bool _wlmaker_layer_panel_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr);
+static void _wlmaker_layer_panel_element_pointer_grab_cancel(
+    wlmtk_element_t *element_ptr);
+static void _wlmaker_layer_panel_end_drag(
+    wlmaker_layer_panel_t *layer_panel_ptr);
 
 static bool _wlmaker_layer_panel_apply_keyboard(
     wlmaker_layer_panel_t *layer_panel_ptr,
@@ -115,7 +146,15 @@ static const wlmtk_panel_vmt_t _wlmaker_layer_panel_vmt = {
 /** Virtual method table for the layer panel's superclass element. */
 static const wlmtk_element_vmt_t _wlmaker_layer_panel_element_vmt = {
     .destroy = _wlmaker_layer_panel_element_destroy,
+    .pointer_button = _wlmaker_layer_panel_element_pointer_button,
+    .pointer_accepts_motion = _wlmaker_layer_panel_element_pointer_accepts_motion,
+    .pointer_grab_cancel = _wlmaker_layer_panel_element_pointer_grab_cancel,
 };
+
+/** Distance the pointer must move with the button held, to drag the Dock. */
+static const double _wlmaker_layer_panel_drag_threshold = 8;
+/** Namespace of the Dock's layer surface, as used by `wlmdock`. */
+static const char *_wlmaker_layer_panel_dock_namespace = "wlmdock";
 
 /* == Exported methods ===================================================== */
 
@@ -174,9 +213,13 @@ wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
     wlmtk_panel_extend(
         &layer_panel_ptr->super_panel,
         &_wlmaker_layer_panel_vmt);
-    wlmtk_element_extend(
+    layer_panel_ptr->orig_element_vmt = wlmtk_element_extend(
         wlmtk_panel_element(&layer_panel_ptr->super_panel),
         &_wlmaker_layer_panel_element_vmt);
+    layer_panel_ptr->is_dock =
+        NULL != wlr_layer_surface_v1_ptr->namespace &&
+        0 == strcmp(wlr_layer_surface_v1_ptr->namespace,
+                    _wlmaker_layer_panel_dock_namespace);
 
     wlmtk_container_add_element_atop(
         &layer_panel_ptr->super_panel.super_container,
@@ -396,6 +439,133 @@ bool _wlmaker_layer_panel_apply_layer(
     }
 
     return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::pointer_button. For the Dock: Moving
+ * the pointer with the left button held drags it to another corner, like on
+ * Window Maker. A click (without moving) goes to the Dock, eg. to launch.
+ */
+bool _wlmaker_layer_panel_element_pointer_button(
+    wlmtk_element_t *element_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    wlmaker_layer_panel_t *layer_panel_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmaker_layer_panel_t,
+        super_panel.super_container.super_element);
+    wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+
+    if (layer_panel_ptr->dragging) {
+        if (BTN_LEFT != button_event_ptr->button ||
+            WLMTK_BUTTON_UP != button_event_ptr->type) return true;
+        // The seat tracks the button; there is no focused surface now.
+        wlr_seat_pointer_notify_button(
+            server_ptr->wlr_seat_ptr, button_event_ptr->time_msec,
+            BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+        _wlmaker_layer_panel_end_drag(layer_panel_ptr);
+
+        struct wlr_cursor *c = wlmim_wlr_cursor(server_ptr->input_manager_ptr);
+        struct wlr_output *wlr_output_ptr = wlr_output_layout_output_at(
+            server_ptr->wlr_output_layout_ptr, c->x, c->y);
+        if (NULL == wlr_output_ptr) return true;
+        struct wlr_box box;
+        wlr_output_layout_get_box(
+            server_ptr->wlr_output_layout_ptr, wlr_output_ptr, &box);
+        const struct wlr_layer_surface_v1_state *state_ptr =
+            &layer_panel_ptr->wlr_layer_surface_v1_ptr->current;
+        uint32_t edge = state_ptr->exclusive_edge;
+        if (0 == edge) edge = state_ptr->anchor;
+        bool vertical = 0 != (edge & (WLR_EDGE_LEFT | WLR_EDGE_RIGHT)) &&
+            0 == (edge & (WLR_EDGE_TOP | WLR_EDGE_BOTTOM));
+        wlmaker_clip_move_dock(
+            server_ptr, "Dock",
+            wlmaker_dock_place_at(&box, c->x, c->y, vertical));
+        return true;
+    }
+
+    if (layer_panel_ptr->drag_pending &&
+        BTN_LEFT == button_event_ptr->button &&
+        WLMTK_BUTTON_UP == button_event_ptr->type) {
+        _wlmaker_layer_panel_end_drag(layer_panel_ptr);
+    }
+
+    bool rv = layer_panel_ptr->orig_element_vmt.pointer_button(
+        element_ptr, button_event_ptr);
+
+    if (layer_panel_ptr->is_dock &&
+        BTN_LEFT == button_event_ptr->button &&
+        WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        NULL != element_ptr->parent_container_ptr &&
+        NULL != server_ptr->input_manager_ptr) {
+        struct wlr_cursor *c = wlmim_wlr_cursor(server_ptr->input_manager_ptr);
+        layer_panel_ptr->drag_pending = true;
+        layer_panel_ptr->dragging = false;
+        layer_panel_ptr->drag_start_x = c->x;
+        layer_panel_ptr->drag_start_y = c->y;
+        wlmtk_container_pointer_grab(
+            element_ptr->parent_container_ptr, element_ptr);
+    }
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::pointer_accepts_motion. Beyond the
+ * threshold with the button held, the Dock is dragged: The Dock (client)
+ * loses the pointer, so the release does not launch anything.
+ */
+bool _wlmaker_layer_panel_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr)
+{
+    wlmaker_layer_panel_t *layer_panel_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmaker_layer_panel_t,
+        super_panel.super_container.super_element);
+
+    if (layer_panel_ptr->drag_pending && !layer_panel_ptr->dragging) {
+        struct wlr_cursor *c = wlmim_wlr_cursor(
+            layer_panel_ptr->server_ptr->input_manager_ptr);
+        double dx = c->x - layer_panel_ptr->drag_start_x;
+        double dy = c->y - layer_panel_ptr->drag_start_y;
+        if (dx * dx + dy * dy >= _wlmaker_layer_panel_drag_threshold *
+            _wlmaker_layer_panel_drag_threshold) {
+            layer_panel_ptr->dragging = true;
+            wlr_seat_pointer_notify_clear_focus(
+                layer_panel_ptr->server_ptr->wlr_seat_ptr);
+        }
+    }
+    if (layer_panel_ptr->dragging) return true;
+
+    return layer_panel_ptr->orig_element_vmt.pointer_accepts_motion(
+        element_ptr, motion_event_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Implements @ref wlmtk_element_vmt_t::pointer_grab_cancel. Ends a drag. */
+void _wlmaker_layer_panel_element_pointer_grab_cancel(
+    wlmtk_element_t *element_ptr)
+{
+    wlmaker_layer_panel_t *layer_panel_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmaker_layer_panel_t,
+        super_panel.super_container.super_element);
+    layer_panel_ptr->drag_pending = false;
+    layer_panel_ptr->dragging = false;
+    layer_panel_ptr->orig_element_vmt.pointer_grab_cancel(element_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Ends a (pending) drag of the Dock: Releases the pointer grab. */
+void _wlmaker_layer_panel_end_drag(wlmaker_layer_panel_t *layer_panel_ptr)
+{
+    wlmtk_element_t *element_ptr = wlmtk_panel_element(
+        &layer_panel_ptr->super_panel);
+    layer_panel_ptr->drag_pending = false;
+    layer_panel_ptr->dragging = false;
+    if (NULL != element_ptr->parent_container_ptr) {
+        wlmtk_container_pointer_grab_release(
+            element_ptr->parent_container_ptr, element_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */

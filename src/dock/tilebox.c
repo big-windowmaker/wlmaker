@@ -117,4 +117,60 @@ void wlmdock_tilebox_remove_tile(wlmdock_tilebox_t *tilebox_ptr,
         wlmtk_dlnode_from_tile(tile_ptr));
 }
 
+/* ------------------------------------------------------------------------- */
+struct wlr_box wlmdock_tilebox_tile_box(wlmdock_tilebox_t *tilebox_ptr,
+                                        wlmtk_tile_t *tile_ptr)
+{
+    struct wlr_box box = wlmtk_element_get_dimensions_box(
+        wlmtk_tile_element(tile_ptr));
+    int x, y;
+    wlmtk_element_get_position(wlmtk_tile_element(tile_ptr), &x, &y);
+    box.x += x;
+    box.y += y;
+    // The tiles are in the box' inner container.
+    wlmtk_element_get_position(
+        &tilebox_ptr->tile_box.element_container.super_element, &x, &y);
+    box.x += x;
+    box.y += y;
+    return box;
+}
+
+/* ------------------------------------------------------------------------- */
+size_t wlmdock_tilebox_tiles(wlmdock_tilebox_t *tilebox_ptr,
+                             wlmtk_tile_t **tiles_ptr,
+                             size_t max_tiles)
+{
+    size_t n = 0;
+    for (bs_dllist_node_t *dlnode_ptr = tilebox_ptr->reverse ?
+             tilebox_ptr->tiles.tail_ptr : tilebox_ptr->tiles.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = tilebox_ptr->reverse ?
+             dlnode_ptr->prev_ptr : dlnode_ptr->next_ptr) {
+        if (n < max_tiles) tiles_ptr[n] = wlmtk_tile_from_dlnode(dlnode_ptr);
+        ++n;
+    }
+    return n;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmdock_tilebox_set_reverse(wlmdock_tilebox_t *tilebox_ptr, bool reverse)
+{
+    if (tilebox_ptr->reverse == reverse) return;
+    size_t n = bs_dllist_size(&tilebox_ptr->tiles);
+    wlmtk_tile_t **tiles_ptr = NULL;
+    if (0 < n) {
+        tiles_ptr = logged_calloc(n, sizeof(wlmtk_tile_t*));
+        if (NULL == tiles_ptr) return;
+    }
+    wlmdock_tilebox_tiles(tilebox_ptr, tiles_ptr, n);
+    for (size_t i = 0; i < n; ++i) {
+        wlmdock_tilebox_remove_tile(tilebox_ptr, tiles_ptr[i]);
+    }
+    tilebox_ptr->reverse = reverse;
+    for (size_t i = 0; i < n; ++i) {
+        wlmdock_tilebox_add_tile(tilebox_ptr, tiles_ptr[i]);
+    }
+    if (NULL != tiles_ptr) free(tiles_ptr);
+}
+
 /* == End of tilebox.c ===================================================== */

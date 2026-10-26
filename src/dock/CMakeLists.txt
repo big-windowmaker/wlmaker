@@ -18,6 +18,7 @@ cmake_minimum_required(VERSION 3.13)
 include(WaylandProtocol)
 
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client>=1.22.0)
+pkg_check_modules(PIXMAN REQUIRED IMPORTED_TARGET pixman-1)
 pkg_get_variable(wayland_protocol_dir wayland-protocols pkgdatadir)
 
 add_library(wlmdock_lib STATIC)
@@ -48,6 +49,7 @@ target_include_directories(
 )
 target_link_libraries(
   wlmdock_lib
+  PkgConfig::PIXMAN
   libbase
   wlmclient_lib
   wlmaker_lib

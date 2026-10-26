@@ -120,6 +120,8 @@ struct _wlmcl_client_t {
 
     /** File descriptor to monitor SIGINT. */
     int                       signal_fd;
+    /** The signals monitored by @ref wlmcl_client_t::signal_fd. */
+    sigset_t                  signal_set;
     /** Whether @ref wlmcl_client_initialize was executed. */
     bool                      initialized;
 
@@ -395,6 +397,7 @@ wlmcl_client_t *wlmcl_client_create(const char *app_id_ptr)
     wl_signal_init(&wlclient_ptr->events.keymap);
     wl_signal_init(&wlclient_ptr->events.keyboard_repeat_info);
     wl_signal_init(&wlclient_ptr->events.pointer_changed);
+    wl_signal_init(&wlclient_ptr->events.pointer_leave);
     wl_signal_init(&wlclient_ptr->events.pointer_button);
     wl_signal_init(&wlclient_ptr->events.pointer_axis);
 
@@ -435,6 +438,7 @@ wlmcl_client_t *wlmcl_client_create(const char *app_id_ptr)
         wlmcl_client_destroy(wlclient_ptr);
         return NULL;
     }
+    wlclient_ptr->signal_set = signal_set;
     wlclient_ptr->signal_fd = signalfd(-1, &signal_set, SFD_NONBLOCK);
     if (0 >= wlclient_ptr->signal_fd) {
         bs_log(BS_ERROR | BS_ERRNO, "Failed signalfd(-1, %p, SFD_NONBLOCK)",
@@ -634,6 +638,29 @@ const struct wlmcl_client_attributes *wlmcl_client_attributes(
 struct wlmcl_client_events *wlmcl_client_events(wlmcl_client_t *wlclient_ptr)
 {
     return &wlclient_ptr->events;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmcl_client_add_signal(wlmcl_client_t *wlclient_ptr, int signal_number)
+{
+    sigset_t signal_set = wlclient_ptr->signal_set;
+    if (0 != sigaddset(&signal_set, signal_number)) {
+        bs_log(BS_ERROR | BS_ERRNO, "Failed sigaddset(%p, %d)",
+               &signal_set, signal_number);
+        return false;
+    }
+    if (0 != sigprocmask(SIG_BLOCK, &signal_set, NULL)) {
+        bs_log(BS_ERROR | BS_ERRNO, "Failed sigprocmask(SIG_BLOCK, %p, NULL)",
+               &signal_set);
+        return false;
+    }
+    if (0 > signalfd(wlclient_ptr->signal_fd, &signal_set, SFD_NONBLOCK)) {
+        bs_log(BS_ERROR | BS_ERRNO, "Failed signalfd(%d, %p, SFD_NONBLOCK)",
+               wlclient_ptr->signal_fd, &signal_set);
+        return false;
+    }
+    wlclient_ptr->signal_set = signal_set;
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1221,12 +1248,13 @@ void wlmcl_client_pointer_handle_leave(
     void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer,
     __UNUSED__ uint32_t serial,
-    __UNUSED__ struct wl_surface *surface)
+    struct wl_surface *surface)
 {
     wlmcl_client_t *client_ptr = data_ptr;
     client_ptr->pointer_focus_surface_ptr = NULL;
     client_ptr->pending_axis_valid[0] = false;
     client_ptr->pending_axis_valid[1] = false;
+    wl_signal_emit(&client_ptr->events.pointer_leave, surface);
 }
 
 /* ------------------------------------------------------------------------- */
