@@ -65,6 +65,11 @@ extern "C" {
 typedef struct {
     /** Whether to start XWayland. */
     bool                      start_xwayland;
+    /**
+     * Whether to start the XWayland server only once the first X11 client
+     * connects. Applies only with @ref wlmaker_server_options_t::start_xwayland.
+     */
+    bool                      lazy_xwayland;
     /** Desired output width, for windowed mode. 0 for no preference. */
     uint32_t                  width;
     /** Desired output height, for windowed mode. 0 for no preference. */
