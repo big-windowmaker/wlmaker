@@ -1449,6 +1449,7 @@ void test_lock_ends_grabs(bs_test_t *test_ptr)
     wl_signal_emit(&lock.events.unlock, NULL);
     _wlmaker_lock_destroy(lock_ptr);
     wlr_seat_keyboard_clear_focus(server.wlr_seat_ptr);
+    wl_client_destroy(wl_client_ptr);
     wlmtk_desktop_remove_workspace(server.desktop_ptr, workspace_ptr);
     wlmtk_workspace_destroy(workspace_ptr);
     wlmtk_desktop_destroy(server.desktop_ptr);
