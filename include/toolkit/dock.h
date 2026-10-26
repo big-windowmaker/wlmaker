@@ -110,6 +110,37 @@ void wlmtk_dock_remove_tile(
     wlmtk_dock_t *dock_ptr,
     wlmtk_tile_t *tile_ptr);
 
+/** @return The positioning `dock_ptr` was created with. */
+const wlmtk_dock_positioning_t *wlmtk_dock_get_positioning(
+    wlmtk_dock_t *dock_ptr);
+
+/** @return Number of tiles in the dock. */
+size_t wlmtk_dock_tiles(wlmtk_dock_t *dock_ptr);
+
+/**
+ * Returns the index of `tile_ptr` in the dock, counted from the dock's anchor:
+ * The tile nearest to the anchor has index 0.
+ *
+ * @param dock_ptr
+ * @param tile_ptr
+ *
+ * @return The index, or -1 if `tile_ptr` is not in the dock.
+ */
+int wlmtk_dock_tile_index(wlmtk_dock_t *dock_ptr, wlmtk_tile_t *tile_ptr);
+
+/**
+ * Moves `tile_ptr` to position `index`, counted from the dock's anchor. An
+ * index beyond the last tile moves it to the far end.
+ *
+ * @param dock_ptr
+ * @param tile_ptr
+ * @param index
+ */
+void wlmtk_dock_move_tile(
+    wlmtk_dock_t *dock_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t index);
+
 /** @return Pointer to the superclass @ref wlmtk_panel_t of `dock_ptr`. */
 wlmtk_panel_t *wlmtk_dock_panel(wlmtk_dock_t *dock_ptr);
 
