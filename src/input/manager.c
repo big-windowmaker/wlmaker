@@ -33,6 +33,7 @@
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_virtual_pointer_v1.h>
 #undef WLR_USE_UNSTABLE
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -56,6 +57,10 @@ struct _wlmim_t {
     /** Listener for `new_input` signals raised by `wlr_backend`. */
     struct wl_listener        backend_new_input_device_listener;
 
+    /** Virtual keyboard manager. Owned by wl_display. */
+    struct wlr_virtual_keyboard_manager_v1 *wlr_virtual_keyboard_manager_v1_ptr;
+    /** Listener for `new_virtual_keyboard` of the virtual keyboard manager. */
+    struct wl_listener        new_virtual_keyboard_listener;
     /** Virtual pointer manager. Owned by wl_display. */
     struct wlr_virtual_pointer_manager_v1 *wlr_virtual_pointer_manager_v1_ptr;
     /** Listener for `new_virtual_pointer` of the virtual pointer manager. */
@@ -122,6 +127,9 @@ static void _wlmim_add_input_device(
     wlmim_t *input_manager_ptr,
     struct wlr_input_device *wlr_input_device_ptr);
 static void _wlmim_handle_new_input_device(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_handle_new_virtual_keyboard(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmim_handle_new_virtual_pointer(
@@ -235,6 +243,19 @@ wlmim_t *wlmim_input_manager_create(
     }
 
     if (NULL != wl_display_ptr && NULL != wlr_seat_ptr) {
+        input_manager_ptr->wlr_virtual_keyboard_manager_v1_ptr =
+            wlr_virtual_keyboard_manager_v1_create(wl_display_ptr);
+        if (NULL == input_manager_ptr->wlr_virtual_keyboard_manager_v1_ptr) {
+            bs_log(BS_ERROR, "Failed wlr_virtual_keyboard_manager_v1_create(%p)",
+                   wl_display_ptr);
+            wlmim_input_manager_destroy(input_manager_ptr);
+            return NULL;
+        }
+        wlmtk_util_connect_listener_signal(
+            &input_manager_ptr->wlr_virtual_keyboard_manager_v1_ptr->events.new_virtual_keyboard,
+            &input_manager_ptr->new_virtual_keyboard_listener,
+            _wlmim_handle_new_virtual_keyboard);
+
         input_manager_ptr->wlr_virtual_pointer_manager_v1_ptr =
             wlr_virtual_pointer_manager_v1_create(wl_display_ptr);
         if (NULL == input_manager_ptr->wlr_virtual_pointer_manager_v1_ptr) {
@@ -257,6 +278,8 @@ void wlmim_input_manager_destroy(wlmim_t *input_manager_ptr)
 {
     wlmtk_util_disconnect_listener(
         &input_manager_ptr->new_virtual_pointer_listener);
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->new_virtual_keyboard_listener);
     wlmtk_util_disconnect_listener(
         &input_manager_ptr->backend_new_input_device_listener);
 
@@ -515,6 +538,29 @@ void _wlmim_handle_new_input_device(
     wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmim_t, backend_new_input_device_listener);
     _wlmim_add_input_device(input_manager_ptr, data_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handler for `new_virtual_keyboard` of `wlr_virtual_keyboard_manager_v1`.
+ *
+ * Adds the virtual keyboard like any other keyboard device. It keeps the
+ * keymap provided by the client, see @ref wlmim_keyboard_configure.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to struct wlr_virtual_keyboard_v1.
+ */
+void _wlmim_handle_new_virtual_keyboard(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_t, new_virtual_keyboard_listener);
+    struct wlr_virtual_keyboard_v1 *wlr_virtual_keyboard_v1_ptr = data_ptr;
+
+    _wlmim_add_input_device(
+        input_manager_ptr,
+        &wlr_virtual_keyboard_v1_ptr->keyboard.base);
 }
 
 /* ------------------------------------------------------------------------- */

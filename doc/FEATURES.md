@@ -248,6 +248,10 @@ TBD: Raise/Lower.
 
 * [x] :white_check_mark: Implemented.
 
+### `virtual-keyboard-unstable-v1`
+
+* [x] :white_check_mark: Implemented, keeps the keymap provided by the client.
+
 ### `wlr-foreign-toplevel-management-unstable-v1`
 
 * [ ] Implement.

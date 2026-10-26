@@ -78,6 +78,8 @@ void wlmim_keyboard_destroy(wlmim_keyboard_t *keyboard_ptr);
 /**
  * Configures the active xkb_keymap and repeat settings.
  *
+ * Virtual keyboards keep the keymap that was provided by their client.
+ *
  * @param keyboard_ptr
  * @param xkb_keymap_ptr
  * @param options_ptr
