@@ -558,7 +558,18 @@ void _wlmaker_xdg_toplevel_try_map(struct wlmaker_xdg_toplevel *wxt_ptr)
 
     wlmtk_workspace_t *workspace_ptr = wlmtk_desktop_get_current_workspace(
         wxt_ptr->server_ptr->desktop_ptr);
-    wlmtk_workspace_map_window(workspace_ptr, wxt_ptr->window_ptr);
+
+    // Transients (eg. dialogs) are placed centered on their parent.
+    wlmtk_window_placement_hint_t hint = {};
+    struct wlr_xdg_toplevel *parent_ptr = wxt_ptr->wlr_xdg_toplevel_ptr->parent;
+    if (NULL != parent_ptr && NULL != parent_ptr->base->data) {
+        struct wlmaker_xdg_toplevel *parent_wxt_ptr = parent_ptr->base->data;
+        if (NULL != wlmtk_window_get_workspace(parent_wxt_ptr->window_ptr)) {
+            hint.parent_ptr = parent_wxt_ptr->window_ptr;
+        }
+    }
+    wlmtk_workspace_map_window_with_hint(
+        workspace_ptr, wxt_ptr->window_ptr, &hint);
 }
 
 /* ------------------------------------------------------------------------- */

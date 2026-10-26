@@ -125,6 +125,10 @@
         IdleSeconds = 300;
         Command = "/usr/bin/swaylock";
     };
+    // Optional: Where new windows are placed. `Center` centers them in the
+    // usable area of the output under the pointer, `Smart` (the default, if
+    // not set) fills free spots row by row.
+    WindowPlacement = Center;
     // Optional array: Commands to start once wlmaker is running.
     Autostart = (
         // TODO(kaeser@gubbe.ch): Add wlmdock.
