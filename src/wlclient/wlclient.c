@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <pthread.h>
 #include <sys/signalfd.h>
 #include <sys/timerfd.h>
 #include <sys/types.h>
@@ -365,6 +366,18 @@ static const object_t objects[] = {
     { NULL, 0, 0, NULL }  // sentinel.
 };
 
+/* ------------------------------------------------------------------------- */
+/**
+ * In a forked child: Unblocks all signals, eg. those blocked for the client's
+ * signalfd, so they are not inherited by launched programs.
+ */
+static void _wlmcl_client_atfork_child(void)
+{
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigprocmask(SIG_SETMASK, &signal_set, NULL);
+}
+
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -399,11 +412,22 @@ wlmcl_client_t *wlmcl_client_create(const char *app_id_ptr)
         wlmcl_client_destroy(wlclient_ptr);
         return NULL;
     }
-    if (sigaddset(&signal_set, SIGINT)) {
-        bs_log(BS_ERROR | BS_ERRNO, "Failed sigemptyset(%p, %d)",
-               &signal_set, SIGINT);
+    // SIGTERM, too: Eg. when the session ends, so the client exits cleanly.
+    if (sigaddset(&signal_set, SIGINT) || sigaddset(&signal_set, SIGTERM)) {
+        bs_log(BS_ERROR | BS_ERRNO, "Failed sigaddset(%p, ...)",
+               &signal_set);
         wlmcl_client_destroy(wlclient_ptr);
         return NULL;
+    }
+    // Processes forked by the client (eg. launched by the dock) must not
+    // inherit the blocked signals.
+    static bool atfork_registered = false;
+    if (!atfork_registered) {
+        if (0 != pthread_atfork(NULL, NULL, _wlmcl_client_atfork_child)) {
+            bs_log(BS_WARNING, "Failed pthread_atfork(NULL, NULL, %p)",
+                   _wlmcl_client_atfork_child);
+        }
+        atfork_registered = true;
     }
     if (sigprocmask(SIG_BLOCK, &signal_set, NULL) == -1) {
         bs_log(BS_ERROR | BS_ERRNO, "Failed sigprocmask(SIG_BLOCK, %p, NULL)",
