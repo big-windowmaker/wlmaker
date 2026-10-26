@@ -86,6 +86,8 @@ struct _wlmcl_xdg_toplevel_t {
 
     /** Input observer. */
     struct ext_input_position_observer_v1 *input_position_observer_ptr;
+    /** Listener for @ref wlmcl_client_events::pointer_changed. */
+    struct wl_listener        pointer_changed_listener;
 };
 
 static void _wlmcl_xdg_configure_decoration(
@@ -125,6 +127,11 @@ static void _wlmcl_input_position_observer_position(
     uint32_t instance,
     int32_t relative_x,
     int32_t relative_y);
+
+static bool _wlmcl_xdg_toplevel_update_pointer_observer(wlmcl_xdg_toplevel_t *toplevel_ptr);
+static void _wlmcl_xdg_toplevel_handle_pointer_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 
 /* == Data ================================================================= */
 
@@ -166,6 +173,7 @@ wlmcl_xdg_toplevel_t *wlmcl_xdg_toplevel_create(
         1, sizeof(wlmcl_xdg_toplevel_t));
     if (NULL == toplevel_ptr) return NULL;
     toplevel_ptr->wlclient_ptr = wlclient_ptr;
+    toplevel_ptr->pointer_changed_listener.notify = _wlmcl_xdg_toplevel_handle_pointer_changed;
     toplevel_ptr->title_ptr = logged_strdup(title_ptr);
     if (NULL == toplevel_ptr->title_ptr) {
         wlmcl_xdg_toplevel_destroy(toplevel_ptr);
@@ -249,26 +257,13 @@ wlmcl_xdg_toplevel_t *wlmcl_xdg_toplevel_create(
             wlmcl_client_attributes(wlclient_ptr)->app_id_ptr);
     }
 
-    if (NULL != wlmcl_client_attributes(wlclient_ptr)->input_observation_manager_ptr) {
-        toplevel_ptr->input_position_observer_ptr =
-            ext_input_observation_manager_v1_create_pointer_observer(
-                wlmcl_client_attributes(wlclient_ptr)->input_observation_manager_ptr,
-                wlmcl_client_attributes(wlclient_ptr)->wl_pointer_ptr,
-                toplevel_ptr->wl_surface_ptr);
-        if (NULL == toplevel_ptr->input_position_observer_ptr) {
-            bs_log(BS_ERROR,
-                   "Failed ext_input_observation_v1_pointer_position(%p, %p)",
-                   wlmcl_client_attributes(wlclient_ptr)->input_observation_manager_ptr,
-                   toplevel_ptr->wl_surface_ptr);
-            wlmcl_xdg_toplevel_destroy(toplevel_ptr);
-            return NULL;
-        }
-        ext_input_position_observer_v1_add_listener(
-            toplevel_ptr->input_position_observer_ptr,
-            &_wlmcl_tracker_listener,
-            toplevel_ptr);
-        bs_log(BS_INFO, "Created pointer tracker %p for wl_surface %p",
-               toplevel_ptr->input_position_observer_ptr, toplevel_ptr->wl_surface_ptr);
+    // The pointer observer needs the seat's pointer. It may not have the
+    // pointer capability (yet), eg. on touch-only or headless setups.
+    wl_signal_add(&wlmcl_client_events(wlclient_ptr)->pointer_changed,
+                  &toplevel_ptr->pointer_changed_listener);
+    if (!_wlmcl_xdg_toplevel_update_pointer_observer(toplevel_ptr)) {
+        wlmcl_xdg_toplevel_destroy(toplevel_ptr);
+        return NULL;
     }
 
     wl_surface_commit(toplevel_ptr->wl_surface_ptr);
@@ -291,6 +286,10 @@ void wlmcl_xdg_toplevel_destroy(wlmcl_xdg_toplevel_t *toplevel_ptr)
 
 
 
+    if (NULL != toplevel_ptr->pointer_changed_listener.link.prev) {
+        wl_list_remove(&toplevel_ptr->pointer_changed_listener.link);
+        toplevel_ptr->pointer_changed_listener.link.prev = NULL;
+    }
     if (NULL != toplevel_ptr->input_position_observer_ptr) {
         ext_input_position_observer_v1_destroy(
             toplevel_ptr->input_position_observer_ptr);
@@ -370,6 +369,62 @@ void wlmcl_xdg_toplevel_register_position_callback(
 }
 
 /* == Local (static) methods =============================================== */
+
+/* ------------------------------------------------------------------------- */
+/**
+ * (Re)creates the pointer observer, if the input observation manager and
+ * the seat's pointer are available. Destroys it otherwise.
+ *
+ * @param toplevel_ptr
+ *
+ * @return false on error.
+ */
+bool _wlmcl_xdg_toplevel_update_pointer_observer(wlmcl_xdg_toplevel_t *toplevel_ptr)
+{
+    const struct wlmcl_client_attributes *attr_ptr = wlmcl_client_attributes(
+        toplevel_ptr->wlclient_ptr);
+
+    if (NULL != toplevel_ptr->input_position_observer_ptr) {
+        ext_input_position_observer_v1_destroy(
+            toplevel_ptr->input_position_observer_ptr);
+        toplevel_ptr->input_position_observer_ptr = NULL;
+    }
+    if (NULL == attr_ptr->input_observation_manager_ptr ||
+        NULL == attr_ptr->wl_pointer_ptr) return true;
+
+    toplevel_ptr->input_position_observer_ptr =
+        ext_input_observation_manager_v1_create_pointer_observer(
+            attr_ptr->input_observation_manager_ptr,
+            attr_ptr->wl_pointer_ptr,
+            toplevel_ptr->wl_surface_ptr);
+    if (NULL == toplevel_ptr->input_position_observer_ptr) {
+        bs_log(BS_ERROR,
+               "Failed ext_input_observation_manager_v1_create_pointer_observer"
+               "(%p, %p, %p)",
+               attr_ptr->input_observation_manager_ptr,
+               attr_ptr->wl_pointer_ptr,
+               toplevel_ptr->wl_surface_ptr);
+        return false;
+    }
+    ext_input_position_observer_v1_add_listener(
+        toplevel_ptr->input_position_observer_ptr,
+        &_wlmcl_tracker_listener,
+        toplevel_ptr);
+    bs_log(BS_INFO, "Created pointer tracker %p for wl_surface %p",
+           toplevel_ptr->input_position_observer_ptr, toplevel_ptr->wl_surface_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles @ref wlmcl_client_events::pointer_changed: Updates observer. */
+void _wlmcl_xdg_toplevel_handle_pointer_changed(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmcl_xdg_toplevel_t *toplevel_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmcl_xdg_toplevel_t, pointer_changed_listener);
+    _wlmcl_xdg_toplevel_update_pointer_observer(toplevel_ptr);
+}
 
 /* ------------------------------------------------------------------------- */
 /** Updates the server-side decoration mode. */

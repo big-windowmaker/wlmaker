@@ -344,6 +344,7 @@ wlmcl_client_t *wlmcl_client_create(const char *app_id_ptr)
     wl_signal_init(&wlclient_ptr->events.key);
     wl_signal_init(&wlclient_ptr->events.keymap);
     wl_signal_init(&wlclient_ptr->events.keyboard_repeat_info);
+    wl_signal_init(&wlclient_ptr->events.pointer_changed);
 
     if (NULL != app_id_ptr) {
         wlclient_ptr->attributes.app_id_ptr = logged_strdup(app_id_ptr);
@@ -945,10 +946,15 @@ void wlmcl_client_seat_handle_capabilities(
             client_ptr->attributes.wl_pointer_ptr,
             &wlmcl_client_pointer_listener,
             client_ptr);
+        wl_signal_emit(&client_ptr->events.pointer_changed, NULL);
     } else if (!supports_pointer &&
                NULL != client_ptr->attributes.wl_pointer_ptr) {
-        wl_pointer_release(client_ptr->attributes.wl_pointer_ptr);
+        // Listeners release objects referring to the pointer before release.
+        struct wl_pointer *wl_pointer_ptr =
+            client_ptr->attributes.wl_pointer_ptr;
         client_ptr->attributes.wl_pointer_ptr = NULL;
+        wl_signal_emit(&client_ptr->events.pointer_changed, NULL);
+        wl_pointer_release(wl_pointer_ptr);
     }
 
     bool supports_keyboard = capabilities & WL_SEAT_CAPABILITY_KEYBOARD;
@@ -958,7 +964,7 @@ void wlmcl_client_seat_handle_capabilities(
             client_ptr->wl_keyboard_ptr,
             &wlmcl_client_keyboard_listener,
             client_ptr);
-    } else if (!supports_keyboard && NULL != client_ptr->wl_pointer_ptr) {
+    } else if (!supports_keyboard && NULL != client_ptr->wl_keyboard_ptr) {
         wl_keyboard_release(client_ptr->wl_keyboard_ptr);
         client_ptr->wl_keyboard_ptr = NULL;
     }
