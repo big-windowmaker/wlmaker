@@ -90,6 +90,8 @@ pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo>=1.16.0)
 pkg_check_modules(LIBRSVG REQUIRED IMPORTED_TARGET librsvg-2.0)
 pkg_check_modules(LIBXDGBASEDIR REQUIRED IMPORTED_TARGET libxdg-basedir>=1.2)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon>=1.5.0)
+# Optional: For the `wlmmixer` DockApp. Works with PulseAudio and PipeWire.
+pkg_check_modules(LIBPULSE IMPORTED_TARGET libpulse>=13.0)
 
 # https://github.com/ianlancetaylor/libbacktrace.
 # The REQUIRED arg is available only from cmake 3.28.
