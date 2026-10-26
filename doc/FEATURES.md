@@ -211,7 +211,7 @@ TBD: Raise/Lower.
 
 ### `ext-idle-notify-v1`
 
-* [ ] Implement.
+* [x] :white_check_mark: Implemented, honoring idle inhibitors. Verified with `swayidle`.
 
 ### `ext-image-capture-source-v1`
 

@@ -52,6 +52,8 @@ void wlmaker_idle_monitor_destroy(wlmaker_idle_monitor_t *idle_monitor_ptr);
 /**
  * Resets the idle monitor: For example, when a key is pressed.
  *
+ * Also reports the activity to ext-idle-notify-v1 clients, even if locked.
+ *
  * @param idle_monitor_ptr
  */
 void wlmaker_idle_monitor_reset(wlmaker_idle_monitor_t *idle_monitor_ptr);
@@ -68,7 +70,7 @@ bool wlmaker_idle_monitor_lock(wlmaker_idle_monitor_t *idle_monitor_ptr);
 /**
  * Inhibits locking: Increases inhibitor counter, which will prevent locking
  * when the idle timer expires. @see wlmaker_idle_monitor_uninhibit for
- * releasing the inhibitor.
+ * releasing the inhibitor. Also inhibits ext-idle-notify-v1 idle events.
  *
  * @param idle_monitor_ptr
  */
