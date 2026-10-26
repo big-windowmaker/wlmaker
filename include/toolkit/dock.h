@@ -46,6 +46,14 @@ typedef struct {
     enum wlr_edges            edge;
     /** Dock anchor, along @ref wlmtk_dock_positioning_t::edge. */
     enum wlr_edges            anchor;
+    /** Distance from the anchor, in pixels. Optional, defaults to 0. */
+    int                       margin;
+    /**
+     * Whether the dock is positioned relative to the full output, ignoring
+     * other panels' exclusive zones, and without an exclusive zone of its own.
+     * Eg. for placing launchers adjacent to the Clip. Optional.
+     */
+    bool                      overlay;
 } wlmtk_dock_positioning_t;
 
 /** Styling information for the dock. */

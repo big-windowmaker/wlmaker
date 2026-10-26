@@ -105,6 +105,10 @@ struct wlmdock_state {
     wlmtk_dock_positioning_t  positioning;
     /** Launchers. */
     bspl_array_t            *launchers_array_ptr;
+    /** Distance from the anchor, in pixels. */
+    int64_t                   margin;
+    /** Whether `Margin` was given. */
+    bool                      has_margin;
 };
 
 static wlmdock_t *_wlmdock_create(
@@ -125,6 +129,8 @@ static char *wlmdock_arg_config_file_ptr = NULL;
 static char *wlmdock_arg_state_file_ptr = NULL;
 /** Will hold the value of --theme_file. */
 static char *wlmdock_arg_theme_file_ptr = NULL;
+/** Will hold the value of --clip. */
+static bool wlmdock_arg_clip = false;
 
 /** Definition of commandline arguments. */
 static const bs_arg_t wlmdock_args[] = {
@@ -148,6 +154,13 @@ static const bs_arg_t wlmdock_args[] = {
         "elements. If not provided, wlmaker will use a built-in default theme.",
         NULL,
         &wlmdock_arg_theme_file_ptr),
+    BS_ARG_BOOL(
+        "clip",
+        "Optional: Shows the `Launchers` of the state file's `Clip` section "
+        "(instead of the `Dock` section), placed next to the Clip. Disabled "
+        "by default.",
+        false,
+        &wlmdock_arg_clip),
     bs_arg_log_level,
     bs_arg_log_to_stderr,
     BS_ARG_SENTINEL()
@@ -176,6 +189,8 @@ const bspl_desc_t _wlmdock_plist_desc[] = {
                      NULL,
                      NULL,
                      NULL),
+    BSPL_DESC_INT64("Margin", false, struct wlmdock_state,
+                    margin, has_margin, 0),
     BSPL_DESC_SENTINEL(),
 };
 
@@ -249,11 +264,23 @@ int main(int argc, const char **argv)
         fprintf(stderr, "Failed to load & initialize state.\n");
         return EXIT_FAILURE;
     }
-    bspl_dict_t *dock_dict_ptr = bspl_dict_get_dict(state_dict_ptr, "Dock");
+    const char *section_ptr = wlmdock_arg_clip ? "Clip" : "Dock";
+    bspl_dict_t *dock_dict_ptr = bspl_dict_get_dict(state_dict_ptr, section_ptr);
     struct wlmdock_state state = {};
     if (!bspl_decode_dict(dock_dict_ptr, _wlmdock_plist_desc, &state)) {
-        bs_log(BS_ERROR, "Failed to parse the State.");
+        bs_log(BS_ERROR, "Failed to parse the State's '%s' section.",
+               section_ptr);
         return EXIT_FAILURE;
+    }
+    state.positioning.margin = state.margin;
+    if (wlmdock_arg_clip) {
+        // Placed over the room the Clip leaves for `Launchers`: Relative to
+        // the full output, and by default one Clip tile from the anchor.
+        state.positioning.overlay = true;
+        if (!state.has_margin) {
+            state.positioning.margin =
+                style.tile.size + style.dock.margin.width;
+        }
     }
 
     wlmdock_t *dock_ptr = _wlmdock_create(state.positioning, &style);
