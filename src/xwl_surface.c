@@ -99,6 +99,8 @@ struct _wlmaker_xwl_surface_t {
     wlmtk_window_t           *window_ptr;
     /** The window menu, with the same items as for XDG toplevels. */
     wlmaker_tl_menu_t         *tl_menu_ptr;
+    /** Whether the surface is mapped, but waits for its size to map. */
+    bool                      map_pending;
     /** Or, the parent surface. In that case, window_ptr is NULL. */
     wlmaker_xwl_surface_t     *parent_surface_ptr;
 
@@ -115,6 +117,7 @@ static void _xwl_surface_handle_request_configure(
 static void _xwl_surface_handle_request_minimize(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static void _xwl_surface_map_window(wlmaker_xwl_surface_t *xwl_surface_ptr);
 
 static void _wlmaker_xwl_surface_base_element_destroy(
     wlmtk_element_t *element_ptr);
@@ -706,10 +709,50 @@ void _xwl_surface_handle_surface_map(
 
     if (NULL == xwl_surface_ptr->window_ptr) return;
 
+    // The surface is mapped while committing, before the toolkit surface
+    // learned its size. Place & map the window once the size is known.
+    struct wlr_box size = wlmtk_window_get_size(xwl_surface_ptr->window_ptr);
+    if (0 >= size.width || 0 >= size.height) {
+        xwl_surface_ptr->map_pending = true;
+        return;
+    }
+    _xwl_surface_map_window(xwl_surface_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Places the window (respecting hints), and maps it to the workspace. */
+void _xwl_surface_map_window(wlmaker_xwl_surface_t *xwl_surface_ptr)
+{
+    xwl_surface_ptr->map_pending = false;
     wlmtk_workspace_t *workspace_ptr =
         wlmtk_desktop_get_current_workspace(
             xwl_surface_ptr->server_ptr->desktop_ptr);
-    wlmtk_workspace_map_window(workspace_ptr, xwl_surface_ptr->window_ptr);
+
+    // Respect positions requested by the user (eg. -geometry +X+Y) or the
+    // program. A program position of (0, 0) is commonly just a default.
+    // Transients (eg. modal dialogs) are centered on their parent.
+    struct wlr_xwayland_surface *xws_ptr =
+        xwl_surface_ptr->wlr_xwayland_surface_ptr;
+    wlmtk_window_placement_hint_t hint = {};
+    if (NULL != xws_ptr->size_hints) {
+        uint32_t flags = xws_ptr->size_hints->flags;
+        if ((flags & XCB_ICCCM_SIZE_HINT_US_POSITION) ||
+            ((flags & XCB_ICCCM_SIZE_HINT_P_POSITION) &&
+             (0 != xws_ptr->x || 0 != xws_ptr->y))) {
+            hint.has_position = true;
+            hint.x = xws_ptr->x;
+            hint.y = xws_ptr->y;
+        }
+    }
+    if (NULL != xws_ptr->parent && NULL != xws_ptr->parent->data) {
+        wlmaker_xwl_surface_t *parent_ptr = xws_ptr->parent->data;
+        if (NULL != parent_ptr->window_ptr &&
+            NULL != wlmtk_window_get_workspace(parent_ptr->window_ptr)) {
+            hint.parent_ptr = parent_ptr->window_ptr;
+        }
+    }
+    wlmtk_workspace_map_window_with_hint(
+        workspace_ptr, xwl_surface_ptr->window_ptr, &hint);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -721,7 +764,9 @@ void _xwl_surface_handle_surface_unmap(
     wlmaker_xwl_surface_t *xwl_surface_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_xwl_surface_t, surface_unmap_listener);
 
-    if (NULL == xwl_surface_ptr->window_ptr) return;
+    xwl_surface_ptr->map_pending = false;
+    if (NULL == xwl_surface_ptr->window_ptr ||
+        NULL == wlmtk_window_get_workspace(xwl_surface_ptr->window_ptr)) return;
 
     wlmtk_workspace_unmap_window(
         wlmtk_window_get_workspace(xwl_surface_ptr->window_ptr),
@@ -743,6 +788,14 @@ void _xwl_surface_handle_surface_commit(
         xwl_surface_ptr->window_ptr,
         xwl_surface_ptr->wlr_xwayland_surface_ptr->surface->current.width,
         xwl_surface_ptr->wlr_xwayland_surface_ptr->surface->current.height);
+
+    if (xwl_surface_ptr->map_pending) {
+        struct wlr_box size = wlmtk_window_get_size(
+            xwl_surface_ptr->window_ptr);
+        if (0 < size.width && 0 < size.height) {
+            _xwl_surface_map_window(xwl_surface_ptr);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------------- */

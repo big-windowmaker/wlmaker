@@ -25,6 +25,7 @@
 #include <libbase/plist.h>
 #include <linux/input-event-codes.h>
 #include <stdlib.h>
+#include <strings.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/backend.h>
 #include <wlr/types/wlr_viewporter.h>
@@ -185,6 +186,20 @@ wlmaker_server_t *wlmaker_server_create(
     if (NULL == server_ptr->desktop_ptr) {
         wlmaker_server_destroy(server_ptr);
         return NULL;
+    }
+    const char *placement_ptr = bspl_dict_get_string_value(
+        server_ptr->config_dict_ptr, "WindowPlacement");
+    if (NULL != placement_ptr) {
+        if (0 == strcasecmp(placement_ptr, "Center")) {
+            wlmtk_desktop_set_window_placement(
+                server_ptr->desktop_ptr, WLMTK_WINDOW_PLACEMENT_CENTER);
+        } else if (0 == strcasecmp(placement_ptr, "Smart")) {
+            wlmtk_desktop_set_window_placement(
+                server_ptr->desktop_ptr, WLMTK_WINDOW_PLACEMENT_SMART);
+        } else {
+            bs_log(BS_WARNING, "Unknown WindowPlacement \"%s\", using Smart.",
+                   placement_ptr);
+        }
     }
 
     // root element wrapper.
