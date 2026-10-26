@@ -122,6 +122,13 @@ struct _wlmcl_client_t {
     /** Whether @ref wlmcl_client_initialize was executed. */
     bool                      initialized;
 
+    /** Surface that currently has pointer focus, or NULL. */
+    struct wl_surface         *pointer_focus_surface_ptr;
+    /** Axis events accumulated for the current pointer frame. */
+    struct wlmcl_client_pointer_axis_event pending_axis[2];
+    /** Whether there is an axis event for the current frame, per axis. */
+    bool                      pending_axis_valid[2];
+
     /** Whether to keep the client running. */
     volatile bool             keep_running;
 };
@@ -375,6 +382,8 @@ wlmcl_client_t *wlmcl_client_create(const char *app_id_ptr)
     wl_signal_init(&wlclient_ptr->events.keymap);
     wl_signal_init(&wlclient_ptr->events.keyboard_repeat_info);
     wl_signal_init(&wlclient_ptr->events.pointer_changed);
+    wl_signal_init(&wlclient_ptr->events.pointer_button);
+    wl_signal_init(&wlclient_ptr->events.pointer_axis);
 
     if (NULL != app_id_ptr) {
         wlclient_ptr->attributes.app_id_ptr = logged_strdup(app_id_ptr);
@@ -1126,6 +1135,7 @@ void wlmcl_client_seat_handle_capabilities(
         struct wl_pointer *wl_pointer_ptr =
             client_ptr->attributes.wl_pointer_ptr;
         client_ptr->attributes.wl_pointer_ptr = NULL;
+        client_ptr->pointer_focus_surface_ptr = NULL;
         wl_signal_emit(&client_ptr->events.pointer_changed, NULL);
         wl_pointer_release(wl_pointer_ptr);
     }
@@ -1160,11 +1170,12 @@ void wlmcl_client_pointer_handle_enter(
     void *data_ptr,
     struct wl_pointer *wl_pointer,
     uint32_t serial,
-    __UNUSED__ struct wl_surface *surface,
+    struct wl_surface *surface,
     __UNUSED__ wl_fixed_t surface_x,
     __UNUSED__ wl_fixed_t surface_y)
 {
     wlmcl_client_t *client_ptr = data_ptr;
+    client_ptr->pointer_focus_surface_ptr = surface;
     if (NULL == client_ptr->attributes.cursor_shape_manager_ptr) return;
 
     struct wp_cursor_shape_device_v1 *shape_device_ptr =
@@ -1183,12 +1194,15 @@ void wlmcl_client_pointer_handle_enter(
 /* ------------------------------------------------------------------------- */
 /** Called when the client looses pointer focus. */
 void wlmcl_client_pointer_handle_leave(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer,
     __UNUSED__ uint32_t serial,
     __UNUSED__ struct wl_surface *surface)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    client_ptr->pointer_focus_surface_ptr = NULL;
+    client_ptr->pending_axis_valid[0] = false;
+    client_ptr->pending_axis_valid[1] = false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1206,35 +1220,63 @@ void wlmcl_client_pointer_handle_motion(
 /* ------------------------------------------------------------------------- */
 /** Called upon pointer button events. */
 void wlmcl_client_pointer_handle_button(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer,
     __UNUSED__ uint32_t serial,
     __UNUSED__ uint32_t time,
-    __UNUSED__ uint32_t button,
-    __UNUSED__ uint32_t state)
+    uint32_t button,
+    uint32_t state)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    struct wlmcl_client_pointer_button_event event = {
+        .wl_surface_ptr = client_ptr->pointer_focus_surface_ptr,
+        .button = button,
+        .pressed = WL_POINTER_BUTTON_STATE_PRESSED == state
+    };
+    wl_signal_emit(&client_ptr->events.pointer_button, &event);
 }
 
 /* ------------------------------------------------------------------------- */
 /** Called upon axis events. */
 void wlmcl_client_pointer_handle_axis(
-    __UNUSED__ void *data,
-    __UNUSED__ struct wl_pointer *wl_pointer,
+    void *data_ptr,
+    struct wl_pointer *wl_pointer,
     __UNUSED__ uint32_t time,
-    __UNUSED__ uint32_t axis,
-    __UNUSED__ wl_fixed_t value)
+    uint32_t axis,
+    wl_fixed_t value)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    if (WL_POINTER_AXIS_HORIZONTAL_SCROLL < axis) return;
+
+    struct wlmcl_client_pointer_axis_event *event_ptr =
+        &client_ptr->pending_axis[axis];
+    if (!client_ptr->pending_axis_valid[axis]) {
+        *event_ptr = (struct wlmcl_client_pointer_axis_event){};
+    }
+    event_ptr->wl_surface_ptr = client_ptr->pointer_focus_surface_ptr;
+    event_ptr->axis = axis;
+    event_ptr->value += wl_fixed_to_double(value);
+    client_ptr->pending_axis_valid[axis] = true;
+
+    // Before version 5, there are no frame events to group the axis events.
+    if (WL_POINTER_FRAME_SINCE_VERSION > wl_pointer_get_version(wl_pointer)) {
+        wlmcl_client_pointer_handle_frame(data_ptr, wl_pointer);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
 /** Called upon frame events. */
 void wlmcl_client_pointer_handle_frame(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    for (int axis = 0; axis < 2; ++axis) {
+        if (!client_ptr->pending_axis_valid[axis]) continue;
+        client_ptr->pending_axis_valid[axis] = false;
+        wl_signal_emit(&client_ptr->events.pointer_axis,
+                       &client_ptr->pending_axis[axis]);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1261,12 +1303,24 @@ void wlmcl_client_pointer_handle_axis_stop(
 /* ------------------------------------------------------------------------- */
 /** Called upon axis click events. */
 void wlmcl_client_pointer_handle_axis_discrete(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer,
-    __UNUSED__ uint32_t axis,
-    __UNUSED__ int32_t discrete)
+    uint32_t axis,
+    int32_t discrete)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    if (WL_POINTER_AXIS_HORIZONTAL_SCROLL < axis) return;
+
+    // Sent before the corresponding `axis` event, within the same frame.
+    struct wlmcl_client_pointer_axis_event *event_ptr =
+        &client_ptr->pending_axis[axis];
+    if (!client_ptr->pending_axis_valid[axis]) {
+        *event_ptr = (struct wlmcl_client_pointer_axis_event){};
+    }
+    event_ptr->wl_surface_ptr = client_ptr->pointer_focus_surface_ptr;
+    event_ptr->axis = axis;
+    event_ptr->discrete += discrete;
+    client_ptr->pending_axis_valid[axis] = true;
 }
 
 /* ------------------------------------------------------------------------- */
