@@ -31,7 +31,9 @@
 #include <wlr/backend.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_virtual_pointer_v1.h>
 #undef WLR_USE_UNSTABLE
 #include <xkbcommon/xkbcommon-keysyms.h>
 
@@ -53,6 +55,11 @@ struct _wlmim_t {
 
     /** Listener for `new_input` signals raised by `wlr_backend`. */
     struct wl_listener        backend_new_input_device_listener;
+
+    /** Virtual pointer manager. Owned by wl_display. */
+    struct wlr_virtual_pointer_manager_v1 *wlr_virtual_pointer_manager_v1_ptr;
+    /** Listener for `new_virtual_pointer` of the virtual pointer manager. */
+    struct wl_listener        new_virtual_pointer_listener;
 
     /** The last-used group of the keyboard layout. Used when using groups. */
     uint32_t                  last_keyboard_group_index;
@@ -111,7 +118,13 @@ struct _wlmim_process_arg {
     uint32_t modifiers;
 };
 
+static void _wlmim_add_input_device(
+    wlmim_t *input_manager_ptr,
+    struct wlr_input_device *wlr_input_device_ptr);
 static void _wlmim_handle_new_input_device(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_handle_new_virtual_pointer(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmim_handle_destroy_input_device(
@@ -221,12 +234,29 @@ wlmim_t *wlmim_input_manager_create(
             _wlmim_handle_new_input_device);
     }
 
+    if (NULL != wl_display_ptr && NULL != wlr_seat_ptr) {
+        input_manager_ptr->wlr_virtual_pointer_manager_v1_ptr =
+            wlr_virtual_pointer_manager_v1_create(wl_display_ptr);
+        if (NULL == input_manager_ptr->wlr_virtual_pointer_manager_v1_ptr) {
+            bs_log(BS_ERROR, "Failed wlr_virtual_pointer_manager_v1_create(%p)",
+                   wl_display_ptr);
+            wlmim_input_manager_destroy(input_manager_ptr);
+            return NULL;
+        }
+        wlmtk_util_connect_listener_signal(
+            &input_manager_ptr->wlr_virtual_pointer_manager_v1_ptr->events.new_virtual_pointer,
+            &input_manager_ptr->new_virtual_pointer_listener,
+            _wlmim_handle_new_virtual_pointer);
+    }
+
     return input_manager_ptr;
 }
 
 /* ------------------------------------------------------------------------- */
 void wlmim_input_manager_destroy(wlmim_t *input_manager_ptr)
 {
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->new_virtual_pointer_listener);
     wlmtk_util_disconnect_listener(
         &input_manager_ptr->backend_new_input_device_listener);
 
@@ -389,19 +419,16 @@ const struct wlmim_cursor_options *wlmim_cursor_options(
 
 /* ------------------------------------------------------------------------- */
 /**
- * Handler for the `new_input` signal raised by `wlr_backend`.
+ * Adds an input device: Creates the keyboard or pointer handle, registers it
+ * and updates the seat's capabilities.
  *
- * @param listener_ptr
- * @param data_ptr
+ * @param input_manager_ptr
+ * @param wlr_input_device_ptr
  */
-void _wlmim_handle_new_input_device(
-    struct wl_listener *listener_ptr,
-    void *data_ptr)
+void _wlmim_add_input_device(
+    wlmim_t *input_manager_ptr,
+    struct wlr_input_device *wlr_input_device_ptr)
 {
-    struct wlr_input_device *wlr_input_device_ptr = data_ptr;
-    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
-        listener_ptr, wlmim_t, backend_new_input_device_listener);
-
     void *handle_ptr = NULL;
     switch (wlr_input_device_ptr->type) {
     case WLR_INPUT_DEVICE_KEYBOARD:
@@ -472,6 +499,54 @@ void _wlmim_handle_new_input_device(
         _wlmim_device_update_capabilities,
         &capabilities);
     wlr_seat_set_capabilities(input_manager_ptr->wlr_seat_ptr, capabilities);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handler for the `new_input` signal raised by `wlr_backend`.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to the new struct wlr_input_device.
+ */
+void _wlmim_handle_new_input_device(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_t, backend_new_input_device_listener);
+    _wlmim_add_input_device(input_manager_ptr, data_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handler for `new_virtual_pointer` of `wlr_virtual_pointer_manager_v1`.
+ *
+ * Adds the virtual pointer like any other pointer device, and maps it to
+ * the output suggested by the client, if any.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to a struct
+ *                            wlr_virtual_pointer_v1_new_pointer_event.
+ */
+void _wlmim_handle_new_virtual_pointer(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_t, new_virtual_pointer_listener);
+    struct wlr_virtual_pointer_v1_new_pointer_event *event_ptr = data_ptr;
+    struct wlr_input_device *wlr_input_device_ptr =
+        &event_ptr->new_pointer->pointer.base;
+
+    _wlmim_add_input_device(input_manager_ptr, wlr_input_device_ptr);
+
+    if (NULL != event_ptr->suggested_output &&
+        NULL != input_manager_ptr->cursor_ptr) {
+        wlr_cursor_map_input_to_output(
+            wlmim_cursor_wlr_cursor(input_manager_ptr->cursor_ptr),
+            wlr_input_device_ptr,
+            event_ptr->suggested_output);
+    }
 }
 
 /* ------------------------------------------------------------------------- */

@@ -87,6 +87,14 @@ Permits clients to power outputs off and on (DPMS), for example
   output layout. Outputs disabled through configuration are not affected.
 * Reference: https://wayland.app/protocols/wlr-output-power-management-unstable-v1
 
+# wlr virtual pointer
+
+Permits clients to emulate a pointer device, eg. `wlrctl`, `ydotool`-like
+tools, on-screen pointer helpers or remote desktop servers (`wayvnc`).
+
+* Status: Supported.
+* Reference: https://wayland.app/protocols/wlr-virtual-pointer-unstable-v1
+
 # wlr screencopy
 
 This protocol allows clients to ask the compositor to copy part of the screen
