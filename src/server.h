@@ -83,6 +83,8 @@ typedef struct {
 struct _wlmaker_server_t {
     /** Files module handle. */
     wlm_util_files_t           *files_ptr;
+    /** The `--state_file` argument, or NULL. Where state gets stored. */
+    char                      *state_fname_ptr;
     /** Configuration dictionnary. */
     bspl_dict_t               *config_dict_ptr;
     /** Copy of the options. */

@@ -99,6 +99,11 @@ struct wlmcl_client_events {
      * struct @ref wlmcl_client_pointer_axis_event *.
      */
     struct wl_signal          pointer_axis;
+    /**
+     * The pointer left one of the client's surfaces. Provides the
+     * struct wl_surface *.
+     */
+    struct wl_signal          pointer_leave;
 };
 
 /** Event argument for @ref wlmcl_client_events::pointer_button. */
@@ -215,6 +220,18 @@ const struct wlmcl_client_attributes *wlmcl_client_attributes(
 
 /** @return A pointer to @ref wlmcl_client_t::events. */
 struct wlmcl_client_events *wlmcl_client_events(wlmcl_client_t *wlmcl_client_ptr);
+
+/**
+ * Adds a signal to those monitored by @ref wlmcl_client_signal_fd (initially
+ * SIGINT and SIGTERM). It is blocked from regular delivery.
+ *
+ * @param wlmcl_client_ptr
+ * @param signal_number
+ *
+ * @return true on success.
+ */
+bool wlmcl_client_add_signal(wlmcl_client_t *wlmcl_client_ptr,
+                             int signal_number);
 
 /** @return The signal file descriptor monitored by the client. */
 int wlmcl_client_signal_fd(wlmcl_client_t *wlmcl_client_ptr);

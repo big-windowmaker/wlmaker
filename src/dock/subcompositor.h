@@ -51,6 +51,9 @@ typedef struct _wlmdock_subcompositor_t wlmdock_subcompositor_t;
  * @param cursor_style_ptr
  * @param container_ptr
  * @param positioning_ptr
+ * @param namespace_ptr       Namespace of the layer surface. The compositor
+ *                            lets the user drag a surface of "wlmdock" (the
+ *                            Dock) to other corners.
  *
  * @return Handle of the compositor, or NULL on error.
  */
@@ -61,7 +64,8 @@ wlmdock_subcompositor_t *wlmdock_subcompositor_create(
     struct zwlr_layer_shell_v1 *zwlr_layer_shell_ptr,
     struct wlmim_cursor_style *cursor_style_ptr,
     wlmtk_container_t *container_ptr,
-    const wlmtk_dock_positioning_t *positioning_ptr);
+    const wlmtk_dock_positioning_t *positioning_ptr,
+    const char *namespace_ptr);
 
 /**
  * Prepares the subcompositor.
@@ -76,6 +80,16 @@ void wlmdock_subcompositor_prepare(
     struct wlr_backend *wlr_backend_ptr,
     struct wlr_allocator *wlr_allocator_ptr,
     struct wlr_renderer *wlr_renderer_ptr);
+
+/**
+ * Moves the layer surface to a new position, eg. another corner.
+ *
+ * @param subcompositor_ptr
+ * @param positioning_ptr
+ */
+void wlmdock_subcompositor_set_positioning(
+    wlmdock_subcompositor_t *subcompositor_ptr,
+    const wlmtk_dock_positioning_t *positioning_ptr);
 
 /**
  * Destroys the subcompositor.

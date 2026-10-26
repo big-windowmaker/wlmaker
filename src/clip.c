@@ -22,16 +22,22 @@
 #include "clip.h"
 
 #include <cairo.h>
+#include <inttypes.h>
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <linux/input-event-codes.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <signal.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <wayland-server-core.h>
 #include <wayland-util.h>
 #define WLR_USE_UNSTABLE
+#include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/util/edges.h>
@@ -42,6 +48,8 @@
 #include "backend/output_config.h"
 #include "context_menu.h"
 #include "dockapps.h"
+#include "dock_position.h"
+#include "input/manager.h"
 #include "toolkit/toolkit.h"
 #include "util/files.h"
 
@@ -95,6 +103,21 @@ struct _wlmaker_clip_t {
     /** Whether the 'next' button had been pressed. */
     bool                      next_button_pressed;
 
+    /** Whether the left button is held on the Clip: It may become a drag. */
+    bool                      drag_pending;
+    /** Whether the Clip is being dragged to another corner. */
+    bool                      dragging;
+    /** Pointer position where the button was pressed, in layout coords. */
+    double                    drag_start_x;
+    /** Pointer position where the button was pressed, in layout coords. */
+    double                    drag_start_y;
+    /** Corner for the live preview while dragging, applied when idle. */
+    wlmaker_dock_place_t      preview_place;
+    /** Applies @ref wlmaker_clip_t::preview_place, from the event loop. */
+    struct wl_event_source    *preview_event_source_ptr;
+    /** Monitors SIGUSR1: `wlmdock --clip` changed the Clip's launchers. */
+    struct wl_event_source    *sigusr1_event_source_ptr;
+
     /** Listener for @ref wlmtk_desktop_events_t::workspace_changed. */
     struct wl_listener        workspace_changed_listener;
     /** Listener for wlr_output_layout::events.change. */
@@ -121,6 +144,24 @@ static bool _wlmaker_clip_update_tiles(
     wlmaker_clip_t *clip_ptr,
     const struct wlmtk_tile_style *tile_style_ptr);
 static void _wlmaker_clip_apply_button_state(wlmaker_clip_t *clip_ptr);
+static bool _wlmaker_clip_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr);
+static void _wlmaker_clip_pointer_grab_cancel(wlmtk_element_t *element_ptr);
+static void _wlmaker_clip_end_drag(wlmaker_clip_t *clip_ptr);
+static void _wlmaker_clip_apply_preview(void *data_ptr);
+static int _wlmaker_clip_handle_sigusr1(int signal_number, void *data_ptr);
+static bool _wlmaker_clip_set_spacers(
+    wlmaker_clip_t *clip_ptr,
+    size_t spacers,
+    const struct wlmtk_tile_style *tile_style_ptr);
+static void _wlmaker_clip_atfork_child(void);
+static bool _wlmaker_clip_place_at_cursor(
+    wlmaker_clip_t *clip_ptr,
+    wlmaker_dock_place_t *place_ptr);
+static void _wlmaker_clip_set_place(
+    wlmtk_dock_t *dock_ptr,
+    wlmaker_dock_place_t place);
 static void _wlmaker_clip_open_menu(wlmaker_clip_t *clip_ptr);
 static bool _wlmaker_clip_update_spacers(
     wlmaker_clip_t *clip_ptr,
@@ -159,7 +200,12 @@ static void _wlmaker_clip_handle_theme_changed(
 static const wlmtk_element_vmt_t _wlmaker_clip_element_vmt = {
     .pointer_axis = _wlmaker_clip_pointer_axis,
     .pointer_button = _wlmaker_clip_pointer_button,
+    .pointer_accepts_motion = _wlmaker_clip_pointer_accepts_motion,
+    .pointer_grab_cancel = _wlmaker_clip_pointer_grab_cancel,
 };
+
+/** Distance the pointer must move with the button held, to start a drag. */
+static const double _wlmaker_clip_drag_threshold = 8;
 
 /** TODO: Replace this. */
 typedef struct {
@@ -369,6 +415,19 @@ wlmaker_clip_t *wlmaker_clip_create(
     }
     server_ptr->dockapps_ptr = clip_ptr->dockapps_ptr;
 
+    // `wlmdock --clip` signals when the Clip's launchers were changed. The
+    // signal is blocked for regular delivery: Not for launched programs.
+    clip_ptr->sigusr1_event_source_ptr = wl_event_loop_add_signal(
+        wl_display_get_event_loop(server_ptr->wl_display_ptr),
+        SIGUSR1,
+        _wlmaker_clip_handle_sigusr1,
+        clip_ptr);
+    static bool atfork_registered = false;
+    if (!atfork_registered &&
+        0 == pthread_atfork(NULL, NULL, _wlmaker_clip_atfork_child)) {
+        atfork_registered = true;
+    }
+
     server_ptr->clip_dock_ptr = clip_ptr->wlmtk_dock_ptr;
     bs_log(BS_INFO, "Created clip %p", clip_ptr);
     return clip_ptr;
@@ -379,6 +438,16 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
 {
     if (NULL != clip_ptr->server_ptr) {
         wlmaker_context_menu_cancel(clip_ptr->server_ptr, clip_ptr);
+    }
+    if (NULL != clip_ptr->preview_event_source_ptr) {
+        wl_event_source_remove(clip_ptr->preview_event_source_ptr);
+        clip_ptr->preview_event_source_ptr = NULL;
+    }
+    if (NULL != clip_ptr->sigusr1_event_source_ptr) {
+        wl_event_source_remove(clip_ptr->sigusr1_event_source_ptr);
+        clip_ptr->sigusr1_event_source_ptr = NULL;
+    }
+    if (NULL != clip_ptr->server_ptr) {
         clip_ptr->server_ptr->clip_dock_ptr = NULL;
         clip_ptr->server_ptr->dockapps_ptr = NULL;
     }
@@ -452,6 +521,82 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
     free(clip_ptr);
 }
 
+/* ------------------------------------------------------------------------- */
+void wlmaker_clip_move_dock(
+    wlmaker_server_t *server_ptr,
+    const char *section_ptr,
+    wlmaker_dock_place_t place)
+{
+    bool is_clip = (0 == strcmp(section_ptr, "Clip"));
+    const char *other_section_ptr = is_clip ? "Dock" : "Clip";
+
+    bspl_dict_t *state_dict_ptr = wlmaker_state_load(
+        server_ptr->files_ptr, server_ptr->state_fname_ptr);
+    wlmaker_dock_place_t from = {}, other = {};
+    bool have_from = wlmaker_dock_place_decode(
+        bspl_dict_get_dict(state_dict_ptr, section_ptr), &from);
+    bool have_other = wlmaker_dock_place_decode(
+        bspl_dict_get_dict(state_dict_ptr, other_section_ptr), &other);
+    bspl_dict_unref(state_dict_ptr);
+
+    // The Clip is live: That's where it comes from, if it was dragged.
+    if (is_clip && NULL != server_ptr->clip_dock_ptr) {
+        const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
+            server_ptr->clip_dock_ptr);
+        if (!have_from) from = (wlmaker_dock_place_t){
+                pos_ptr->edge, pos_ptr->anchor };
+        have_from = true;
+    }
+    bool other_moved = have_from && have_other &&
+        wlmaker_dock_place_resolve(place, from, &other);
+
+    bs_log(BS_INFO, "Moving %s to corner 0x%"PRIx32"%s", section_ptr,
+           wlmaker_dock_place_corner(place),
+           other_moved ? ", swapping with the other dock" : "");
+    bspl_dict_t *d = wlmaker_dock_place_encode(place);
+    if (NULL != d) {
+        wlmaker_state_store_section(server_ptr->files_ptr,
+                                    server_ptr->state_fname_ptr,
+                                    section_ptr, d);
+        bspl_dict_unref(d);
+    }
+    if (other_moved) {
+        d = wlmaker_dock_place_encode(other);
+        if (NULL != d) {
+            wlmaker_state_store_section(server_ptr->files_ptr,
+                                        server_ptr->state_fname_ptr,
+                                        other_section_ptr, d);
+            bspl_dict_unref(d);
+        }
+    }
+
+    if (NULL != server_ptr->clip_dock_ptr) {
+        if (is_clip) _wlmaker_clip_set_place(server_ptr->clip_dock_ptr, place);
+        if (!is_clip && other_moved) {
+            _wlmaker_clip_set_place(server_ptr->clip_dock_ptr, other);
+        }
+    }
+
+    // wlmdock (the Dock, and the Clip's launchers) re-reads the state file
+    // on SIGUSR1.
+    struct wl_list *clients_ptr = wl_display_get_client_list(
+        server_ptr->wl_display_ptr);
+    struct wl_client *wl_client_ptr;
+    wl_client_for_each(wl_client_ptr, clients_ptr) {
+        char *name_ptr = wlmaker_dockapps_client_name(wl_client_ptr);
+        if (NULL == name_ptr) continue;
+        if (0 == strcmp(name_ptr, "wlmdock")) {
+            pid_t pid = 0;
+            wl_client_get_credentials(wl_client_ptr, &pid, NULL, NULL);
+            if (1 < pid && 0 != kill(pid, SIGUSR1)) {
+                bs_log(BS_WARNING | BS_ERRNO, "Failed kill(%"PRIdMAX
+                       ", SIGUSR1)", (intmax_t)pid);
+            }
+        }
+        free(name_ptr);
+    }
+}
+
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -513,6 +658,21 @@ bool _wlmaker_clip_pointer_button(
 
     if (BTN_LEFT != button_event_ptr->button) return true;
 
+    // Releasing the button that was held on the Clip (not on its buttons):
+    // Ends a drag, and places the Clip in that corner.
+    if (clip_ptr->drag_pending &&
+        WLMTK_BUTTON_UP == button_event_ptr->type) {
+        bool dragging = clip_ptr->dragging;
+        wlmaker_dock_place_t place;
+        bool placed = dragging &&
+            _wlmaker_clip_place_at_cursor(clip_ptr, &place);
+        _wlmaker_clip_end_drag(clip_ptr);
+        if (placed) {
+            wlmaker_clip_move_dock(clip_ptr->server_ptr, "Clip", place);
+        }
+        return true;
+    }
+
     switch (button_event_ptr->type) {
     case WLMTK_BUTTON_DOWN:
         // Pointer button tressed. Translate to button press if in area.
@@ -524,6 +684,18 @@ bool _wlmaker_clip_pointer_button(
                    clip_ptr->pointer_inside_prev_button) {
             clip_ptr->next_button_pressed = false;
             clip_ptr->prev_button_pressed = true;
+        } else if (NULL != element_ptr->parent_container_ptr &&
+                   NULL != clip_ptr->server_ptr->input_manager_ptr) {
+            // Elsewhere on the Clip: Moving it with the button held drags
+            // the Clip to another corner, like on Window Maker.
+            struct wlr_cursor *c = wlmim_wlr_cursor(
+                clip_ptr->server_ptr->input_manager_ptr);
+            clip_ptr->drag_pending = true;
+            clip_ptr->dragging = false;
+            clip_ptr->drag_start_x = c->x;
+            clip_ptr->drag_start_y = c->y;
+            wlmtk_container_pointer_grab(
+                element_ptr->parent_container_ptr, element_ptr);
         }
         break;
 
@@ -590,6 +762,30 @@ static void _wlmaker_clip_menu_destroy_last(void *ud_ptr)
         ud_ptr, WLMAKER_ACTION_WORKSPACE_DESTROY_LAST, NULL);
 }
 
+/** Moves the Clip to the corner `corner` XOR `flip`. */
+static void _wlmaker_clip_flip(wlmaker_clip_t *clip_ptr, uint32_t flip)
+{
+    const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
+        clip_ptr->wlmtk_dock_ptr);
+    wlmaker_dock_place_t place = { pos_ptr->edge, pos_ptr->anchor };
+    place = wlmaker_dock_place_from_corner(
+        wlmaker_dock_place_corner(place) ^ flip,
+        wlmaker_dock_place_vertical(place));
+    wlmaker_clip_move_dock(clip_ptr->server_ptr, "Clip", place);
+}
+
+/** Context menu callback: Moves the Clip to the other side. */
+static void _wlmaker_clip_menu_flip_side(void *ud_ptr)
+{
+    _wlmaker_clip_flip(ud_ptr, WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
+}
+
+/** Context menu callback: Moves the Clip to the other end (top/bottom). */
+static void _wlmaker_clip_menu_flip_end(void *ud_ptr)
+{
+    _wlmaker_clip_flip(ud_ptr, WLR_EDGE_TOP | WLR_EDGE_BOTTOM);
+}
+
 /* ------------------------------------------------------------------------- */
 /**
  * Opens the Clip's right-click menu: Workspace navigation and management.
@@ -627,6 +823,18 @@ void _wlmaker_clip_open_menu(wlmaker_clip_t *clip_ptr)
             cm_ptr, "Destroy Last Workspace", _wlmaker_clip_menu_destroy_last,
             server_ptr);
     }
+    // Moving the Clip to another corner. Like dragging it.
+    const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
+        clip_ptr->wlmtk_dock_ptr);
+    uint32_t corner = pos_ptr->edge | pos_ptr->anchor;
+    rv = rv && wlmaker_context_menu_add_item(
+        cm_ptr,
+        (corner & WLR_EDGE_LEFT) ? "Move to Right Side" : "Move to Left Side",
+        _wlmaker_clip_menu_flip_side, clip_ptr);
+    rv = rv && wlmaker_context_menu_add_item(
+        cm_ptr,
+        (corner & WLR_EDGE_TOP) ? "Move to Bottom" : "Move to Top",
+        _wlmaker_clip_menu_flip_end, clip_ptr);
     if (!rv) {
         wlmaker_context_menu_destroy(cm_ptr);
         return;
@@ -1100,6 +1308,204 @@ bool _wlmaker_clip_update_spacers(
     }
     wlr_buffer_drop(wlr_buffer_ptr);
     return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Applies `place` to the dock, keeping its other positioning parameters. */
+void _wlmaker_clip_set_place(
+    wlmtk_dock_t *dock_ptr,
+    wlmaker_dock_place_t place)
+{
+    wlmtk_dock_positioning_t pos = *wlmtk_dock_get_positioning(dock_ptr);
+    if (pos.edge == place.edge && pos.anchor == place.anchor) return;
+    pos.edge = place.edge;
+    pos.anchor = place.anchor;
+    if (!wlmtk_dock_set_positioning(dock_ptr, &pos)) {
+        bs_log(BS_WARNING, "Failed to move dock %p to edge 0x%"PRIx32
+               ", anchor 0x%"PRIx32, dock_ptr, place.edge, place.anchor);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Computes the Clip's place for the quadrant the pointer is in. */
+bool _wlmaker_clip_place_at_cursor(
+    wlmaker_clip_t *clip_ptr,
+    wlmaker_dock_place_t *place_ptr)
+{
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    struct wlr_cursor *c = wlmim_wlr_cursor(server_ptr->input_manager_ptr);
+    struct wlr_output *wlr_output_ptr = wlr_output_layout_output_at(
+        server_ptr->wlr_output_layout_ptr, c->x, c->y);
+    if (NULL == wlr_output_ptr) return false;
+    struct wlr_box box;
+    wlr_output_layout_get_box(
+        server_ptr->wlr_output_layout_ptr, wlr_output_ptr, &box);
+    const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
+        clip_ptr->wlmtk_dock_ptr);
+    *place_ptr = wlmaker_dock_place_at(
+        &box, c->x, c->y,
+        wlmaker_dock_place_vertical(
+            (wlmaker_dock_place_t){ pos_ptr->edge, pos_ptr->anchor }));
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::pointer_accepts_motion: With the
+ * button held, starts dragging beyond a threshold; while dragging, moves the
+ * Clip to the corner of the quadrant the pointer is in (a live preview).
+ */
+bool _wlmaker_clip_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr)
+{
+    wlmaker_clip_t *clip_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmaker_clip_t,
+        super_tile.super_container.super_element);
+
+    if (clip_ptr->drag_pending) {
+        struct wlr_cursor *c = wlmim_wlr_cursor(
+            clip_ptr->server_ptr->input_manager_ptr);
+        double dx = c->x - clip_ptr->drag_start_x;
+        double dy = c->y - clip_ptr->drag_start_y;
+        if (!clip_ptr->dragging &&
+            dx * dx + dy * dy >=
+            _wlmaker_clip_drag_threshold * _wlmaker_clip_drag_threshold) {
+            clip_ptr->dragging = true;
+        }
+        wlmaker_dock_place_t place;
+        const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
+            clip_ptr->wlmtk_dock_ptr);
+        if (clip_ptr->dragging &&
+            _wlmaker_clip_place_at_cursor(clip_ptr, &place) &&
+            (place.edge != pos_ptr->edge || place.anchor != pos_ptr->anchor) &&
+            NULL == clip_ptr->preview_event_source_ptr) {
+            // Not while dispatching the pointer event: Moving re-adds tiles.
+            clip_ptr->preview_place = place;
+            clip_ptr->preview_event_source_ptr = wl_event_loop_add_idle(
+                wl_display_get_event_loop(
+                    clip_ptr->server_ptr->wl_display_ptr),
+                _wlmaker_clip_apply_preview,
+                clip_ptr);
+        }
+    }
+
+    return clip_ptr->orig_super_element_vmt.pointer_accepts_motion(
+        element_ptr, motion_event_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Moves the Clip to the preview's corner, and keeps the drag going. */
+void _wlmaker_clip_apply_preview(void *data_ptr)
+{
+    wlmaker_clip_t *clip_ptr = data_ptr;
+    clip_ptr->preview_event_source_ptr = NULL;
+    if (!clip_ptr->dragging) return;
+
+    // Re-adding the tile cancels the pointer grab: Restore it.
+    _wlmaker_clip_set_place(clip_ptr->wlmtk_dock_ptr, clip_ptr->preview_place);
+    clip_ptr->drag_pending = true;
+    clip_ptr->dragging = true;
+    wlmtk_element_t *element_ptr = wlmtk_tile_element(&clip_ptr->super_tile);
+    if (NULL != element_ptr->parent_container_ptr) {
+        wlmtk_container_pointer_grab(
+            element_ptr->parent_container_ptr, element_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Implements @ref wlmtk_element_vmt_t::pointer_grab_cancel. Ends a drag. */
+void _wlmaker_clip_pointer_grab_cancel(wlmtk_element_t *element_ptr)
+{
+    wlmaker_clip_t *clip_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmaker_clip_t,
+        super_tile.super_container.super_element);
+    clip_ptr->drag_pending = false;
+    clip_ptr->dragging = false;
+    clip_ptr->orig_super_element_vmt.pointer_grab_cancel(element_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Ends a (pending) drag: Releases the pointer grab. */
+void _wlmaker_clip_end_drag(wlmaker_clip_t *clip_ptr)
+{
+    wlmtk_element_t *element_ptr = wlmtk_tile_element(&clip_ptr->super_tile);
+    clip_ptr->drag_pending = false;
+    clip_ptr->dragging = false;
+    if (NULL != clip_ptr->preview_event_source_ptr) {
+        wl_event_source_remove(clip_ptr->preview_event_source_ptr);
+        clip_ptr->preview_event_source_ptr = NULL;
+    }
+    if (NULL != element_ptr->parent_container_ptr) {
+        wlmtk_container_pointer_grab_release(
+            element_ptr->parent_container_ptr, element_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Unblocks SIGUSR1 in forked processes: Only wlmaker monitors it. */
+void _wlmaker_clip_atfork_child(void)
+{
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGUSR1);
+    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles SIGUSR1, sent by `wlmdock --clip` when it changed the Clip's
+ * launchers (eg. one was removed): Updates the room left for them.
+ */
+int _wlmaker_clip_handle_sigusr1(__UNUSED__ int signal_number, void *data_ptr)
+{
+    wlmaker_clip_t *clip_ptr = data_ptr;
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    bspl_dict_t *state_dict_ptr = wlmaker_state_load(
+        server_ptr->files_ptr, server_ptr->state_fname_ptr);
+    bspl_array_t *launchers_ptr = bspl_dict_get_array(
+        bspl_dict_get_dict(state_dict_ptr, "Clip"), "Launchers");
+    size_t spacers = NULL != launchers_ptr ? bspl_array_size(launchers_ptr) : 0;
+    bspl_dict_unref(state_dict_ptr);
+
+    bs_log(BS_INFO, "Clip %p: Room for %zu launchers.", clip_ptr, spacers);
+    _wlmaker_clip_set_spacers(clip_ptr, spacers, &server_ptr->style_ptr->tile);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Sets the number of empty tiles after the Clip, for its launchers. */
+bool _wlmaker_clip_set_spacers(
+    wlmaker_clip_t *clip_ptr,
+    size_t spacers,
+    const struct wlmtk_tile_style *tile_style_ptr)
+{
+    if (spacers == clip_ptr->spacer_tiles) return true;
+
+    for (size_t i = 0; i < clip_ptr->spacer_tiles; ++i) {
+        wlmtk_tile_t *t_ptr = &clip_ptr->spacer_tiles_ptr[i];
+        if (NULL != wlmtk_tile_element(t_ptr)->parent_container_ptr) {
+            wlmtk_dock_remove_tile(clip_ptr->wlmtk_dock_ptr, t_ptr);
+        }
+        wlmtk_tile_fini(t_ptr);
+    }
+    if (NULL != clip_ptr->spacer_tiles_ptr) free(clip_ptr->spacer_tiles_ptr);
+    clip_ptr->spacer_tiles_ptr = NULL;
+    clip_ptr->spacer_tiles = 0;
+    if (0 == spacers) return true;
+
+    clip_ptr->spacer_tiles_ptr = logged_calloc(spacers, sizeof(wlmtk_tile_t));
+    if (NULL == clip_ptr->spacer_tiles_ptr) return false;
+    for (size_t i = 0; i < spacers; ++i) {
+        wlmtk_tile_t *t_ptr = &clip_ptr->spacer_tiles_ptr[i];
+        if (!wlmtk_tile_init(t_ptr, tile_style_ptr)) break;
+        clip_ptr->spacer_tiles = i + 1;
+        wlmtk_element_set_visible(wlmtk_tile_element(t_ptr), true);
+        // Right after the Clip, before the dock-apps.
+        wlmtk_dock_add_tile(clip_ptr->wlmtk_dock_ptr, t_ptr);
+        wlmtk_dock_move_tile(clip_ptr->wlmtk_dock_ptr, t_ptr, 1 + i);
+    }
+    return _wlmaker_clip_update_spacers(clip_ptr, tile_style_ptr);
 }
 
 /* == Unit tests =========================================================== */

@@ -23,6 +23,7 @@
 
 #include <libbase/libbase.h>
 #include <stdbool.h>
+#include <sys/types.h>
 
 /** Forward definition for the subprocess monitor. */
 typedef struct _wlm_util_subprocess_monitor_t wlm_util_subprocess_monitor_t;
@@ -101,6 +102,16 @@ struct wlm_util_subprocess *wlm_util_subprocess_monitor_entrust(
  */
 void wlm_util_subprocess_monitor_cede(
     wlm_util_subprocess_monitor_t *monitor_ptr,
+    struct wlm_util_subprocess *subprocess_handle_ptr);
+
+/**
+ * Returns the process ID of the subprocess.
+ *
+ * @param subprocess_handle_ptr
+ *
+ * @return The PID, or 0 if not known.
+ */
+pid_t wlm_util_subprocess_pid(
     struct wlm_util_subprocess *subprocess_handle_ptr);
 
 /**

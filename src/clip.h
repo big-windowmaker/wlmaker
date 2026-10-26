@@ -34,6 +34,7 @@
 typedef struct _wlmaker_clip_t wlmaker_clip_t;
 
 #include "config.h"
+#include "dock_position.h"
 #include "server.h"
 
 #ifdef __cplusplus
@@ -60,6 +61,21 @@ wlmaker_clip_t *wlmaker_clip_create(
  * @param clip_ptr
  */
 void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr);
+
+/**
+ * Moves the Dock (state section "Dock", shown by `wlmdock`) or the Clip to
+ * another corner, keeping both out of the same one (the other one takes the
+ * moved one's former corner). Stores the result in the state file, moves the
+ * Clip, and tells `wlmdock` processes to re-read their position.
+ *
+ * @param server_ptr
+ * @param section_ptr         "Dock" or "Clip".
+ * @param place
+ */
+void wlmaker_clip_move_dock(
+    wlmaker_server_t *server_ptr,
+    const char *section_ptr,
+    wlmaker_dock_place_t place);
 
 /** Unit test set. */
 extern const bs_test_set_t wlmaker_clip_test_set;

@@ -90,6 +90,39 @@ void wlmdock_tilebox_remove_tile(
     wlmdock_tilebox_t *tilebox_ptr,
     wlmtk_tile_t *tile_ptr);
 
+/**
+ * Sets whether tiles are stacked from the end (eg. for a dock anchored at
+ * the bottom). The tiles keep their order, as counted from the anchor.
+ *
+ * @param tilebox_ptr
+ * @param reverse
+ */
+void wlmdock_tilebox_set_reverse(wlmdock_tilebox_t *tilebox_ptr, bool reverse);
+
+/**
+ * Returns the tiles in order from the anchor.
+ *
+ * @param tilebox_ptr
+ * @param tiles_ptr           Array to fill, of `max_tiles` elements.
+ * @param max_tiles
+ *
+ * @return The number of tiles. May be larger than `max_tiles`.
+ */
+size_t wlmdock_tilebox_tiles(wlmdock_tilebox_t *tilebox_ptr,
+                             wlmtk_tile_t **tiles_ptr,
+                             size_t max_tiles);
+
+/**
+ * Returns where the tile is, in coordinates of the tile box' element.
+ *
+ * @param tilebox_ptr
+ * @param tile_ptr
+ *
+ * @return The tile's box.
+ */
+struct wlr_box wlmdock_tilebox_tile_box(wlmdock_tilebox_t *tilebox_ptr,
+                                        wlmtk_tile_t *tile_ptr);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
