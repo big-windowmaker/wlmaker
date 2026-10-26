@@ -118,9 +118,23 @@ void wlmtk_dock_remove_tile(
     wlmtk_dock_t *dock_ptr,
     wlmtk_tile_t *tile_ptr);
 
-/** @return The positioning `dock_ptr` was created with. */
+/** @return The current positioning of `dock_ptr`. */
 const wlmtk_dock_positioning_t *wlmtk_dock_get_positioning(
     wlmtk_dock_t *dock_ptr);
+
+/**
+ * Moves the dock to another edge and anchor, eg. to another corner of the
+ * output. The tiles keep their order, counted from the anchor.
+ *
+ * @param dock_ptr
+ * @param positioning_ptr
+ *
+ * @return false if the positioning would change the dock's orientation:
+ *     That is not supported.
+ */
+bool wlmtk_dock_set_positioning(
+    wlmtk_dock_t *dock_ptr,
+    const wlmtk_dock_positioning_t *positioning_ptr);
 
 /** @return Number of tiles in the dock. */
 size_t wlmtk_dock_tiles(wlmtk_dock_t *dock_ptr);
