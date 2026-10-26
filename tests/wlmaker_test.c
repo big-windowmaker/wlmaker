@@ -28,6 +28,7 @@
 #include "config.h"
 #include "context_menu.h"
 #include "corner.h"
+#include "dock_position.h"
 #include "dockapps.h"
 #include "layer_panel.h"
 #include "lock_mgr.h"
@@ -58,6 +59,7 @@ int main(int argc, const char **argv)
         &wlmaker_config_test_set,
         &wlmaker_context_menu_test_set,
         &wlmaker_corner_test_set,
+        &wlmaker_dock_position_test_set,
         &wlmaker_dockapps_test_set,
         &wlmaker_layer_panel_test_set,
         &wlmaker_lock_mgr_test_set,

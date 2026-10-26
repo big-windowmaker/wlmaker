@@ -181,6 +181,14 @@ error:
     return NULL;
 }
 
+/* ------------------------------------------------------------------------- */
+pid_t wlm_util_subprocess_pid(
+    struct wlm_util_subprocess *subprocess_handle_ptr)
+{
+    if (NULL == subprocess_handle_ptr->subprocess_ptr) return 0;
+    return bs_subprocess_pid(subprocess_handle_ptr->subprocess_ptr);
+}
+
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */

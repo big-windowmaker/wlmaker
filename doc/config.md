@@ -201,7 +201,8 @@ holds the workspaces, and the setup of the *Dock* (`wlmdock`) and the *Clip*.
 
   Dock-apps can be re-arranged by dragging them with the left mouse button,
   while holding the `MoveWindowModifier` (see @ref config_file, default
-  `Alt`). The resulting order is stored in `Dockapps.plist`, in the user's
+  `Alt`) or on the tile's border; or with *Move Up* / *Move Down* from the
+  tile's menu (right button, same conditions). The resulting order is stored in `Dockapps.plist`, in the user's
   configuration directory (`~/.config/wlmaker/`). When that file exists, it
   takes precedence over `Dockapps`. Remove it to return to `Dockapps`.
 
@@ -213,6 +214,12 @@ holds the workspaces, and the setup of the *Dock* (`wlmdock`) and the *Clip*.
 
 * *Optional* `Margin`: For `wlmdock --clip` only: Distance of the launchers
   from the anchor, in pixels. Defaults to one tile, ie. right below the Clip.
+
+The Clip can be dragged to another corner of the output with the left mouse
+button (not on its workspace buttons), or moved with *Move to …* from its
+menu (right button). The new `Edge` and `Anchor` are stored in the state file
+(the `--state_file`, or `~/.config/wlmaker/State.plist`). If the Dock is in
+that corner, the Dock moves to where the Clip was.
 
 Example:
 
@@ -242,3 +249,10 @@ Read by `wlmdock` (without `--clip`).
     as running only while processes it launched itself are alive.
 
 * *Optional* `Margin`: Distance from the anchor, in pixels. Defaults to 0.
+
+The Dock can be dragged to another corner with the left mouse button: Moving
+the pointer by more than a few pixels with the button held drags it, a click
+launches. Its launchers' menu (right button) offers *Launch*, *Kill* (for
+processes it launched), *Remove* (stored in the state file) and moving it to
+the other side or end. Changes are stored in the state file; `wlmdock` re-reads
+its position on `SIGUSR1`, which wlmaker sends after moving it.

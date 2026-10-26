@@ -271,7 +271,6 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
 
     bspl_dict_t *state_dict_ptr = wlmaker_state_load(
         files_ptr, wlmaker_arg_state_file_ptr);
-    if (NULL != wlmaker_arg_state_file_ptr) free(wlmaker_arg_state_file_ptr);
     if (NULL == state_dict_ptr) {
         fprintf(stderr, "Failed to load & initialize state.\n");
         return EXIT_FAILURE;
@@ -291,6 +290,9 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
     wlmaker_server_t *server_ptr = wlmaker_server_create(
         config_dict_ptr, files_ptr, &style, &wlmaker_server_options);
     if (NULL == server_ptr) return EXIT_FAILURE;
+    // Kept, for storing changes (eg. a Dock moved to another corner).
+    server_ptr->state_fname_ptr = wlmaker_arg_state_file_ptr;
+    wlmaker_arg_state_file_ptr = NULL;
 
     // TODO(kaeser@gubbe.ch): Uh, that's ugly...
     server_ptr->root_menu_ptr = wlmaker_root_menu_create(

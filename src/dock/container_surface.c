@@ -20,6 +20,7 @@
 
 #include "container_surface.h"
 
+#include <drm_fourcc.h>
 #include <libbase/libbase.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -35,6 +36,7 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/types/wlr_seat.h>
 #undef WLR_USE_UNSTABLE
 
@@ -53,6 +55,12 @@ struct wlmdock_container_surface {
 
     /** The local scene graph, to represent all from @ref container. */
     struct wlr_scene          *wlr_scene_ptr;
+    /**
+     * A fully transparent buffer below everything, marked as opaque: The
+     * scene would otherwise clear areas without content (eg. beside the menu)
+     * to opaque black. This one gets copied into the output's buffer.
+     */
+    struct wlr_scene_buffer   *transparent_buffer_ptr;
     /** For `events.frame` of @ref wlr_output_ptr. */
     struct wl_listener        output_frame_listener;
     /** For `events.destroy` of @ref wlr_output_ptr. */
@@ -99,6 +107,12 @@ struct wlmdock_container_surface *wlmdock_container_surface_create(
         return NULL;
     }
 
+    container_surface_ptr->transparent_buffer_ptr = wlr_scene_buffer_create(
+        &container_surface_ptr->wlr_scene_ptr->tree, NULL);
+    if (NULL == container_surface_ptr->transparent_buffer_ptr) {
+        wlmdock_container_surface_destroy(container_surface_ptr);
+        return NULL;
+    }
     if (!wlmtk_container_init_attached(
             &container_surface_ptr->container,
             &container_surface_ptr->wlr_scene_ptr->tree)) {
@@ -222,6 +236,8 @@ void wlmdock_container_surface_commit_size(
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, width > 0 && height > 0);
     wlr_output_state_set_custom_mode(&state, width, height, 0);
+    // With alpha: Areas without content are transparent.
+    wlr_output_state_set_render_format(&state, DRM_FORMAT_ARGB8888);
     if (!wlr_output_commit_state(
             container_surface_ptr->wlr_output_ptr, &state)) {
         // Report once: The dock will not be visible.
@@ -234,6 +250,20 @@ void wlmdock_container_surface_commit_size(
         }
     }
     wlr_output_state_finish(&state);
+
+    // Transparent where there is no content.
+    struct wlr_buffer *wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(
+        width, height);
+    if (NULL != wlr_buffer_ptr) {
+        wlr_scene_buffer_set_buffer(
+            container_surface_ptr->transparent_buffer_ptr, wlr_buffer_ptr);
+        wlr_buffer_drop(wlr_buffer_ptr);
+        pixman_region32_t region;
+        pixman_region32_init_rect(&region, 0, 0, width, height);
+        wlr_scene_buffer_set_opaque_region(
+            container_surface_ptr->transparent_buffer_ptr, &region);
+        pixman_region32_fini(&region);
+    }
 
     if (!wlr_scene_output_commit(
             container_surface_ptr->wlr_scene_output_ptr, NULL)) {
