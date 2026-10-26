@@ -55,6 +55,8 @@ struct wlmdock_container_surface {
     struct wlr_scene          *wlr_scene_ptr;
     /** For `events.frame` of @ref wlr_output_ptr. */
     struct wl_listener        output_frame_listener;
+    /** For `events.destroy` of @ref wlr_output_ptr. */
+    struct wl_listener        output_destroy_listener;
 
     /* -- References to parent objects ------------------ */
     /** Output layout for this surface's compositor. */
@@ -66,6 +68,9 @@ struct wlmdock_container_surface {
 };
 
 static void _wlmdock_container_surface_handle_output_frame(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmdock_container_surface_handle_output_destroy(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
@@ -157,6 +162,12 @@ struct wlmdock_container_surface *wlmdock_container_surface_create(
         &container_surface_ptr->wlr_output_ptr->events.frame,
         &container_surface_ptr->output_frame_listener,
         _wlmdock_container_surface_handle_output_frame);
+    // The backend may destroy the output, eg. when the parent compositor
+    // goes away. Listeners must be gone before.
+    wlmtk_util_connect_listener_signal(
+        &container_surface_ptr->wlr_output_ptr->events.destroy,
+        &container_surface_ptr->output_destroy_listener,
+        _wlmdock_container_surface_handle_output_destroy);
 
     return container_surface_ptr;
 }
@@ -165,6 +176,8 @@ struct wlmdock_container_surface *wlmdock_container_surface_create(
 void wlmdock_container_surface_destroy(
     struct wlmdock_container_surface *container_surface_ptr)
 {
+    wlmtk_util_disconnect_listener(
+        &container_surface_ptr->output_destroy_listener);
     wlmtk_util_disconnect_listener(
         &container_surface_ptr->output_frame_listener);
 
@@ -203,6 +216,7 @@ void wlmdock_container_surface_commit_size(
     int height)
 {
     if (0 >= width || 0 >= height) return;
+    if (NULL == container_surface_ptr->wlr_output_ptr) return;
 
     struct wlr_output_state state;
     wlr_output_state_init(&state);
@@ -243,6 +257,28 @@ void _wlmdock_container_surface_handle_output_frame(
     clock_gettime(CLOCK_MONOTONIC, &now);
     wlr_scene_output_send_frame_done(
         container_surface_ptr->wlr_scene_output_ptr, &now);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles the output's destruction (eg. by the backend, when the parent
+ * compositor went away): Releases the references to it.
+ */
+void _wlmdock_container_surface_handle_output_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    struct wlmdock_container_surface *container_surface_ptr = BS_CONTAINER_OF(
+        listener_ptr, struct wlmdock_container_surface,
+        output_destroy_listener);
+
+    wlmtk_util_disconnect_listener(
+        &container_surface_ptr->output_frame_listener);
+    wlmtk_util_disconnect_listener(
+        &container_surface_ptr->output_destroy_listener);
+    // The scene output and the output layout follow the output's destruction.
+    container_surface_ptr->wlr_scene_output_ptr = NULL;
+    container_surface_ptr->wlr_output_ptr = NULL;
 }
 
 /* == End of container_surface.c =========================================== */

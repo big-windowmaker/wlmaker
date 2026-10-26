@@ -56,6 +56,8 @@ struct _wlmim_t {
 
     /** Listener for `new_input` signals raised by `wlr_backend`. */
     struct wl_listener        backend_new_input_device_listener;
+    /** Listener for `destroy` signals raised by `wlr_backend`. */
+    struct wl_listener        backend_destroy_listener;
 
     /** Virtual keyboard manager. Owned by wl_display. */
     struct wlr_virtual_keyboard_manager_v1 *wlr_virtual_keyboard_manager_v1_ptr;
@@ -127,6 +129,9 @@ static void _wlmim_add_input_device(
     wlmim_t *input_manager_ptr,
     struct wlr_input_device *wlr_input_device_ptr);
 static void _wlmim_handle_new_input_device(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_handle_backend_destroy(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmim_handle_new_virtual_keyboard(
@@ -240,6 +245,12 @@ wlmim_t *wlmim_input_manager_create(
             &wlr_backend_ptr->events.new_input,
             &input_manager_ptr->backend_new_input_device_listener,
             _wlmim_handle_new_input_device);
+        // The backend may go away first, eg. a nested Wayland backend when
+        // the parent compositor terminates.
+        wlmtk_util_connect_listener_signal(
+            &wlr_backend_ptr->events.destroy,
+            &input_manager_ptr->backend_destroy_listener,
+            _wlmim_handle_backend_destroy);
     }
 
     if (NULL != wl_display_ptr && NULL != wlr_seat_ptr) {
@@ -280,6 +291,8 @@ void wlmim_input_manager_destroy(wlmim_t *input_manager_ptr)
         &input_manager_ptr->new_virtual_pointer_listener);
     wlmtk_util_disconnect_listener(
         &input_manager_ptr->new_virtual_keyboard_listener);
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->backend_destroy_listener);
     wlmtk_util_disconnect_listener(
         &input_manager_ptr->backend_new_input_device_listener);
 
@@ -593,6 +606,20 @@ void _wlmim_handle_new_virtual_pointer(
             wlr_input_device_ptr,
             event_ptr->suggested_output);
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handler for the `destroy` signal of `wlr_backend`: Detaches from it. */
+void _wlmim_handle_backend_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_t, backend_destroy_listener);
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->backend_new_input_device_listener);
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->backend_destroy_listener);
 }
 
 /* ------------------------------------------------------------------------- */

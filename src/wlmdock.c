@@ -97,6 +97,8 @@ typedef struct {
 
     /** Event source for monitoring signals via client's signal_fd. */
     struct wl_event_source    *client_signal_event_source_ptr;
+    /** Listener for `destroy` of @ref wlmdock_t::wlr_backend_ptr. */
+    struct wl_listener        backend_destroy_listener;
 } wlmdock_t;
 
 /** TODO: Replace this. */
@@ -116,6 +118,9 @@ static wlmdock_t *_wlmdock_create(
     wlmaker_config_style_t *style_ptr);
 static void _wlmdock_destroy(wlmdock_t *dock_ptr);
 static int handle_client_signal(int fd, uint32_t mask, void *data_ptr);
+static void _wlmdock_handle_backend_destroy(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 static bool _wlmdock_decode_launchers(
     bspl_object_t *object_ptr,
     const union bspl_desc_value *desc_value_ptr,
@@ -390,6 +395,10 @@ wlmdock_t *_wlmdock_create(
         _wlmdock_destroy(dock_ptr);
         return NULL;
     }
+    wlmtk_util_connect_listener_signal(
+        &dock_ptr->wlr_backend_ptr->events.destroy,
+        &dock_ptr->backend_destroy_listener,
+        _wlmdock_handle_backend_destroy);
 
     // 5. Setup dock contents.
     wlmtk_box_orientation_t orientation = WLMTK_BOX_VERTICAL;
@@ -494,6 +503,7 @@ wlmdock_t *_wlmdock_create(
 void _wlmdock_destroy(wlmdock_t *dock_ptr)
 {
     if (NULL == dock_ptr) return;
+    wlmtk_util_disconnect_listener(&dock_ptr->backend_destroy_listener);
 
     if (NULL != dock_ptr->subprocess_monitor_ptr) {
         wlm_util_subprocess_monitor_destroy(dock_ptr->subprocess_monitor_ptr);
@@ -574,6 +584,24 @@ int handle_client_signal(int fd, uint32_t mask, void *data_ptr)
         }
     }
     return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles destruction of the nested Wayland backend: It happens when the
+ * connection to the parent compositor is lost (eg. at the session's end).
+ * Exits the event loop, for a clean shutdown.
+ */
+void _wlmdock_handle_backend_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmdock_t *dock_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmdock_t, backend_destroy_listener);
+    bs_log(BS_INFO, "wlmdock: Backend destroyed, exiting loop.");
+    wlmtk_util_disconnect_listener(&dock_ptr->backend_destroy_listener);
+    dock_ptr->wlr_backend_ptr = NULL;
+    wl_display_terminate(dock_ptr->local_display_ptr);
 }
 
 /* == End of wlmdock.c ===================================================== */
