@@ -59,6 +59,18 @@ launcher hands over an activation token.
   other than the current one are not activated.
 * Reference: https://wayland.app/protocols/xdg-activation-v1
 
+# KDE server decoration
+
+The obsolete predecessor of XDG decoration (`org_kde_kwin_server_decoration`).
+GTK3 does not implement XDG decoration, but uses this protocol to ask for
+server-side decorations when not drawing its own header bar.
+
+* Status: Supported. The default mode follows the `Decoration` `Mode` setting
+  of the configuration file: `SuggestServer` and `EnforceServer` announce
+  server-side, `SuggestClient` and `EnforceClient` client-side decoration.
+  The mode requested by a client is applied like for XDG decoration.
+* Reference: https://wayland.app/protocols/kde-server-decoration
+
 # XDG decoration
 
 This interface allows a compositor to announce support for server-side
