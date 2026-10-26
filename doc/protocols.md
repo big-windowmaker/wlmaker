@@ -13,6 +13,14 @@ Permits inhibiting the idle behaviour, such as locking the screen.
 * Status: Implemented, untested.
 * Reference: https://wayland.app/protocols/idle-inhibit-unstable-v1
 
+# Presentation time
+
+Provides feedback to clients about when their content was shown on an output.
+Used by video players and toolkits for smooth animation and A/V sync.
+
+* Status: Supported. Feedback is sent by the wlroots scene graph.
+* Reference: https://wayland.app/protocols/presentation-time
+
 # Session lock
 
 Allows privileged Wayland clients to lock the session and display arbitrary
