@@ -34,6 +34,7 @@
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
 #undef WLR_USE_UNSTABLE
 #include <xkbcommon/xkbcommon.h>
 
@@ -166,7 +167,11 @@ wlmim_keyboard_t *wlmim_keyboard_create(
         }
     }
 
-    wlr_seat_set_keyboard(wlr_seat_ptr, keyboard_ptr->wlr_keyboard_ptr);
+    // A virtual keyboard has no keymap until the client sends one. Don't
+    // make it the seat's keyboard before, that would clear clients' keymap.
+    if (NULL != keyboard_ptr->wlr_keyboard_ptr->keymap) {
+        wlr_seat_set_keyboard(wlr_seat_ptr, keyboard_ptr->wlr_keyboard_ptr);
+    }
     return keyboard_ptr;
 }
 
@@ -251,7 +256,10 @@ void wlmim_keyboard_configure(
     struct xkb_keymap *xkb_keymap_ptr,
     const struct wlmim_keyboard_options *options_ptr)
 {
-    if (keyboard_ptr->xkb_keymap_ptr != xkb_keymap_ptr) {
+    // Virtual keyboards come with the keymap provided by their client.
+    bool is_virtual = NULL != wlr_input_device_get_virtual_keyboard(
+        &keyboard_ptr->wlr_keyboard_ptr->base);
+    if (!is_virtual && keyboard_ptr->xkb_keymap_ptr != xkb_keymap_ptr) {
         if (NULL != keyboard_ptr->xkb_keymap_ptr) {
             xkb_keymap_unref(keyboard_ptr->xkb_keymap_ptr);
         }
@@ -420,6 +428,11 @@ void handle_key(struct wl_listener *listener_ptr, void *data_ptr)
 
     if (processed) return;
 
+    // Events are interpreted by the seat's keyboard keymap: With multiple
+    // keyboards (eg. virtual keyboards), use the keyboard of this event.
+    wlr_seat_set_keyboard(
+        keyboard_ptr->wlr_seat_ptr,
+        keyboard_ptr->wlr_keyboard_ptr);
     wlmtk_element_keyboard_event(
         keyboard_ptr->root_element_ptr,
         wlr_keyboard_key_event_ptr);

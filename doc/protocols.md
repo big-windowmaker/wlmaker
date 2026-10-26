@@ -59,6 +59,14 @@ draw backgrounds and solid areas, eg. by GTK4 and video players.
 * Status: Supported.
 * Reference: https://wayland.app/protocols/single-pixel-buffer-v1
 
+# Virtual keyboard
+
+Permits clients to emulate a keyboard, with a keymap of their choice. Used by
+on-screen keyboards, `wtype` and remote desktop servers (`wayvnc`).
+
+* Status: Supported.
+* Reference: https://wayland.app/protocols/virtual-keyboard-unstable-v1
+
 # wlr gamma control
 
 Permits clients to set the gamma tables of an output. Used by "night light"
