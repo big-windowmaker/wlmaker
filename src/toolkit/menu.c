@@ -59,6 +59,28 @@ struct _wlmtk_menu_t {
     wlmtk_menu_item_t         *parent_menu_item_ptr;
     /** Current mode of the menu. */
     enum wlmtk_menu_mode      mode;
+
+    /**
+     * Right-click mode: Whether a pointer position was recorded since the
+     * menu was opened. See @ref wlmtk_menu_t::rightclick_moved.
+     */
+    bool                      rightclick_has_position;
+    /** Right-click mode: The first pointer position seen after opening. */
+    double                    rightclick_x;
+    /** Right-click mode: The first pointer position seen after opening. */
+    double                    rightclick_y;
+    /**
+     * Right-click mode: Whether the pointer moved since the menu was opened.
+     * If the right button is released without the pointer having moved, it
+     * was a click: The menu stays open, see @ref wlmtk_menu_t::sticky.
+     */
+    bool                      rightclick_moved;
+    /**
+     * Right-click mode: The menu was opened by a click, and stays open.
+     * Items are then triggered by releasing either button over them, and a
+     * button press outside the menu closes it.
+     */
+    bool                      sticky;
 };
 
 /** Type-safe holder for the menu style's reference counter. */
@@ -91,6 +113,15 @@ static void _wlmtk_menu_element_destroy(
 static bool _wlmtk_menu_element_pointer_button(
     wlmtk_element_t *element_ptr,
     const wlmtk_button_event_t *button_event_ptr);
+static bool _wlmtk_menu_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr);
+static bool _wlmtk_menu_sticky_pointer_button(
+    wlmtk_menu_t *menu_ptr,
+    const wlmtk_button_event_t *button_event_ptr);
+static wlmtk_menu_item_t *_wlmtk_menu_leaf_item_under_pointer(
+    wlmtk_menu_t *menu_ptr);
+static void _wlmtk_menu_reset_rightclick(wlmtk_menu_t *menu_ptr);
 static bool _wlmtk_menu_element_keyboard_sym(
     wlmtk_element_t *element_ptr,
     xkb_keysym_t keysym,
@@ -109,7 +140,14 @@ static const wlmtk_element_vmt_t _wlmtk_menu_element_vmt = {
     .keyboard_sym = _wlmtk_menu_element_keyboard_sym,
     .destroy = _wlmtk_menu_element_destroy,
     .pointer_button = _wlmtk_menu_element_pointer_button,
+    .pointer_accepts_motion = _wlmtk_menu_element_pointer_accepts_motion,
 };
+
+/**
+ * Distance (in pixels, per axis) the pointer must move in right-click mode
+ * before releasing the right button triggers an item.
+ */
+static const double _wlmtk_menu_rightclick_move_threshold = 3.0;
 
 /** Extra override for the box element. Does not have a dtor by default. */
 static const wlmtk_element_vmt_t _wlmtk_menu_box_element_vmt = {
@@ -234,6 +272,7 @@ void wlmtk_menu_set_open(wlmtk_menu_t *menu_ptr, bool opened)
     if (wlmtk_menu_element(menu_ptr)->visible == opened) return;
 
     wlmtk_element_set_visible(wlmtk_menu_element(menu_ptr), opened);
+    _wlmtk_menu_reset_rightclick(menu_ptr);
 
     if (NULL != menu_ptr->highlighted_menu_item_ptr) {
         wlmtk_menu_item_set_highlighted(
@@ -256,6 +295,7 @@ void wlmtk_menu_set_mode(wlmtk_menu_t *menu_ptr,
 {
     if (menu_ptr->mode == mode) return;
     menu_ptr->mode = mode;
+    _wlmtk_menu_reset_rightclick(menu_ptr);
     bs_dllist_for_each(
         &menu_ptr->items,
         _wlmtk_menu_set_item_mode,
@@ -498,6 +538,24 @@ bool _wlmtk_menu_element_pointer_button(
     wlmtk_menu_t *menu_ptr = BS_CONTAINER_OF(
         element_ptr, wlmtk_menu_t, base.super_container.super_element);
 
+    // Only the top-level menu tracks whether it was opened by a click: It
+    // receives all pointer events also for its submenus.
+    if (WLMTK_MENU_MODE_RIGHTCLICK == menu_ptr->mode &&
+        NULL == menu_ptr->parent_menu_item_ptr) {
+        if (!menu_ptr->sticky &&
+            !menu_ptr->rightclick_moved &&
+            BTN_RIGHT == button_event_ptr->button &&
+            WLMTK_BUTTON_UP == button_event_ptr->type) {
+            // Released where it was opened: It was a click. Stay open.
+            menu_ptr->sticky = true;
+            return true;
+        }
+        if (menu_ptr->sticky) {
+            return _wlmtk_menu_sticky_pointer_button(
+                menu_ptr, button_event_ptr);
+        }
+    }
+
     bool rv = menu_ptr->orig_base_element_vmt.pointer_button(
         element_ptr, button_event_ptr);
 
@@ -508,6 +566,119 @@ bool _wlmtk_menu_element_pointer_button(
     }
 
     return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::pointer_accepts_motion. Records
+ * whether the pointer moved since the menu was opened, then calls the
+ * parent's implementation.
+ *
+ * @param element_ptr
+ * @param motion_event_ptr
+ *
+ * @return See @ref wlmtk_element_vmt_t::pointer_accepts_motion.
+ */
+bool _wlmtk_menu_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr)
+{
+    wlmtk_menu_t *menu_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmtk_menu_t, base.super_container.super_element);
+
+    if (!menu_ptr->rightclick_has_position) {
+        menu_ptr->rightclick_x = motion_event_ptr->x;
+        menu_ptr->rightclick_y = motion_event_ptr->y;
+        menu_ptr->rightclick_has_position = true;
+    } else {
+        double dx = motion_event_ptr->x - menu_ptr->rightclick_x;
+        double dy = motion_event_ptr->y - menu_ptr->rightclick_y;
+        if (dx >= _wlmtk_menu_rightclick_move_threshold ||
+            -dx >= _wlmtk_menu_rightclick_move_threshold ||
+            dy >= _wlmtk_menu_rightclick_move_threshold ||
+            -dy >= _wlmtk_menu_rightclick_move_threshold) {
+            menu_ptr->rightclick_moved = true;
+        }
+    }
+
+    return menu_ptr->orig_base_element_vmt.pointer_accepts_motion(
+        element_ptr, motion_event_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles button events for a right-click menu that was opened by a click.
+ *
+ * Releasing either button over an item triggers it, and closes the menu.
+ * Pressing a button outside the menu closes it. All other events are
+ * claimed, but ignored.
+ *
+ * @param menu_ptr
+ * @param button_event_ptr
+ *
+ * @return true.
+ */
+bool _wlmtk_menu_sticky_pointer_button(
+    wlmtk_menu_t *menu_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    wlmtk_element_t *element_ptr = wlmtk_menu_element(menu_ptr);
+    if (BTN_LEFT != button_event_ptr->button &&
+        BTN_RIGHT != button_event_ptr->button) return true;
+
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        !element_ptr->pointer_inside) {
+        wl_signal_emit(&menu_ptr->events.request_close, NULL);
+        return true;
+    }
+
+    if (WLMTK_BUTTON_UP == button_event_ptr->type &&
+        element_ptr->pointer_inside &&
+        NULL != _wlmtk_menu_leaf_item_under_pointer(menu_ptr)) {
+        // Forward as right-button release: That triggers in right-click mode.
+        wlmtk_button_event_t e = *button_event_ptr;
+        e.button = BTN_RIGHT;
+        menu_ptr->orig_base_element_vmt.pointer_button(element_ptr, &e);
+        wl_signal_emit(&menu_ptr->events.request_close, NULL);
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Finds the item under the pointer, descending into open submenus.
+ *
+ * @param menu_ptr
+ *
+ * @return The highlighted item under the pointer, if it has no submenu. NULL
+ *     if there is no such item, eg. when the pointer is on the margin or on
+ *     an item that opens a submenu.
+ */
+wlmtk_menu_item_t *_wlmtk_menu_leaf_item_under_pointer(wlmtk_menu_t *menu_ptr)
+{
+    while (NULL != menu_ptr) {
+        wlmtk_menu_item_t *item_ptr = menu_ptr->highlighted_menu_item_ptr;
+        if (NULL == item_ptr) return NULL;
+        wlmtk_menu_t *submenu_ptr = wlmtk_menu_item_get_submenu(item_ptr);
+
+        if (wlmtk_menu_item_element(item_ptr)->pointer_inside) {
+            return NULL == submenu_ptr ? item_ptr : NULL;
+        }
+        if (NULL == submenu_ptr ||
+            !wlmtk_menu_is_open(submenu_ptr) ||
+            !wlmtk_menu_element(submenu_ptr)->pointer_inside) return NULL;
+        menu_ptr = submenu_ptr;
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Resets the state tracking a right-click, eg. when opening the menu. */
+void _wlmtk_menu_reset_rightclick(wlmtk_menu_t *menu_ptr)
+{
+    menu_ptr->rightclick_has_position = false;
+    menu_ptr->rightclick_moved = false;
+    menu_ptr->sticky = false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -657,6 +828,7 @@ static void test_pointer_highlight(bs_test_t *test_ptr);
 static void test_set_mode(bs_test_t *test_ptr);
 static void test_keyboard_navigation(bs_test_t *test_ptr);
 static void test_keyboard_navigation_nested(bs_test_t *test_ptr);
+static void test_rightclick(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_menu_test_cases[] = {
@@ -664,6 +836,7 @@ static const bs_test_case_t _wlmtk_menu_test_cases[] = {
     { 1, "set_mode", test_set_mode },
     { 1, "keyboard_navigation", test_keyboard_navigation },
     { 1, "keyboard_navigation_nested", test_keyboard_navigation_nested },
+    { 1, "rightclick", test_rightclick },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -1011,6 +1184,102 @@ void test_keyboard_navigation_nested(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 1, request_close_test_listener.calls);
 
     wlmtk_menu_destroy(m0);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tests right-click mode: Releasing the button after dragging onto an item
+ * triggers it. Releasing it without having moved keeps the menu open, and
+ * a later click on an item triggers, a click outside closes.
+ */
+void test_rightclick(bs_test_t *test_ptr)
+{
+    wlmtk_menu_t *menu_ptr = wlmtk_menu_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, menu_ptr);
+    wlmtk_element_t *me = wlmtk_menu_element(menu_ptr);
+    wlmtk_menu_item_t *i1 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i1);
+    wlmtk_menu_add_item(menu_ptr, i1);
+    wlmtk_menu_item_t *i2 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i2);
+    wlmtk_menu_add_item(menu_ptr, i2);
+
+    wlmtk_util_test_listener_t t1, t2, close;
+    wlmtk_util_connect_test_listener(
+        &wlmtk_menu_item_events(i1)->triggered, &t1);
+    wlmtk_util_connect_test_listener(
+        &wlmtk_menu_item_events(i2)->triggered, &t2);
+    wlmtk_util_connect_test_listener(
+        &wlmtk_menu_events(menu_ptr)->request_close, &close);
+    wlmtk_button_event_t rup = { .button = BTN_RIGHT, .type = WLMTK_BUTTON_UP };
+    wlmtk_button_event_t ldown = {
+        .button = BTN_LEFT, .type = WLMTK_BUTTON_DOWN };
+    wlmtk_button_event_t lup = { .button = BTN_LEFT, .type = WLMTK_BUTTON_UP };
+    wlmtk_pointer_motion_event_t e;
+
+    wlmtk_menu_set_mode(menu_ptr, WLMTK_MENU_MODE_RIGHTCLICK);
+
+    // Opened, pointer drags from first to second item, releases: Trigger.
+    wlmtk_menu_set_open(menu_ptr, true);
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 5 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 15 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &rup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t2.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, close.calls);
+    wlmtk_util_clear_test_listener(&t2);
+    wlmtk_util_clear_test_listener(&close);
+    wlmtk_menu_set_open(menu_ptr, false);
+
+    // Opened over the first item, released without moving: Stays open.
+    wlmtk_menu_set_open(menu_ptr, true);
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 5 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    e = (wlmtk_pointer_motion_event_t){ .x = 10, .y = 6 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &rup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, close.calls);
+
+    // A click on the margin between items does nothing.
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 10 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &ldown));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &lup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls + t2.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, close.calls);
+
+    // A left click on the second item triggers it, and closes the menu.
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 15 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &ldown));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, close.calls);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &lup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t2.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, close.calls);
+    wlmtk_util_clear_test_listener(&t2);
+    wlmtk_util_clear_test_listener(&close);
+    wlmtk_menu_set_open(menu_ptr, false);
+
+    // Opened by a click, then a press outside the menu closes it.
+    wlmtk_menu_set_open(menu_ptr, true);
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 5 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &rup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, close.calls);
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 55 };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &ldown));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, close.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls + t2.calls);
+
+    wlmtk_util_disconnect_test_listener(&close);
+    wlmtk_util_disconnect_test_listener(&t2);
+    wlmtk_util_disconnect_test_listener(&t1);
+    wlmtk_menu_destroy(menu_ptr);
 }
 
 /* == End of menu.c ======================================================== */
