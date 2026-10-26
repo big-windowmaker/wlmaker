@@ -77,8 +77,11 @@ struct _wlmdock_launcher_t {
 
 /** Plist descroptor for a launcher. */
 static const bspl_desc_t _wlmdock_launcher_plist_desc[] = {
+    // Optional: Without an AppID, the launcher only shows as running while
+    // processes it launched itself are alive. Keeps State.plist files that
+    // were written for the compiled-in dock (no AppID) working.
     BSPL_DESC_STRING(
-        "AppID", true, wlmdock_launcher_t, app_id_ptr, app_id_ptr, ""),
+        "AppID", false, wlmdock_launcher_t, app_id_ptr, app_id_ptr, ""),
     BSPL_DESC_STRING(
         "CommandLine", true, wlmdock_launcher_t, cmdline_ptr, cmdline_ptr, ""),
     BSPL_DESC_STRING(
@@ -325,8 +328,11 @@ struct wlr_buffer *_wlmdock_launcher_create_overlay_buffer(
     struct wlr_buffer *wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(s, s);
     if (NULL == wlr_buffer_ptr) return NULL;
 
-    bs_dllist_t *toplevel_handles = wlmdock_toplevel_tracker_app_id_handles(
-        launcher_ptr->tracker_ptr, launcher_ptr->app_id_ptr);
+    bs_dllist_t *toplevel_handles = NULL;
+    if (NULL != launcher_ptr->app_id_ptr && '\0' != *launcher_ptr->app_id_ptr) {
+        toplevel_handles = wlmdock_toplevel_tracker_app_id_handles(
+            launcher_ptr->tracker_ptr, launcher_ptr->app_id_ptr);
+    }
     if ((NULL == toplevel_handles || bs_dllist_empty(toplevel_handles)) &&
         bs_ptr_set_empty(launcher_ptr->subprocesses_ptr)) {
         launcher_ptr->running = false;
@@ -501,6 +507,7 @@ void _wlmdock_launcher_handle_app_id_changed(
 
     if (NULL == app_id_ptr ||
         NULL == launcher_ptr->app_id_ptr ||
+        '\0' == *launcher_ptr->app_id_ptr ||
         0 != strcmp(app_id_ptr, launcher_ptr->app_id_ptr)) return;
 
     _wlmdock_launcher_update_overlay(launcher_ptr);
@@ -529,10 +536,12 @@ bool _wlmdock_launcher_set_content_size(
 /* == Unit tests =========================================================== */
 
 static void test_create_from_plist(bs_test_t *test_ptr);
+static void test_create_without_app_id(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t wlmdock_launcher_test_cases[] = {
     { true, "create_from_plist", test_create_from_plist },
+    { true, "create_without_app_id", test_create_without_app_id },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -577,6 +586,44 @@ void test_create_from_plist(bs_test_t *test_ptr)
 
     // Toplevel changes app ID. No longer running.
     wlmdock_toplevel_handle_set_app_id(h, "other-id");
+    BS_TEST_VERIFY_FALSE(test_ptr, launcher_ptr->running);
+
+    wlmdock_launcher_destroy(launcher_ptr);
+    wlmdock_toplevel_tracker_destroy(trk);
+    wlm_util_files_destroy(files_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** A launcher without AppID loads, and toplevels never mark it as running. */
+void test_create_without_app_id(bs_test_t *test_ptr)
+{
+    static const struct wlmtk_tile_style style = { .size = 96 };
+    static const char *plist_ptr =
+        "{CommandLine=\"a\"; Icon=\"chrome-56x56.png\";}";
+
+    bs_test_setenv(test_ptr, "XDG_DATA_DIRS", WLMAKER_SOURCE_DIR "/share");
+
+    bspl_dict_t *dict_ptr = bspl_dict_from_object(
+        bspl_create_object_from_plist_string(plist_ptr));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dict_ptr);
+    struct wlmdock_toplevel_tracker *trk = wlmdock_toplevel_tracker_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, trk);
+    wlm_util_files_t *files_ptr = wlm_util_files_create("wlmaker");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, files_ptr);
+
+    wlmdock_launcher_t *launcher_ptr = wlmdock_launcher_create_from_plist(
+        &style, dict_ptr, trk, NULL, files_ptr);
+    bspl_dict_unref(dict_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, launcher_ptr);
+    BS_TEST_VERIFY_STREQ(test_ptr, "a", launcher_ptr->cmdline_ptr);
+    BS_TEST_VERIFY_FALSE(test_ptr, launcher_ptr->running);
+
+    // A toplevel without app ID must not match the empty AppID.
+    struct wlmdock_toplevel_handle *h = wlmdock_toplevel_handle_create(trk);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, h);
+    wlmdock_toplevel_handle_set_app_id(h, "");
+    BS_TEST_VERIFY_FALSE(test_ptr, launcher_ptr->running);
+    wlmdock_toplevel_handle_set_app_id(h, "id");
     BS_TEST_VERIFY_FALSE(test_ptr, launcher_ptr->running);
 
     wlmdock_launcher_destroy(launcher_ptr);
