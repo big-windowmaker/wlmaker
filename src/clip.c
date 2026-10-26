@@ -59,6 +59,13 @@ struct _wlmaker_clip_t {
     wlmtk_dock_t              *wlmtk_dock_ptr;
     /** Placement of the dock-apps in the clip's dock. */
     wlmaker_dockapps_t        *dockapps_ptr;
+    /**
+     * Empty tiles after the clip, one per element of `Clip.Launchers`: Room
+     * for the launchers shown there by `wlmdock --clip`. Dock-apps follow.
+     */
+    wlmtk_tile_t              *spacer_tiles_ptr;
+    /** Number of tiles in @ref wlmaker_clip_t::spacer_tiles_ptr. */
+    size_t                    spacer_tiles;
 
     /** The tile's texture buffer without any buttons pressed */
     struct wlr_buffer         *tile_buffer_ptr;
@@ -112,6 +119,9 @@ static bool _wlmaker_clip_update_tiles(
     wlmaker_clip_t *clip_ptr,
     const struct wlmtk_tile_style *tile_style_ptr);
 static void _wlmaker_clip_apply_button_state(wlmaker_clip_t *clip_ptr);
+static bool _wlmaker_clip_update_spacers(
+    wlmaker_clip_t *clip_ptr,
+    const struct wlmtk_tile_style *tile_style_ptr);
 static bool _wlmaker_clip_update_overlay(
     wlmaker_clip_t *clip_ptr,
     const struct wlmtk_tile_style *tile_style_ptr,
@@ -239,6 +249,35 @@ wlmaker_clip_t *wlmaker_clip_create(
         &clip_ptr->super_tile, clip_ptr->tile_buffer_ptr);
     wlmtk_dock_add_tile(clip_ptr->wlmtk_dock_ptr, &clip_ptr->super_tile);
 
+    bspl_array_t *launchers_ptr = bspl_dict_get_array(dict_ptr, "Launchers");
+    clip_ptr->spacer_tiles = (NULL != launchers_ptr) ?
+        bspl_array_size(launchers_ptr) : 0;
+    if (0 < clip_ptr->spacer_tiles) {
+        clip_ptr->spacer_tiles_ptr = logged_calloc(
+            clip_ptr->spacer_tiles, sizeof(wlmtk_tile_t));
+        if (NULL == clip_ptr->spacer_tiles_ptr) {
+            clip_ptr->spacer_tiles = 0;
+            wlmaker_clip_destroy(clip_ptr);
+            return NULL;
+        }
+        for (size_t i = 0; i < clip_ptr->spacer_tiles; ++i) {
+            if (!wlmtk_tile_init(&clip_ptr->spacer_tiles_ptr[i],
+                                 &style_ptr->tile)) {
+                clip_ptr->spacer_tiles = i;
+                wlmaker_clip_destroy(clip_ptr);
+                return NULL;
+            }
+            wlmtk_element_set_visible(
+                wlmtk_tile_element(&clip_ptr->spacer_tiles_ptr[i]), true);
+            wlmtk_dock_add_tile(
+                clip_ptr->wlmtk_dock_ptr, &clip_ptr->spacer_tiles_ptr[i]);
+        }
+        if (!_wlmaker_clip_update_spacers(clip_ptr, &style_ptr->tile)) {
+            wlmaker_clip_destroy(clip_ptr);
+            return NULL;
+        }
+    }
+
     if (!wlmtk_buffer_init(&clip_ptr->overlay_buffer)) {
         wlmaker_clip_destroy(clip_ptr);
         return NULL;
@@ -343,6 +382,18 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
         wlmaker_dockapps_destroy(clip_ptr->dockapps_ptr);
         clip_ptr->dockapps_ptr = NULL;
     }
+    for (size_t i = 0; i < clip_ptr->spacer_tiles; ++i) {
+        wlmtk_tile_t *t_ptr = &clip_ptr->spacer_tiles_ptr[i];
+        if (NULL != wlmtk_tile_element(t_ptr)->parent_container_ptr) {
+            wlmtk_dock_remove_tile(clip_ptr->wlmtk_dock_ptr, t_ptr);
+        }
+        wlmtk_tile_fini(t_ptr);
+    }
+    if (NULL != clip_ptr->spacer_tiles_ptr) {
+        free(clip_ptr->spacer_tiles_ptr);
+        clip_ptr->spacer_tiles_ptr = NULL;
+    }
+    clip_ptr->spacer_tiles = 0;
 
     wlmtk_util_disconnect_listener(&clip_ptr->output_layout_change_listener);
     wlmtk_util_disconnect_listener(&clip_ptr->workspace_changed_listener);
@@ -937,6 +988,27 @@ void _wlmaker_clip_handle_theme_changed(
     // since the latter will apply the generic tile backend. Which the tile
     // overwrites.
     _wlmaker_clip_apply_button_state(clip_ptr);
+    _wlmaker_clip_update_spacers(clip_ptr, &style_ptr->tile);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Gives the spacer tiles a transparent background. */
+bool _wlmaker_clip_update_spacers(
+    wlmaker_clip_t *clip_ptr,
+    const struct wlmtk_tile_style *tile_style_ptr)
+{
+    if (0 == clip_ptr->spacer_tiles) return true;
+    // A freshly created buffer is all zero, ie. fully transparent.
+    struct wlr_buffer *wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(
+        tile_style_ptr->size, tile_style_ptr->size);
+    if (NULL == wlr_buffer_ptr) return false;
+    bool rv = true;
+    for (size_t i = 0; i < clip_ptr->spacer_tiles; ++i) {
+        rv &= wlmtk_tile_set_background_buffer(
+            &clip_ptr->spacer_tiles_ptr[i], wlr_buffer_ptr);
+    }
+    wlr_buffer_drop(wlr_buffer_ptr);
+    return rv;
 }
 
 /* == Unit tests =========================================================== */
