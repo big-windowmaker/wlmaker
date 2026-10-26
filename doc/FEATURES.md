@@ -259,7 +259,9 @@ TBD: Raise/Lower.
 
 ### `xdg-activation-v1`
 
-* [ ] Implement.
+* [x] :white_check_mark: Implemented: Activates and raises the window on the current workspace.
+* [ ] Switch to the window's workspace, when on a different workspace.
+* [ ] Consider focus stealing prevention (validate token seat and serial).
 
 ### `xdg-decoration`
 

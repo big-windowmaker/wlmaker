@@ -310,6 +310,20 @@ void wlmaker_xdg_toplevel_set_server_side_decorated(
         wlmaker_xdg_toplevel_ptr->server_side_decorated);
 }
 
+/* ------------------------------------------------------------------------- */
+wlmtk_window_t *wlmaker_xdg_toplevel_window_from_wlr_surface(
+    struct wlr_surface *wlr_surface_ptr)
+{
+    if (NULL == wlr_surface_ptr) return NULL;
+    struct wlr_xdg_toplevel *wlr_xdg_toplevel_ptr =
+        wlr_xdg_toplevel_try_from_wlr_surface(wlr_surface_ptr);
+    if (NULL == wlr_xdg_toplevel_ptr) return NULL;
+
+    struct wlmaker_xdg_toplevel *wxt_ptr = wlr_xdg_toplevel_ptr->base->data;
+    if (NULL == wxt_ptr) return NULL;
+    return wxt_ptr->window_ptr;
+}
+
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */
