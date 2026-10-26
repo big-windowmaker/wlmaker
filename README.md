@@ -44,7 +44,8 @@ Highlights for current version ([0.8.1](https://github.com/phkaeser/wlmaker/rele
 * Support for Wayland XDG shell (mostly complete. Bug reports welcome).
 * Initial support for X11 applications (positioning and specific modes are missing).
   Use `--start_xwayland` argument to enable XWayland, it's off by default.
-* DockApps (`apps/wlmclock`, `apps/wlmbattery`, `apps/wlmcpugraph`, ...).
+* DockApps (`apps/wlmclock`, `apps/wlmbattery`, `apps/wlmcpugraph`,
+  `apps/wlmcalclock`, ...).
 
 ### All the details?
 
