@@ -275,6 +275,10 @@ TBD: Raise/Lower.
 
 * [x] :white_check_mark: Implemented, works for `wdisplays`.
 
+### `wlr-virtual-pointer-unstable-v1`
+
+* [x] :white_check_mark: Implemented.
+
 ### `wp_viewporter`
 
 * [x] :white_check_mark: Support surface cropping and scaling.
