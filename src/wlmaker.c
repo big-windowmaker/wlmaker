@@ -62,6 +62,7 @@ static char *wlmaker_arg_root_menu_file_ptr = NULL;
 /** Startup options for the server. */
 static wlmaker_server_options_t wlmaker_server_options = {
     .start_xwayland = false,
+    .lazy_xwayland = false,
     .width = 0,
     .height = 0,
     .bind_with_logo = false,
@@ -75,6 +76,12 @@ static const bs_arg_t wlmaker_args[] = {
         "Optional: Whether to start XWayland. Disabled by default.",
         false,
         &wlmaker_server_options.start_xwayland),
+    BS_ARG_BOOL(
+        "lazy_xwayland",
+        "Optional: With --start_xwayland, starts the XWayland server only "
+        "when the first X11 client connects. Disabled by default.",
+        false,
+        &wlmaker_server_options.lazy_xwayland),
 #endif  // defined(WLMAKER_HAVE_XWAYLAND)
     BS_ARG_STRING(
         "config_file",

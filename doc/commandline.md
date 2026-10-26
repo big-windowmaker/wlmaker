@@ -4,6 +4,7 @@
 
 ```
 --start_xwayland : Optional: Whether to start XWayland. Disabled by default.
+--lazy_xwayland : Optional: With --start_xwayland, starts the XWayland server only when the first X11 client connects. Disabled by default.
 --config_file : Optional: Path to a configuration file. If not provided, wlmaker will scan default paths for a configuration file, or fall back to a built-in configuration.
 --state_file : Optional: Path to a state file, with state of workspaces, dock and clips configured. If not provided, wlmaker will scan default paths for a state file, or fall back to a built-in default.
 --theme_file : Optional: Path to a "theme" file, configuring the visual style for elements. If not provided, wlmaker will use a built-in default theme.
@@ -22,6 +23,14 @@
   run X11 client applications under wlmaker.
 
   `--nostart_xwayland`, `--start_xwayland=false`: Do not start *XWayland*.
+
+* `--lazy_xwayland`, `--lazy_xwayland=true`: Together with `--start_xwayland`,
+  starts the *XWayland* server only when the first X11 client connects. The X11
+  display socket is reserved at startup, so `DISPLAY` is set as usual. Saves
+  the memory of an idle *XWayland* server in sessions without X11 clients.
+
+  `--nolazy_xwayland`, `--lazy_xwayland=false`: Starts *XWayland* right away
+  (default).
 
 * `--config_file=<FILE>`: Loads the @ref config_file from `<FILE>`. Optional.
   If not provided, wlmaker will attempt to load the file from default
