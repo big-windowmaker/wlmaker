@@ -239,6 +239,11 @@ TBD: Raise/Lower.
 
 * [x] :white_check_mark: Implemented, feedback provided by the wlroots scene graph.
 
+### `relative-pointer-unstable-v1`
+
+* [x] :white_check_mark: Implemented.
+* [ ] Add `pointer-constraints-unstable-v1`, to lock or confine the pointer.
+
 ### `single-pixel-buffer-v1`
 
 * [x] :white_check_mark: Implemented.

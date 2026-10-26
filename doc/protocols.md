@@ -31,6 +31,15 @@ Used by video players and toolkits for smooth animation and A/V sync.
 * Status: Supported. Feedback is sent by the wlroots scene graph.
 * Reference: https://wayland.app/protocols/presentation-time
 
+# Relative pointer
+
+Sends relative pointer motion (unaccelerated, and not limited by the screen
+edges) to the client that has pointer focus. Used by games and by 3D or
+remote desktop applications.
+
+* Status: Supported. Without pointer constraints, the cursor still moves.
+* Reference: https://wayland.app/protocols/relative-pointer-unstable-v1
+
 # Session lock
 
 Allows privileged Wayland clients to lock the session and display arbitrary
