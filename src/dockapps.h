@@ -109,6 +109,22 @@ int wlmaker_dockapps_drag_delta(
     int tile_pitch);
 
 /**
+ * Returns the move needed to shift the dock-app's tile by one place on the
+ * screen, towards `direction`. For a right-click menu's "Move Up" etc.
+ *
+ * @param dockapps_ptr
+ * @param tile_ptr
+ * @param direction           One of WLR_EDGE_TOP, _BOTTOM, _LEFT, _RIGHT.
+ *
+ * @return The `delta` for @ref wlmaker_dockapps_move: +1 or -1. 0 if the
+ *     direction is across the dock, or the tile is already at that end.
+ */
+int wlmaker_dockapps_delta_towards(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    uint32_t direction);
+
+/**
  * Returns the name identifying the dock-app of `wl_client_ptr`: The name of
  * the client's executable (process name), eg. "wlmclock".
  *

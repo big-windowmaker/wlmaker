@@ -24,14 +24,19 @@
 #include <inttypes.h>
 #include <libbase/libbase.h>
 #include <linux/input-event-codes.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <wayland-server-core.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/util/edges.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #undef WLR_USE_UNSTABLE
 
+#include "context_menu.h"
 #include "dockapps.h"
 #include "input/cursor.h"
 #include "input/manager.h"
@@ -67,6 +72,11 @@ struct _wlmaker_toplevel_icon_t {
     struct wl_client          *wl_client_ptr;
     /** Back-link to the icon manager. */
     wlmaker_icon_manager_t    *icon_manager_ptr;
+    /**
+     * Back-link to the server. The icon manager may be gone when the icon
+     * is destroyed, eg. when clients get destroyed at exit.
+     */
+    wlmaker_server_t          *server_ptr;
     /** The provided ID. */
     uint32_t                  id;
     /** The XDG toplevel for which the icon is specified. */
@@ -147,6 +157,8 @@ static void handle_surface_destroy(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
+static void _wlmaker_toplevel_icon_open_menu(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr);
 static bool _wlmaker_toplevel_icon_element_pointer_button(
     wlmtk_element_t *element_ptr,
     const wlmtk_button_event_t *button_event_ptr);
@@ -385,6 +397,7 @@ wlmaker_toplevel_icon_t *wlmaker_toplevel_icon_create(
 
     toplevel_icon_ptr->wl_client_ptr = wl_client_ptr;
     toplevel_icon_ptr->icon_manager_ptr = icon_manager_ptr;
+    toplevel_icon_ptr->server_ptr = icon_manager_ptr->server_ptr;
     toplevel_icon_ptr->id = id;
     toplevel_icon_ptr->wlr_xdg_toplevel_ptr = wlr_xdg_toplevel_ptr;
     toplevel_icon_ptr->wlr_surface_ptr = wlr_surface_ptr;
@@ -485,6 +498,11 @@ void wlmaker_toplevel_icon_destroy(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr)
 {
     bs_log(BS_INFO, "Destroying toplevel icon %p", toplevel_icon_ptr);
+    // The menu's items refer to the icon.
+    if (NULL != toplevel_icon_ptr->server_ptr) {
+        wlmaker_context_menu_cancel(
+            toplevel_icon_ptr->server_ptr, toplevel_icon_ptr);
+    }
 
     _wlmaker_toplevel_icon_element_destroy(
         wlmtk_tile_element(&toplevel_icon_ptr->super_tile));
@@ -658,6 +676,123 @@ void _wlmaker_toplevel_icon_remove_from_dock(
 }
 
 /* ------------------------------------------------------------------------- */
+/** Moves the icon by one place in the dock, towards `direction`. */
+static void _wlmaker_toplevel_icon_move(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr, uint32_t direction)
+{
+    wlmaker_server_t *server_ptr = toplevel_icon_ptr->icon_manager_ptr->server_ptr;
+    if (NULL == server_ptr->dockapps_ptr) return;
+    wlmaker_dockapps_move(
+        server_ptr->dockapps_ptr,
+        &toplevel_icon_ptr->super_tile,
+        wlmaker_dockapps_delta_towards(
+            server_ptr->dockapps_ptr,
+            &toplevel_icon_ptr->super_tile,
+            direction));
+}
+
+/** Menu callback: Moves the icon up. */
+static void _wlmaker_toplevel_icon_menu_up(void *ud_ptr) {
+    _wlmaker_toplevel_icon_move(ud_ptr, WLR_EDGE_TOP);
+}
+/** Menu callback: Moves the icon down. */
+static void _wlmaker_toplevel_icon_menu_down(void *ud_ptr) {
+    _wlmaker_toplevel_icon_move(ud_ptr, WLR_EDGE_BOTTOM);
+}
+/** Menu callback: Moves the icon left. */
+static void _wlmaker_toplevel_icon_menu_left(void *ud_ptr) {
+    _wlmaker_toplevel_icon_move(ud_ptr, WLR_EDGE_LEFT);
+}
+/** Menu callback: Moves the icon right. */
+static void _wlmaker_toplevel_icon_menu_right(void *ud_ptr) {
+    _wlmaker_toplevel_icon_move(ud_ptr, WLR_EDGE_RIGHT);
+}
+
+/** Returns the process ID of the dock-app, or 0 if unknown. */
+static pid_t _wlmaker_toplevel_icon_pid(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    if (NULL == toplevel_icon_ptr->wl_client_ptr) return 0;
+    pid_t pid = 0;
+    wl_client_get_credentials(toplevel_icon_ptr->wl_client_ptr,
+                              &pid, NULL, NULL);
+    // Never ourselves, or a process group.
+    if (pid <= 1 || pid == getpid()) return 0;
+    return pid;
+}
+
+/** Menu callback: Terminates the dock-app. */
+static void _wlmaker_toplevel_icon_menu_kill(void *ud_ptr)
+{
+    pid_t pid = _wlmaker_toplevel_icon_pid(ud_ptr);
+    if (0 == pid) return;
+    bs_log(BS_INFO, "Terminating dock-app with PID %"PRIdMAX, (intmax_t)pid);
+    if (0 != kill(pid, SIGTERM)) {
+        bs_log(BS_WARNING | BS_ERRNO, "Failed kill(%"PRIdMAX", SIGTERM)",
+               (intmax_t)pid);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Opens the dock-app tile's right-click menu: Moving it within the dock (the
+ * order is stored, as when dragging it), and terminating the dock-app.
+ *
+ * @param toplevel_icon_ptr
+ */
+void _wlmaker_toplevel_icon_open_menu(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    wlmaker_server_t *server_ptr = toplevel_icon_ptr->icon_manager_ptr->server_ptr;
+    wlmtk_tile_t *tile_ptr = &toplevel_icon_ptr->super_tile;
+    if (NULL == server_ptr->style_ptr ||
+        NULL == server_ptr->style_ptr->menu_style_ptr) return;
+
+    static const struct {
+        uint32_t direction;
+        const char *text_ptr;
+        wlmaker_context_menu_callback_t callback;
+    } moves[] = {
+        { WLR_EDGE_TOP, "Move Up", _wlmaker_toplevel_icon_menu_up },
+        { WLR_EDGE_BOTTOM, "Move Down", _wlmaker_toplevel_icon_menu_down },
+        { WLR_EDGE_LEFT, "Move Left", _wlmaker_toplevel_icon_menu_left },
+        { WLR_EDGE_RIGHT, "Move Right", _wlmaker_toplevel_icon_menu_right },
+    };
+
+    char *name_ptr = NULL;
+    if (NULL != toplevel_icon_ptr->wl_client_ptr) {
+        name_ptr = wlmaker_dockapps_client_name(toplevel_icon_ptr->wl_client_ptr);
+    }
+    wlmaker_context_menu_t *cm_ptr = wlmaker_context_menu_create(
+        server_ptr, toplevel_icon_ptr,
+        NULL != name_ptr ? name_ptr : "Dock-app");
+    if (NULL != name_ptr) free(name_ptr);
+    if (NULL == cm_ptr) return;
+    bool rv = true;
+    size_t items = 0;
+    for (size_t i = 0; i < sizeof(moves) / sizeof(moves[0]); ++i) {
+        if (0 == wlmaker_dockapps_delta_towards(
+                server_ptr->dockapps_ptr, tile_ptr, moves[i].direction)) {
+            continue;
+        }
+        rv = rv && wlmaker_context_menu_add_item(
+            cm_ptr, moves[i].text_ptr, moves[i].callback, toplevel_icon_ptr);
+        ++items;
+    }
+    if (0 != _wlmaker_toplevel_icon_pid(toplevel_icon_ptr)) {
+        rv = rv && wlmaker_context_menu_add_item(
+            cm_ptr, "Kill", _wlmaker_toplevel_icon_menu_kill,
+            toplevel_icon_ptr);
+        ++items;
+    }
+    if (!rv || 0 == items) {
+        wlmaker_context_menu_destroy(cm_ptr);
+        return;
+    }
+    wlmaker_context_menu_open(cm_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 /**
  * Implements @ref wlmtk_element_vmt_t::pointer_button.
  *
@@ -703,6 +838,20 @@ bool _wlmaker_toplevel_icon_element_pointer_button(
 
     uint32_t modifier = wlmim_cursor_options(
         server_ptr->input_manager_ptr)->move_window_modifier;
+    // Right button with the move modifier, or on the tile's border (not on
+    // the dock-app, which may use the button itself): The tile's menu.
+    if (NULL != server_ptr->dockapps_ptr &&
+        BTN_RIGHT == button_event_ptr->button &&
+        WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        ((0 != modifier &&
+          modifier == button_event_ptr->keyboard_modifiers) ||
+         NULL == toplevel_icon_ptr->content_surface_ptr ||
+         !wlmtk_surface_element(
+             toplevel_icon_ptr->content_surface_ptr)->pointer_inside)) {
+        _wlmaker_toplevel_icon_open_menu(toplevel_icon_ptr);
+        return true;
+    }
+
     if (NULL != server_ptr->dockapps_ptr &&
         0 != modifier &&
         BTN_LEFT == button_event_ptr->button &&

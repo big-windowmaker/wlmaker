@@ -31,6 +31,7 @@ set(public_header_files
   action_item.h
   clip.h
   config.h
+  context_menu.h
   corner.h
   dockapps.h
   icon_manager.h
@@ -56,6 +57,7 @@ target_sources(wlmaker_lib PRIVATE
   action_item.c
   clip.c
   config.c
+  context_menu.c
   corner.c
   dockapps.c
   icon_manager.c

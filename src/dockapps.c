@@ -240,6 +240,36 @@ void wlmaker_dockapps_move(
 }
 
 /* ------------------------------------------------------------------------- */
+int wlmaker_dockapps_delta_towards(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    uint32_t direction)
+{
+    size_t index;
+    if (NULL == _wlmaker_dockapps_find(dockapps_ptr, tile_ptr, &index)) {
+        return 0;
+    }
+    const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
+        dockapps_ptr->dock_ptr);
+    bool vertical = (WLR_EDGE_LEFT == pos_ptr->edge ||
+                     WLR_EDGE_RIGHT == pos_ptr->edge);
+
+    int delta = 0;
+    if (vertical && WLR_EDGE_TOP == direction) delta = -1;
+    if (vertical && WLR_EDGE_BOTTOM == direction) delta = 1;
+    if (!vertical && WLR_EDGE_LEFT == direction) delta = -1;
+    if (!vertical && WLR_EDGE_RIGHT == direction) delta = 1;
+    // Positions count away from the anchor.
+    if (WLR_EDGE_BOTTOM == pos_ptr->anchor ||
+        WLR_EDGE_RIGHT == pos_ptr->anchor) delta = -delta;
+
+    int new_index = (int)index + delta;
+    if (0 > new_index ||
+        (int)bs_dllist_size(&dockapps_ptr->placed) <= new_index) return 0;
+    return delta;
+}
+
+/* ------------------------------------------------------------------------- */
 int wlmaker_dockapps_drag_delta(
     wlmaker_dockapps_t *dockapps_ptr,
     double dx,
@@ -490,6 +520,20 @@ void test_order(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 2, wlmtk_dock_tile_index(dock_ptr, &t[0]));
     BS_TEST_VERIFY_EQ(test_ptr, 3, wlmtk_dock_tile_index(dock_ptr, &t[2]));
     BS_TEST_VERIFY_EQ(test_ptr, 4, wlmtk_dock_tile_index(dock_ptr, &t[3]));
+
+    // The menu's moves: Order is b, a, (none), c from the top.
+    BS_TEST_VERIFY_EQ(test_ptr, 0,
+                      wlmaker_dockapps_delta_towards(d, &t[1], WLR_EDGE_TOP));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, wlmaker_dockapps_delta_towards(
+                          d, &t[1], WLR_EDGE_BOTTOM));
+    BS_TEST_VERIFY_EQ(test_ptr, -1,
+                      wlmaker_dockapps_delta_towards(d, &t[3], WLR_EDGE_TOP));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmaker_dockapps_delta_towards(
+                          d, &t[3], WLR_EDGE_BOTTOM));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmaker_dockapps_delta_towards(
+                          d, &t[0], WLR_EDGE_LEFT));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmaker_dockapps_delta_towards(
+                          d, &clip, WLR_EDGE_BOTTOM));
 
     // Move "c" towards the anchor, beyond the first dock-app: Stops there.
     wlmaker_dockapps_move(d, &t[3], -10);
