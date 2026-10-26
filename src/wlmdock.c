@@ -36,6 +36,7 @@
 #include <wlr/backend.h>
 #include <wlr/backend/wayland.h>
 #include <wlr/render/allocator.h>
+#include <wlr/render/pixman.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_output.h>
@@ -416,9 +417,18 @@ wlmdock_t *_wlmdock_create(
         return NULL;
     }
 
-    // 6. Prepare renderer and allocator.
-    dock_ptr->wlr_renderer_ptr = wlr_renderer_autocreate(
-        dock_ptr->wlr_backend_ptr);
+    // 6. Prepare renderer and allocator. The dock is small and drawn in
+    // software anyway: Default to the pixman renderer, which makes the
+    // allocator use shared memory. An automatically chosen GPU renderer
+    // and allocator may pick the DRM primary node, where a client cannot
+    // allocate buffers (eg. "DRM_IOCTL_MODE_CREATE_DUMB failed: Permission
+    // denied"), leaving the dock invisible. WLR_RENDERER still overrides.
+    if (NULL != getenv("WLR_RENDERER")) {
+        dock_ptr->wlr_renderer_ptr = wlr_renderer_autocreate(
+            dock_ptr->wlr_backend_ptr);
+    } else {
+        dock_ptr->wlr_renderer_ptr = wlr_pixman_renderer_create();
+    }
     if (NULL == dock_ptr->wlr_renderer_ptr) {
         bs_log(BS_ERROR, "Failed to create renderer.");
         _wlmdock_destroy(dock_ptr);
