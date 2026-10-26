@@ -68,6 +68,8 @@ struct _wlmcl_icon_t {
     int32_t                   last_position_y;
     /** Input observer. */
     struct ext_input_position_observer_v1 *input_position_observer_ptr;
+    /** Listener for @ref wlmcl_client_events::pointer_changed. */
+    struct wl_listener        pointer_changed_listener;
 };
 
 static void handle_toplevel_icon_configure(
@@ -84,6 +86,11 @@ static void _wlmcl_icon_input_position_observer_position(
     uint32_t instance,
     int32_t relative_x,
     int32_t relative_y);
+
+static bool _wlmcl_icon_update_pointer_observer(wlmcl_icon_t *icon_ptr);
+static void _wlmcl_icon_handle_pointer_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 
 /* == Data ================================================================= */
 
@@ -111,6 +118,7 @@ wlmcl_icon_t *wlmcl_icon_create(wlmcl_client_t *wlclient_ptr)
     wlmcl_icon_t *icon_ptr = logged_calloc(1, sizeof(wlmcl_icon_t));
     if (NULL == icon_ptr) return NULL;
     icon_ptr->wlclient_ptr = wlclient_ptr;
+    icon_ptr->pointer_changed_listener.notify = _wlmcl_icon_handle_pointer_changed;
 
     icon_ptr->wl_surface_ptr = wl_compositor_create_surface(
         wlmcl_client_attributes(wlclient_ptr)->wl_compositor_ptr);
@@ -140,26 +148,13 @@ wlmcl_icon_t *wlmcl_icon_create(wlmcl_client_t *wlclient_ptr)
         icon_ptr);
     wl_surface_commit(icon_ptr->wl_surface_ptr);
 
-    if (NULL != wlmcl_client_attributes(wlclient_ptr)->input_observation_manager_ptr) {
-        icon_ptr->input_position_observer_ptr =
-            ext_input_observation_manager_v1_create_pointer_observer(
-                wlmcl_client_attributes(wlclient_ptr)->input_observation_manager_ptr,
-                wlmcl_client_attributes(wlclient_ptr)->wl_pointer_ptr,
-                icon_ptr->wl_surface_ptr);
-        if (NULL == icon_ptr->input_position_observer_ptr) {
-            bs_log(BS_ERROR,
-                   "Failed ext_input_observation_v1_pointer_position(%p, %p)",
-                   wlmcl_client_attributes(wlclient_ptr)->input_observation_manager_ptr,
-                   icon_ptr->wl_surface_ptr);
-            wlmcl_icon_destroy(icon_ptr);
-            return NULL;
-        }
-        ext_input_position_observer_v1_add_listener(
-            icon_ptr->input_position_observer_ptr,
-            &_wlmcl_icon_tracker_listener,
-            icon_ptr);
-        bs_log(BS_INFO, "Created pointer tracker %p for wl_surface %p",
-               icon_ptr->input_position_observer_ptr, icon_ptr->wl_surface_ptr);
+    // The pointer observer needs the seat's pointer. It may not have the
+    // pointer capability (yet), eg. on touch-only or headless setups.
+    wl_signal_add(&wlmcl_client_events(wlclient_ptr)->pointer_changed,
+                  &icon_ptr->pointer_changed_listener);
+    if (!_wlmcl_icon_update_pointer_observer(icon_ptr)) {
+        wlmcl_icon_destroy(icon_ptr);
+        return NULL;
     }
 
     return icon_ptr;
@@ -168,6 +163,10 @@ wlmcl_icon_t *wlmcl_icon_create(wlmcl_client_t *wlclient_ptr)
 /* ------------------------------------------------------------------------- */
 void wlmcl_icon_destroy(wlmcl_icon_t *icon_ptr)
 {
+    if (NULL != icon_ptr->pointer_changed_listener.link.prev) {
+        wl_list_remove(&icon_ptr->pointer_changed_listener.link);
+        icon_ptr->pointer_changed_listener.link.prev = NULL;
+    }
     if (NULL != icon_ptr->input_position_observer_ptr) {
         ext_input_position_observer_v1_destroy(
             icon_ptr->input_position_observer_ptr);
@@ -231,6 +230,62 @@ void wlmcl_icon_register_position_callback(
 }
 
 /* == Local (static) methods =============================================== */
+
+/* ------------------------------------------------------------------------- */
+/**
+ * (Re)creates the pointer observer, if the input observation manager and
+ * the seat's pointer are available. Destroys it otherwise.
+ *
+ * @param icon_ptr
+ *
+ * @return false on error.
+ */
+bool _wlmcl_icon_update_pointer_observer(wlmcl_icon_t *icon_ptr)
+{
+    const struct wlmcl_client_attributes *attr_ptr = wlmcl_client_attributes(
+        icon_ptr->wlclient_ptr);
+
+    if (NULL != icon_ptr->input_position_observer_ptr) {
+        ext_input_position_observer_v1_destroy(
+            icon_ptr->input_position_observer_ptr);
+        icon_ptr->input_position_observer_ptr = NULL;
+    }
+    if (NULL == attr_ptr->input_observation_manager_ptr ||
+        NULL == attr_ptr->wl_pointer_ptr) return true;
+
+    icon_ptr->input_position_observer_ptr =
+        ext_input_observation_manager_v1_create_pointer_observer(
+            attr_ptr->input_observation_manager_ptr,
+            attr_ptr->wl_pointer_ptr,
+            icon_ptr->wl_surface_ptr);
+    if (NULL == icon_ptr->input_position_observer_ptr) {
+        bs_log(BS_ERROR,
+               "Failed ext_input_observation_manager_v1_create_pointer_observer"
+               "(%p, %p, %p)",
+               attr_ptr->input_observation_manager_ptr,
+               attr_ptr->wl_pointer_ptr,
+               icon_ptr->wl_surface_ptr);
+        return false;
+    }
+    ext_input_position_observer_v1_add_listener(
+        icon_ptr->input_position_observer_ptr,
+        &_wlmcl_icon_tracker_listener,
+        icon_ptr);
+    bs_log(BS_INFO, "Created pointer tracker %p for wl_surface %p",
+           icon_ptr->input_position_observer_ptr, icon_ptr->wl_surface_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles @ref wlmcl_client_events::pointer_changed: Updates observer. */
+void _wlmcl_icon_handle_pointer_changed(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmcl_icon_t *icon_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmcl_icon_t, pointer_changed_listener);
+    _wlmcl_icon_update_pointer_observer(icon_ptr);
+}
 
 /* ------------------------------------------------------------------------- */
 /**
