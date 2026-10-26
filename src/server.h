@@ -185,6 +185,8 @@ struct _wlmaker_server_t {
 
     /** Temporary: Points to the @ref wlmtk_dock_t of the clip. */
     wlmtk_dock_t              *clip_dock_ptr;
+    /** Placement of dock-apps in the clip. Set by the clip, may be NULL. */
+    struct _wlmaker_dockapps_t *dockapps_ptr;
 
     /** Root menu, when active. NULL when not invoked. */
     wlmaker_root_menu_t       *root_menu_ptr;

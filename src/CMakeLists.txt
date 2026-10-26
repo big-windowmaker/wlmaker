@@ -32,6 +32,7 @@ set(public_header_files
   clip.h
   config.h
   corner.h
+  dockapps.h
   icon_manager.h
   idle.h
   input_observation.h
@@ -56,6 +57,7 @@ target_sources(wlmaker_lib PRIVATE
   clip.c
   config.c
   corner.c
+  dockapps.c
   icon_manager.c
   idle.c
   input_observation.c

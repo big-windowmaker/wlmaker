@@ -27,6 +27,7 @@
 #include "clip.h"
 #include "config.h"
 #include "corner.h"
+#include "dockapps.h"
 #include "layer_panel.h"
 #include "lock_mgr.h"
 #include "root_menu.h"
@@ -55,6 +56,7 @@ int main(int argc, const char **argv)
         &wlmaker_clip_test_set,
         &wlmaker_config_test_set,
         &wlmaker_corner_test_set,
+        &wlmaker_dockapps_test_set,
         &wlmaker_layer_panel_test_set,
         &wlmaker_lock_mgr_test_set,
         &wlmaker_root_menu_test_set,

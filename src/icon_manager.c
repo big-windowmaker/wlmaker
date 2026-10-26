@@ -23,6 +23,7 @@
 
 #include <inttypes.h>
 #include <libbase/libbase.h>
+#include <linux/input-event-codes.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <wayland-server-core.h>
@@ -31,6 +32,9 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #undef WLR_USE_UNSTABLE
 
+#include "dockapps.h"
+#include "input/cursor.h"
+#include "input/manager.h"
 #include "toolkit/toolkit.h"
 #include "wlmaker-icon-unstable-v1-server-protocol.h"
 #include "server.h"
@@ -82,6 +86,19 @@ struct _wlmaker_toplevel_icon_t {
     struct wl_listener        surface_commit_listener;
     /** Listener for the `destroy` event of `wlr_surface_ptr`. */
     struct wl_listener        surface_destroy_listener;
+
+    /** The superclass' original element virtual method table. */
+    wlmtk_element_vmt_t       orig_element_vmt;
+    /** Whether the icon is being dragged to another place in the dock. */
+    bool                      dragging;
+    /** Pointer position where the drag started, in tile coordinates. */
+    double                    drag_start_x;
+    /** Pointer position where the drag started, in tile coordinates. */
+    double                    drag_start_y;
+    /** Latest pointer position during the drag, in tile coordinates. */
+    double                    drag_x;
+    /** Latest pointer position during the drag, in tile coordinates. */
+    double                    drag_y;
 };
 
 static wlmaker_icon_manager_t *icon_manager_from_resource(
@@ -130,6 +147,16 @@ static void handle_surface_destroy(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
+static bool _wlmaker_toplevel_icon_element_pointer_button(
+    wlmtk_element_t *element_ptr,
+    const wlmtk_button_event_t *button_event_ptr);
+static bool _wlmaker_toplevel_icon_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr);
+static void _wlmaker_toplevel_icon_element_pointer_grab_cancel(
+    wlmtk_element_t *element_ptr);
+static void _wlmaker_toplevel_icon_remove_from_dock(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr);
 static void _wlmaker_toplevel_icon_element_destroy(
     wlmtk_element_t *element_ptr);
 static bool _wlmaker_toplevel_icon_tile_set_content_size(
@@ -155,6 +182,10 @@ toplevel_icon_v1_implementation = {
 /** The icon's extension to @ref wlmtk_element_t virtual method table. */
 static const wlmtk_element_vmt_t _wlmaker_toplevel_icon_element_vmt = {
     .destroy = _wlmaker_toplevel_icon_element_destroy,
+    .pointer_button = _wlmaker_toplevel_icon_element_pointer_button,
+    .pointer_accepts_motion =
+    _wlmaker_toplevel_icon_element_pointer_accepts_motion,
+    .pointer_grab_cancel = _wlmaker_toplevel_icon_element_pointer_grab_cancel,
 };
 
 /** Icon's extension to @ref wlmtk_tile_t virtual method table. */
@@ -382,7 +413,7 @@ wlmaker_toplevel_icon_t *wlmaker_toplevel_icon_create(
         wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
         return NULL;
     }
-    wlmtk_element_extend(
+    toplevel_icon_ptr->orig_element_vmt = wlmtk_element_extend(
         wlmtk_tile_element(&toplevel_icon_ptr->super_tile),
         &_wlmaker_toplevel_icon_element_vmt);
     wlmtk_tile_extend(
@@ -391,9 +422,27 @@ wlmaker_toplevel_icon_t *wlmaker_toplevel_icon_create(
     wlmtk_element_set_visible(
         wlmtk_tile_element(&toplevel_icon_ptr->super_tile),
         true);
-    wlmtk_dock_add_tile(
-        icon_manager_ptr->server_ptr->clip_dock_ptr,
-        &toplevel_icon_ptr->super_tile);
+    if (NULL != icon_manager_ptr->server_ptr->dockapps_ptr) {
+        char *name_ptr = wlmaker_dockapps_client_name(wl_client_ptr);
+        if (NULL == name_ptr) {
+            bs_log(BS_WARNING, "Toplevel icon %p: Failed to obtain the "
+                   "dock-app's name, it will be placed last.",
+                   toplevel_icon_ptr);
+        }
+        bool added = wlmaker_dockapps_add(
+            icon_manager_ptr->server_ptr->dockapps_ptr,
+            &toplevel_icon_ptr->super_tile,
+            name_ptr);
+        if (NULL != name_ptr) free(name_ptr);
+        if (!added) {
+            wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
+            return NULL;
+        }
+    } else if (NULL != icon_manager_ptr->server_ptr->clip_dock_ptr) {
+        wlmtk_dock_add_tile(
+            icon_manager_ptr->server_ptr->clip_dock_ptr,
+            &toplevel_icon_ptr->super_tile);
+    }
 
     toplevel_icon_ptr->content_surface_ptr = wlmtk_surface_create(
         wlr_surface_ptr,
@@ -577,12 +626,129 @@ void _wlmaker_toplevel_icon_element_destroy(wlmtk_element_t *element_ptr)
         toplevel_icon_ptr->content_surface_ptr = NULL;
     }
 
-    if (wlmtk_tile_element(&toplevel_icon_ptr->super_tile
-            )->parent_container_ptr) {
-        wlmtk_dock_remove_tile(
-            toplevel_icon_ptr->icon_manager_ptr->server_ptr->clip_dock_ptr,
-            &toplevel_icon_ptr->super_tile);
+    _wlmaker_toplevel_icon_remove_from_dock(toplevel_icon_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Removes the icon's tile from the clip's dock, if it is in there. */
+void _wlmaker_toplevel_icon_remove_from_dock(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    wlmtk_element_t *element_ptr = wlmtk_tile_element(
+        &toplevel_icon_ptr->super_tile);
+    // Not in the dock (anymore), eg. if the clip was destroyed earlier. Then,
+    // the icon manager and server may already be gone, too: Don't use them.
+    if (NULL == element_ptr->parent_container_ptr) return;
+    wlmaker_server_t *server_ptr = toplevel_icon_ptr->icon_manager_ptr->server_ptr;
+
+    if (toplevel_icon_ptr->dragging) {
+        wlmtk_container_pointer_grab_release(
+            element_ptr->parent_container_ptr, element_ptr);
+        toplevel_icon_ptr->dragging = false;
     }
+    if (NULL != server_ptr->dockapps_ptr) {
+        wlmaker_dockapps_remove(
+            server_ptr->dockapps_ptr, &toplevel_icon_ptr->super_tile);
+    }
+    if (NULL != element_ptr->parent_container_ptr &&
+        NULL != server_ptr->clip_dock_ptr) {
+        wlmtk_dock_remove_tile(
+            server_ptr->clip_dock_ptr, &toplevel_icon_ptr->super_tile);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::pointer_button.
+ *
+ * Dragging the icon with the left button and the window-move modifier held
+ * (the same as for moving windows) moves it to another place in the dock.
+ * Other button events go to the dock-app.
+ *
+ * @param element_ptr
+ * @param button_event_ptr
+ *
+ * @return true if the event was consumed.
+ */
+bool _wlmaker_toplevel_icon_element_pointer_button(
+    wlmtk_element_t *element_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmaker_toplevel_icon_t,
+        super_tile.super_container.super_element);
+    wlmaker_server_t *server_ptr = toplevel_icon_ptr->icon_manager_ptr->server_ptr;
+
+    if (toplevel_icon_ptr->dragging) {
+        if (BTN_LEFT == button_event_ptr->button &&
+            WLMTK_BUTTON_UP == button_event_ptr->type) {
+            toplevel_icon_ptr->dragging = false;
+            if (NULL != element_ptr->parent_container_ptr) {
+                wlmtk_container_pointer_grab_release(
+                    element_ptr->parent_container_ptr, element_ptr);
+            }
+            const wlmaker_config_style_t *style_ptr = server_ptr->style_ptr;
+            int delta = wlmaker_dockapps_drag_delta(
+                server_ptr->dockapps_ptr,
+                toplevel_icon_ptr->drag_x - toplevel_icon_ptr->drag_start_x,
+                toplevel_icon_ptr->drag_y - toplevel_icon_ptr->drag_start_y,
+                style_ptr->tile.size + style_ptr->dock.margin.width);
+            wlmaker_dockapps_move(
+                server_ptr->dockapps_ptr,
+                &toplevel_icon_ptr->super_tile,
+                delta);
+        }
+        return true;
+    }
+
+    uint32_t modifier = wlmim_cursor_options(
+        server_ptr->input_manager_ptr)->move_window_modifier;
+    if (NULL != server_ptr->dockapps_ptr &&
+        0 != modifier &&
+        BTN_LEFT == button_event_ptr->button &&
+        WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        modifier == button_event_ptr->keyboard_modifiers &&
+        NULL != element_ptr->parent_container_ptr) {
+        toplevel_icon_ptr->dragging = true;
+        toplevel_icon_ptr->drag_start_x = element_ptr->last_pointer_motion_event.x;
+        toplevel_icon_ptr->drag_start_y = element_ptr->last_pointer_motion_event.y;
+        toplevel_icon_ptr->drag_x = toplevel_icon_ptr->drag_start_x;
+        toplevel_icon_ptr->drag_y = toplevel_icon_ptr->drag_start_y;
+        wlmtk_container_pointer_grab(
+            element_ptr->parent_container_ptr, element_ptr);
+        return true;
+    }
+
+    return toplevel_icon_ptr->orig_element_vmt.pointer_button(
+        element_ptr, button_event_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Implements @ref wlmtk_element_vmt_t::pointer_accepts_motion. Tracks drag. */
+bool _wlmaker_toplevel_icon_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr)
+{
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmaker_toplevel_icon_t,
+        super_tile.super_container.super_element);
+    if (toplevel_icon_ptr->dragging) {
+        toplevel_icon_ptr->drag_x = motion_event_ptr->x;
+        toplevel_icon_ptr->drag_y = motion_event_ptr->y;
+    }
+    return toplevel_icon_ptr->orig_element_vmt.pointer_accepts_motion(
+        element_ptr, motion_event_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Implements @ref wlmtk_element_vmt_t::pointer_grab_cancel. Ends the drag. */
+void _wlmaker_toplevel_icon_element_pointer_grab_cancel(
+    wlmtk_element_t *element_ptr)
+{
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmaker_toplevel_icon_t,
+        super_tile.super_container.super_element);
+    toplevel_icon_ptr->dragging = false;
 }
 
 /* ------------------------------------------------------------------------- */
