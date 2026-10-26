@@ -208,6 +208,9 @@ bs_dllist_t *wlmcl_client_outputs(wlmcl_client_t *wlmcl_client_ptr);
  * be called with the provided arguments. This is a one-time registration. For
  * repeated calls, clients need to re-register.
  *
+ * Should the system clock be set (eg. stepped by NTP), all registered timers
+ * are called right away, permitting clients to re-register for the new time.
+ *
  * @param wlmcl_client_ptr
  * @param target_usec
  * @param callback
@@ -220,6 +223,39 @@ bool wlmcl_client_register_timer(
     uint64_t target_usec,
     wlmcl_client_callback_t callback,
     void *callback_ud_ptr);
+
+/**
+ * Registers a file descriptor to be watched by the client's mainloop.
+ *
+ * Once `fd` becomes readable (or reports an error or hangup), `callback` will
+ * be called from the mainloop. The callback must consume the data, or
+ * unregister `fd`; otherwise it will be called again right away. Permits to
+ * integrate other event sources (eg. an `eventfd` signalled by a thread) with
+ * the client, without polling.
+ *
+ * @param wlmcl_client_ptr
+ * @param fd
+ * @param callback
+ * @param callback_ud_ptr
+ *
+ * @return true on success. Fails if `fd` is already watched, or if too many
+ *     file descriptors are watched already.
+ */
+bool wlmcl_client_register_fd(
+    wlmcl_client_t *wlmcl_client_ptr,
+    int fd,
+    wlmcl_client_callback_t callback,
+    void *callback_ud_ptr);
+
+/**
+ * Unregisters a file descriptor registered by @ref wlmcl_client_register_fd.
+ *
+ * May be called from within the callback.
+ *
+ * @param wlmcl_client_ptr
+ * @param fd
+ */
+void wlmcl_client_unregister_fd(wlmcl_client_t *wlmcl_client_ptr, int fd);
 
 #ifdef __cplusplus
 }  // extern "C"
