@@ -49,6 +49,16 @@ of available outputs, and set their propertis.
 * Status: Supported.
 * Reference: https://wayland.app/protocols/wlr-output-management-unstable-v1
 
+# XDG activation
+
+Permits clients to pass focus to another surface, for example to raise an
+existing window when an application is launched a second time, or when a
+launcher hands over an activation token.
+
+* Status: Supported. Any valid token is accepted. Windows on a workspace
+  other than the current one are not activated.
+* Reference: https://wayland.app/protocols/xdg-activation-v1
+
 # XDG decoration
 
 This interface allows a compositor to announce support for server-side

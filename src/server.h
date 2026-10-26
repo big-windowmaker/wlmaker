@@ -32,6 +32,7 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
 #undef WLR_USE_UNSTABLE
 
 #include "input/manager.h"
@@ -119,6 +120,10 @@ struct _wlmaker_server_t {
     wlmaker_xdg_shell_t       *xdg_shell_ptr;
     /** The XDG decoration manager. */
     wlmaker_xdg_decoration_manager_t *xdg_decoration_manager_ptr;
+    /** The XDG activation manager. Permits clients to raise their windows. */
+    struct wlr_xdg_activation_v1 *wlr_xdg_activation_v1_ptr;
+    /** Listener for `request_activate` of `wlr_xdg_activation_v1::events`. */
+    struct wl_listener        xdg_activation_request_activate_listener;
     /** Layer shell handler. */
     wlmaker_layer_shell_t     *layer_shell_ptr;
     /** Backend handler. */

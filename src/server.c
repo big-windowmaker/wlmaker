@@ -38,12 +38,14 @@
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
 #undef WLR_USE_UNSTABLE
 
 #include "input/manager.h"
 #include "task_list.h"
 #include "toolkit/toolkit.h"
 #include "toplevel_tracker.h"
+#include "xdg_toplevel.h"
 
 /* == Declarations ========================================================= */
 
@@ -63,6 +65,9 @@ static void handle_request_set_selection(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void handle_request_set_primary_selection(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_server_handle_xdg_activation_request_activate(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
@@ -286,6 +291,18 @@ wlmaker_server_t *wlmaker_server_create(
         return NULL;
     }
 
+    server_ptr->wlr_xdg_activation_v1_ptr = wlr_xdg_activation_v1_create(
+        server_ptr->wl_display_ptr);
+    if (NULL == server_ptr->wlr_xdg_activation_v1_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_xdg_activation_v1_create()");
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
+    wlmtk_util_connect_listener_signal(
+        &server_ptr->wlr_xdg_activation_v1_ptr->events.request_activate,
+        &server_ptr->xdg_activation_request_activate_listener,
+        _wlmaker_server_handle_xdg_activation_request_activate);
+
     server_ptr->layer_shell_ptr = wlmaker_layer_shell_create(server_ptr);
     if (NULL == server_ptr->layer_shell_ptr) {
         bs_log(BS_ERROR, "Failed wlmaker_layer_shell_create()");
@@ -399,6 +416,10 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
         wlmaker_layer_shell_destroy(server_ptr->layer_shell_ptr);
         server_ptr->layer_shell_ptr = NULL;
     }
+
+    // The activation manager is destroyed along with the display.
+    wlmtk_util_disconnect_listener(
+        &server_ptr->xdg_activation_request_activate_listener);
 
     if (NULL != server_ptr->xdg_decoration_manager_ptr) {
         wlmaker_xdg_decoration_manager_destroy(
@@ -595,6 +616,45 @@ void handle_request_set_primary_selection(
 
     wlr_seat_set_primary_selection(
         server_ptr->wlr_seat_ptr, event_ptr->source, event_ptr->serial);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles `request_activate` of `wlr_xdg_activation_v1`: Activates & raises.
+ *
+ * Any valid token is accepted, ie. there is no focus stealing prevention.
+ * Windows that are not on the current workspace are left untouched.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to a struct
+ *                            wlr_xdg_activation_v1_request_activate_event.
+ */
+void _wlmaker_server_handle_xdg_activation_request_activate(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_server_t *server_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_server_t,
+        xdg_activation_request_activate_listener);
+    struct wlr_xdg_activation_v1_request_activate_event *event_ptr = data_ptr;
+
+    if (wlmtk_desktop_locked(server_ptr->desktop_ptr)) return;
+
+    wlmtk_window_t *window_ptr = wlmaker_xdg_toplevel_window_from_wlr_surface(
+        event_ptr->surface);
+    if (NULL == window_ptr) return;
+
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(window_ptr);
+    if (NULL == workspace_ptr) return;
+    if (workspace_ptr != wlmtk_desktop_get_current_workspace(
+            server_ptr->desktop_ptr)) {
+        bs_log(BS_INFO, "Activation request for window %p on another "
+               "workspace, ignored.", window_ptr);
+        return;
+    }
+
+    wlmtk_workspace_raise_window(workspace_ptr, window_ptr);
+    wlmtk_workspace_activate_window(workspace_ptr, window_ptr);
 }
 
 /* == End of server.c ====================================================== */

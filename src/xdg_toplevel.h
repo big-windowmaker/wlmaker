@@ -25,7 +25,9 @@
 #include <stdbool.h>
 
 #include "task_list.h"
+#include "toolkit/toolkit.h"
 
+struct wlr_surface;
 struct wlr_xdg_toplevel;
 struct wlmaker_xdg_toplevel;
 
@@ -53,6 +55,17 @@ void wlmaker_xdg_toplevel_destroy(
 void wlmaker_xdg_toplevel_set_server_side_decorated(
     struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr,
     bool server_side_decorated);
+
+/**
+ * Looks up the window of the XDG toplevel that `wlr_surface_ptr` belongs to.
+ *
+ * @param wlr_surface_ptr
+ *
+ * @return Pointer to the @ref wlmtk_window_t, or NULL if `wlr_surface_ptr` is
+ *     not the surface of a wlmaker XDG toplevel.
+ */
+wlmtk_window_t *wlmaker_xdg_toplevel_window_from_wlr_surface(
+    struct wlr_surface *wlr_surface_ptr);
 
 /** Unit test set. */
 extern const bs_test_set_t wlmaker_xdg_toplevel_test_set;
