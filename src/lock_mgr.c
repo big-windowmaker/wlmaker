@@ -33,6 +33,7 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_session_lock_v1.h>
 #undef WLR_USE_UNSTABLE
 
@@ -412,6 +413,17 @@ void _wlmaker_lock_if_ready(wlmaker_lock_t *lock_ptr)
     lock_ptr->locked = true;
     wlmtk_element_set_visible(&lock_ptr->container.super_element, true);
 
+    // A popup (eg. the menu of a panel) may hold a seat grab. Its keyboard
+    // grab keeps keyboard focus on the popup: The lock surface would not get
+    // focus, and keys would go to the popup. Ending the grabs dismisses the
+    // popups. Also clear the pointer focus from the regular surfaces.
+    if (NULL != lock_ptr->wlr_seat_ptr) {
+        wlr_seat_pointer_end_grab(lock_ptr->wlr_seat_ptr);
+        wlr_seat_keyboard_end_grab(lock_ptr->wlr_seat_ptr);
+        wlr_seat_touch_end_grab(lock_ptr->wlr_seat_ptr);
+        wlr_seat_pointer_notify_clear_focus(lock_ptr->wlr_seat_ptr);
+    }
+
     // Grant keyboard focus to the first-found surface that's committed.
     bs_dllist_node_t *dlnode_ptr = bs_dllist_find(
         &lock_ptr->outputs,
@@ -763,6 +775,7 @@ static void test_lock_crash(bs_test_t *test_ptr);
 static void test_lock_multi_output(bs_test_t *test_ptr);
 static void test_lock_takeover(bs_test_t *test_ptr);
 static void test_lock_refuse(bs_test_t *test_ptr);
+static void test_lock_ends_grabs(bs_test_t *test_ptr);
 
 static uint32_t _mock_wlr_session_lock_surface_v1_configure(
     struct wlr_session_lock_surface_v1 *lock_surface,
@@ -780,6 +793,7 @@ const bs_test_case_t wlmaker_lock_mgr_test_cases[] = {
     { true, "lock_multi_output", test_lock_multi_output },
     { true, "lock_takeover", test_lock_takeover },
     { true, "lock_refuse", test_lock_refuse },
+    { true, "lock_ends_grabs", test_lock_ends_grabs },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -1327,6 +1341,93 @@ void test_lock_refuse(bs_test_t *test_ptr)
     wl_signal_emit(&lock.events.destroy, NULL);
 
     wlmtk_container_fini(&c);
+    wlmtk_desktop_remove_workspace(server.desktop_ptr, workspace_ptr);
+    wlmtk_workspace_destroy(workspace_ptr);
+    wlmtk_desktop_destroy(server.desktop_ptr);
+    wl_display_destroy(server.wl_display_ptr);
+}
+
+
+/** Counts calls to the test grabs' `cancel`. */
+static int _test_grab_cancels;
+/** Test keyboard grab: enter. Does not pass on the focus, like xdg_popup. */
+static void _test_kbd_grab_enter(
+    __UNUSED__ struct wlr_seat_keyboard_grab *grab,
+    __UNUSED__ struct wlr_surface *surface,
+    __UNUSED__ const uint32_t keycodes[],
+    __UNUSED__ size_t num_keycodes,
+    __UNUSED__ const struct wlr_keyboard_modifiers *modifiers) {}
+/** Test keyboard grab: clear_focus. Keeps the focus. */
+static void _test_kbd_grab_clear_focus(
+    __UNUSED__ struct wlr_seat_keyboard_grab *grab) {}
+/** Test keyboard grab: cancel. */
+static void _test_kbd_grab_cancel(
+    __UNUSED__ struct wlr_seat_keyboard_grab *grab) { ++_test_grab_cancels; }
+/** Test pointer grab: cancel. */
+static void _test_ptr_grab_cancel(
+    __UNUSED__ struct wlr_seat_pointer_grab *grab) { ++_test_grab_cancels; }
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tests that locking ends seat grabs (eg. held by an xdg_popup of a panel),
+ * so that the lock surface can obtain keyboard focus.
+ */
+void test_lock_ends_grabs(bs_test_t *test_ptr)
+{
+    wlmaker_server_t server = { .wl_display_ptr = wl_display_create() };
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.wl_display_ptr);
+    server.wlr_output_layout_ptr = wlr_output_layout_create(
+        server.wl_display_ptr);
+    server.wlr_seat_ptr = wlr_seat_create(server.wl_display_ptr, "seat0");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.wlr_seat_ptr);
+    struct wlr_output output = { .width = 1024, .height = 768, .scale = 1 };
+    wlmtk_test_wlr_output_init(&output);
+    wlr_output_layout_add_auto(server.wlr_output_layout_ptr, &output);
+    struct wlmtk_desktop_style ds = {};
+    server.desktop_ptr = wlmtk_desktop_create(
+        NULL, &ds, server.wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.desktop_ptr);
+    struct wlmtk_tile_style tile_style = {};
+    wlmtk_workspace_t *workspace_ptr = wlmtk_workspace_create(
+        server.wlr_output_layout_ptr, "name", &tile_style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, workspace_ptr);
+    wlmtk_desktop_add_workspace(server.desktop_ptr, workspace_ptr);
+
+    // Grabs, as an xdg_popup would hold them.
+    static const struct wlr_keyboard_grab_interface kbd_iface = {
+        .enter = _test_kbd_grab_enter,
+        .clear_focus = _test_kbd_grab_clear_focus,
+        .cancel = _test_kbd_grab_cancel,
+    };
+    static const struct wlr_pointer_grab_interface ptr_iface = {
+        .cancel = _test_ptr_grab_cancel,
+    };
+    struct wlr_seat_keyboard_grab kbd_grab = { .interface = &kbd_iface };
+    struct wlr_seat_pointer_grab ptr_grab = { .interface = &ptr_iface };
+    wlr_seat_keyboard_start_grab(server.wlr_seat_ptr, &kbd_grab);
+    wlr_seat_pointer_start_grab(server.wlr_seat_ptr, &ptr_grab);
+    _test_grab_cancels = 0;
+
+    struct wlr_session_lock_v1 lock = {};
+    struct wlr_surface surface = {};
+    struct wlr_session_lock_surface_v1 lock_surface;
+    wlmaker_lock_t *lock_ptr = _test_lock_and_commit(
+        test_ptr, &server, &output, &lock, &surface, &lock_surface);
+    BS_TEST_VERIFY_EQ(test_ptr, &lock, _mock_send_locked_lock);
+
+    // Both grabs got cancelled, the seat is back to its default grabs.
+    BS_TEST_VERIFY_EQ(test_ptr, 2, _test_grab_cancels);
+    BS_TEST_VERIFY_EQ(
+        test_ptr,
+        server.wlr_seat_ptr->keyboard_state.default_grab,
+        server.wlr_seat_ptr->keyboard_state.grab);
+    BS_TEST_VERIFY_EQ(
+        test_ptr,
+        server.wlr_seat_ptr->pointer_state.default_grab,
+        server.wlr_seat_ptr->pointer_state.grab);
+
+    wl_signal_emit(&lock.events.unlock, NULL);
+    _wlmaker_lock_destroy(lock_ptr);
     wlmtk_desktop_remove_workspace(server.desktop_ptr, workspace_ptr);
     wlmtk_workspace_destroy(workspace_ptr);
     wlmtk_desktop_destroy(server.desktop_ptr);
