@@ -26,6 +26,7 @@
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <linux/input-event-codes.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wayland-server-core.h>
@@ -35,6 +36,8 @@
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #undef WLR_USE_UNSTABLE
@@ -83,6 +86,8 @@ struct _wlmim_cursor_t {
     wlmtk_root_t              *root_ptr;
     /** The cursor shape manager. */
     struct wlr_cursor_shape_manager_v1 *wlr_cursor_shape_manager_v1_ptr;
+    /** The relative pointer manager. Owned by wl_display. */
+    struct wlr_relative_pointer_manager_v1 *wlr_relative_pointer_manager_v1_ptr;
 
     /** Whether the current left-button press emulates a right button. */
     bool                      left_button_emulates_right;
@@ -216,6 +221,16 @@ wlmim_cursor_t *wlmim_cursor_create(
             &cursor_ptr->wlr_cursor_shape_manager_v1_ptr->events.request_set_shape,
             &cursor_ptr->cursor_shape_manager_v1_set_shape_listener,
             _wlmim_cursor_handle_cursor_shape_manager_v1_set_shape);
+
+        cursor_ptr->wlr_relative_pointer_manager_v1_ptr =
+            wlr_relative_pointer_manager_v1_create(wl_display_ptr);
+        if (NULL == cursor_ptr->wlr_relative_pointer_manager_v1_ptr) {
+            bs_log(BS_ERROR,
+                   "Failed wlr_relative_pointer_manager_v1_create(%p)",
+                   wl_display_ptr);
+            wlmim_cursor_destroy(cursor_ptr);
+            return NULL;
+        }
     }
 
     // tinywl: wlr_cursor *only* displays an image on screen. It does not move
@@ -428,6 +443,19 @@ void _wlmim_cursor_handle_motion(
     struct wlr_pointer_motion_event *wlr_pointer_motion_event_ptr = data_ptr;
 
     wlmim_report_activity(cursor_ptr->input_manager_ptr);
+
+    // Relative motion goes to the client with pointer focus, unaccelerated
+    // and not clipped by output boundaries.
+    if (NULL != cursor_ptr->wlr_relative_pointer_manager_v1_ptr) {
+        wlr_relative_pointer_manager_v1_send_relative_motion(
+            cursor_ptr->wlr_relative_pointer_manager_v1_ptr,
+            cursor_ptr->wlr_seat_ptr,
+            (uint64_t)wlr_pointer_motion_event_ptr->time_msec * 1000,
+            wlr_pointer_motion_event_ptr->delta_x,
+            wlr_pointer_motion_event_ptr->delta_y,
+            wlr_pointer_motion_event_ptr->unaccel_dx,
+            wlr_pointer_motion_event_ptr->unaccel_dy);
+    }
 
     wlr_cursor_move(
         cursor_ptr->wlr_cursor_ptr,
