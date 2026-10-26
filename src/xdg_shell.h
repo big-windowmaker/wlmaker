@@ -23,6 +23,9 @@
 
 #include <wayland-server-core.h>
 #define WLR_USE_UNSTABLE
+#include <wlr/types/wlr_xdg_foreign_registry.h>
+#include <wlr/types/wlr_xdg_foreign_v1.h>
+#include <wlr/types/wlr_xdg_foreign_v2.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #undef WLR_USE_UNSTABLE
 
@@ -42,6 +45,13 @@ struct _wlmaker_xdg_shell_t {
 
     /** XDG Shell handler. */
     struct wlr_xdg_shell      *wlr_xdg_shell_ptr;
+
+    /** Registry of exported toplevels for XDG foreign. Owned by wl_display. */
+    struct wlr_xdg_foreign_registry *wlr_xdg_foreign_registry_ptr;
+    /** XDG foreign, unstable v1. Owned by wl_display. */
+    struct wlr_xdg_foreign_v1 *wlr_xdg_foreign_v1_ptr;
+    /** XDG foreign, unstable v2. Owned by wl_display. */
+    struct wlr_xdg_foreign_v2 *wlr_xdg_foreign_v2_ptr;
 
     /** Listener for the `new_surface` signal raised by `wlr_xdg_shell`. */
     struct wl_listener        new_surface_listener;

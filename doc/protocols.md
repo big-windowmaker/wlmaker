@@ -98,6 +98,16 @@ wlmaker.
 * Status: Supported.
 * Reference: https://wayland.app/protocols/xdg-decoration-unstable-v1
 
+# XDG foreign
+
+Permits a client to export a handle for one of its toplevels, and another
+client to import it and set it as parent of its own toplevel. Used by
+`xdg-desktop-portal` to attach file chooser dialogs to the application window.
+
+* Status: Supported (unstable v1 and v2). The parent relation is passed on as
+  `set_parent`, which wlmaker does not act upon yet.
+* Reference: https://wayland.app/protocols/xdg-foreign-unstable-v2
+
 # XDG shell
 
 Interface for creating desktop-style surfaces.

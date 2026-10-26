@@ -280,6 +280,11 @@ TBD: Raise/Lower.
 
 * [x] :white_check_mark: Implemented.
 
+### `xdg-foreign-unstable-v1`, `xdg-foreign-unstable-v2`
+
+* [x] :white_check_mark: Implemented.
+* [ ] Act upon the parent relation (depends on `set_parent` in `xdg-shell`).
+
 ### `xdg-shell`
 
 * [x] :white_check_mark: Support toplevel shell and popups.
