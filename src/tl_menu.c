@@ -58,6 +58,8 @@ struct _wlmaker_tl_menu_t {
     wlmaker_action_item_t     *unmaximize_ai_ptr;
     /** Action item for 'Fullscreen'. */
     wlmaker_action_item_t     *fullscreen_ai_ptr;
+    /** Action item for 'Miniaturize'. */
+    wlmaker_action_item_t     *minimize_ai_ptr;
     /** Action item for 'Shade'. */
     wlmaker_action_item_t     *shade_ai_ptr;
     /** Action item for 'Unshade'. */
@@ -130,6 +132,12 @@ static const wlmaker_action_item_desc_t _tl_menu_items[] = {
         WLMAKER_ACTION_WINDOW_TOGGLE_FULLSCREEN,
         NULL,
         offsetof(wlmaker_tl_menu_t, fullscreen_ai_ptr)
+    },
+    {
+        "Miniaturize",
+        WLMAKER_ACTION_WINDOW_MINIMIZE,
+        NULL,
+        offsetof(wlmaker_tl_menu_t, minimize_ai_ptr)
     },
     {
         "Shade",
@@ -258,6 +266,9 @@ void _wlmaker_tl_menu_handle_window_state_changed(
     wlmtk_menu_item_set_enabled(
         wlmaker_action_item_menu_item(tl_menu_ptr->fullscreen_ai_ptr),
         !wlmtk_window_is_fullscreen(window_ptr));
+    wlmtk_menu_item_set_enabled(
+        wlmaker_action_item_menu_item(tl_menu_ptr->minimize_ai_ptr),
+        !wlmtk_window_is_minimized(window_ptr));
 
     wlmtk_menu_item_set_enabled(
         wlmaker_action_item_menu_item(tl_menu_ptr->maximize_ai_ptr),
