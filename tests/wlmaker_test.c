@@ -26,6 +26,7 @@
 #include "action_item.h"
 #include "clip.h"
 #include "config.h"
+#include "context_menu.h"
 #include "corner.h"
 #include "dockapps.h"
 #include "layer_panel.h"
@@ -55,6 +56,7 @@ int main(int argc, const char **argv)
         &wlmaker_action_test_set,
         &wlmaker_clip_test_set,
         &wlmaker_config_test_set,
+        &wlmaker_context_menu_test_set,
         &wlmaker_corner_test_set,
         &wlmaker_dockapps_test_set,
         &wlmaker_layer_panel_test_set,

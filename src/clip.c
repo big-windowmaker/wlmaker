@@ -38,7 +38,9 @@
 #undef WLR_USE_UNSTABLE
 
 #include "backend/backend.h"
+#include "action.h"
 #include "backend/output_config.h"
+#include "context_menu.h"
 #include "dockapps.h"
 #include "toolkit/toolkit.h"
 #include "util/files.h"
@@ -119,6 +121,7 @@ static bool _wlmaker_clip_update_tiles(
     wlmaker_clip_t *clip_ptr,
     const struct wlmtk_tile_style *tile_style_ptr);
 static void _wlmaker_clip_apply_button_state(wlmaker_clip_t *clip_ptr);
+static void _wlmaker_clip_open_menu(wlmaker_clip_t *clip_ptr);
 static bool _wlmaker_clip_update_spacers(
     wlmaker_clip_t *clip_ptr,
     const struct wlmtk_tile_style *tile_style_ptr);
@@ -375,6 +378,7 @@ wlmaker_clip_t *wlmaker_clip_create(
 void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
 {
     if (NULL != clip_ptr->server_ptr) {
+        wlmaker_context_menu_cancel(clip_ptr->server_ptr, clip_ptr);
         clip_ptr->server_ptr->clip_dock_ptr = NULL;
         clip_ptr->server_ptr->dockapps_ptr = NULL;
     }
@@ -500,6 +504,13 @@ bool _wlmaker_clip_pointer_button(
         element_ptr, wlmaker_clip_t,
         super_tile.super_container.super_element);
 
+    // Right button: Opens the Clip's menu, like on Window Maker.
+    if (BTN_RIGHT == button_event_ptr->button &&
+        WLMTK_BUTTON_DOWN == button_event_ptr->type) {
+        _wlmaker_clip_open_menu(clip_ptr);
+        return true;
+    }
+
     if (BTN_LEFT != button_event_ptr->button) return true;
 
     switch (button_event_ptr->type) {
@@ -541,6 +552,86 @@ bool _wlmaker_clip_pointer_button(
 
     _wlmaker_clip_apply_button_state(clip_ptr);
     return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Counts workspaces, for @ref wlmtk_desktop_for_each_workspace. */
+static void _wlmaker_clip_count_workspace(
+    __UNUSED__ bs_dllist_node_t *dlnode_ptr,
+    void *ud_ptr)
+{
+    ++*(size_t*)ud_ptr;
+}
+
+/** Context menu callback: Switches to the next workspace. */
+static void _wlmaker_clip_menu_next(void *ud_ptr)
+{
+    wlmaker_server_t *server_ptr = ud_ptr;
+    wlmtk_desktop_switch_to_next_workspace(server_ptr->desktop_ptr);
+}
+
+/** Context menu callback: Switches to the previous workspace. */
+static void _wlmaker_clip_menu_previous(void *ud_ptr)
+{
+    wlmaker_server_t *server_ptr = ud_ptr;
+    wlmtk_desktop_switch_to_previous_workspace(server_ptr->desktop_ptr);
+}
+
+/** Context menu callback: Adds a workspace. */
+static void _wlmaker_clip_menu_add(void *ud_ptr)
+{
+    wlmaker_action_execute(ud_ptr, WLMAKER_ACTION_WORKSPACE_ADD, NULL);
+}
+
+/** Context menu callback: Destroys the last workspace. */
+static void _wlmaker_clip_menu_destroy_last(void *ud_ptr)
+{
+    wlmaker_action_execute(
+        ud_ptr, WLMAKER_ACTION_WORKSPACE_DESTROY_LAST, NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Opens the Clip's right-click menu: Workspace navigation and management.
+ * Items that would do nothing (eg. switching with just one workspace) are
+ * left out.
+ *
+ * @param clip_ptr
+ */
+void _wlmaker_clip_open_menu(wlmaker_clip_t *clip_ptr)
+{
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    if (NULL == server_ptr->style_ptr ||
+        NULL == server_ptr->style_ptr->menu_style_ptr ||
+        NULL == server_ptr->input_manager_ptr) return;
+
+    size_t workspaces = 0;
+    wlmtk_desktop_for_each_workspace(
+        server_ptr->desktop_ptr, _wlmaker_clip_count_workspace, &workspaces);
+
+    wlmaker_context_menu_t *cm_ptr = wlmaker_context_menu_create(
+        server_ptr, clip_ptr, "Clip");
+    if (NULL == cm_ptr) return;
+    bool rv = true;
+    if (1 < workspaces) {
+        rv = rv && wlmaker_context_menu_add_item(
+            cm_ptr, "Next Workspace", _wlmaker_clip_menu_next, server_ptr);
+        rv = rv && wlmaker_context_menu_add_item(
+            cm_ptr, "Previous Workspace", _wlmaker_clip_menu_previous,
+            server_ptr);
+    }
+    rv = rv && wlmaker_context_menu_add_item(
+        cm_ptr, "New Workspace", _wlmaker_clip_menu_add, server_ptr);
+    if (1 < workspaces) {
+        rv = rv && wlmaker_context_menu_add_item(
+            cm_ptr, "Destroy Last Workspace", _wlmaker_clip_menu_destroy_last,
+            server_ptr);
+    }
+    if (!rv) {
+        wlmaker_context_menu_destroy(cm_ptr);
+        return;
+    }
+    wlmaker_context_menu_open(cm_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
