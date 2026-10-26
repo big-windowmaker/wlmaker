@@ -256,6 +256,38 @@ wlmtk_layer_t *wlmtk_desktop_get_layer(
     wlmtk_desktop_t *desktop_ptr,
     wlmtk_desktop_layer_t layer);
 
+/**
+ * Returns the area of `wlr_output_ptr` that is usable for windows: The output's
+ * extents, minus the exclusive zones of panels (eg. docks, layer shells) in
+ * all of the desktop's layers.
+ *
+ * @param desktop_ptr
+ * @param wlr_output_ptr      The output, or NULL for the primary output.
+ *
+ * @return The usable area, in layout coordinates. An empty box, if there is
+ *     no output.
+ */
+struct wlr_box wlmtk_desktop_get_usable_area(
+    wlmtk_desktop_t *desktop_ptr,
+    struct wlr_output *wlr_output_ptr);
+
+/** Window placement policies. See @ref wlmtk_desktop_set_window_placement. */
+typedef enum {
+    /** Places windows in free spots, filling the area row by row. */
+    WLMTK_WINDOW_PLACEMENT_SMART,
+    /** Centers windows in the usable area of the output under the pointer. */
+    WLMTK_WINDOW_PLACEMENT_CENTER,
+} wlmtk_window_placement_t;
+
+/** Sets the policy for placing new windows. Default: Smart. */
+void wlmtk_desktop_set_window_placement(
+    wlmtk_desktop_t *desktop_ptr,
+    wlmtk_window_placement_t placement);
+
+/** @return The policy for placing new windows. */
+wlmtk_window_placement_t wlmtk_desktop_get_window_placement(
+    wlmtk_desktop_t *desktop_ptr);
+
 /** Unit test cases. */
 extern const bs_test_set_t wlmtk_desktop_test_set;
 

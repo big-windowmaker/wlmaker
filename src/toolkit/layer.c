@@ -50,6 +50,8 @@ struct _wlmtk_layer_t {
 struct _wlmtk_layer_output_t {
     /** Extents and position of the output in the layout. */
     struct wlr_box            extents;
+    /** Extents minus the exclusive zones of the panels on this output. */
+    struct wlr_box            usable_area;
     /** Panels. Holds nodes at @ref wlmtk_panel_t::dlnode. */
     bs_dllist_t               panels;
 };
@@ -190,6 +192,20 @@ void wlmtk_layer_output_reconfigure(
             panel_dimensions.x,
             panel_dimensions.y);
     }
+    layer_output_ptr->usable_area = usable_area;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_layer_get_usable_area(
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *usable_area_ptr)
+{
+    wlmtk_layer_output_t *layer_output_ptr = wlmtk_output_tracker_get_output(
+        layer_ptr->output_tracker_ptr, wlr_output_ptr);
+    if (NULL == layer_output_ptr) return false;
+    *usable_area_ptr = layer_output_ptr->usable_area;
+    return true;
 }
 
 /* == Local (static) methods =============================================== */
@@ -249,6 +265,7 @@ void *_wlmtk_layer_output_create(
         wlr_output_layout_ptr,
         wlr_output_ptr,
         &layer_output_ptr->extents);
+    layer_output_ptr->usable_area = layer_output_ptr->extents;
 
     return layer_output_ptr;
 }
