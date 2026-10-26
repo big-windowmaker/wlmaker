@@ -48,7 +48,20 @@ if(iwyu_path_and_options)
     C_INCLUDE_WHAT_YOU_USE "${iwyu_path_and_options}")
 endif()
 
+add_library(wlm_calendar STATIC wlm_calendar.c wlm_calendar.h)
+target_link_libraries(wlm_calendar libbase)
+if(iwyu_path_and_options)
+  set_target_properties(
+    wlm_calendar PROPERTIES
+    C_INCLUDE_WHAT_YOU_USE "${iwyu_path_and_options}")
+endif()
+
+add_executable(apps_test apps_test.c)
+target_link_libraries(apps_test wlm_calendar libbase)
+add_test(NAME apps_test COMMAND apps_test)
+
 add_wlm_app(wlmclock wlmclient_lib primitives m)
+add_wlm_app(wlmcalclock wlm_calendar wlmclient_lib primitives)
 add_wlm_app(wlmeyes m wlmclient_lib)
 add_wlm_app(wlmcpugraph wlm_graph_shared wlmclient_lib primitives)
 add_wlm_app(wlmmemgraph wlm_graph_shared wlmclient_lib primitives)
@@ -57,4 +70,5 @@ add_wlm_app(wlmbattery libbase wlmclient_lib primitives)
 
 install(
   TARGETS wlmclock wlmeyes wlmcpugraph wlmmemgraph wlmnetgraph wlmbattery
+  wlmcalclock
   DESTINATION "${CMAKE_INSTALL_BINDIR}")
