@@ -36,6 +36,7 @@
 #include "input/cursor.h"
 #include "input/manager.h"
 #include "server.h"
+#include "tl_menu.h"
 #include "toolkit/toolkit.h"
 
 /* == Declarations ========================================================= */
@@ -57,6 +58,8 @@ struct _wlmaker_xwl_surface_t {
     struct wl_listener        destroy_listener;
     /** Listener for `request_configure` signal of `wlr_xwayland_surface`. */
     struct wl_listener        request_configure_listener;
+    /** Listener for `request_minimize` signal of `wlr_xwayland_surface`. */
+    struct wl_listener        request_minimize_listener;
 
     /** Listener for the `associate` signal of `wlr_xwayland_surface`. */
     struct wl_listener        associate_listener;
@@ -94,6 +97,8 @@ struct _wlmaker_xwl_surface_t {
 
     /** The toolkit window, in case the surface does not have a parent. */
     wlmtk_window_t           *window_ptr;
+    /** The window menu, with the same items as for XDG toplevels. */
+    wlmaker_tl_menu_t         *tl_menu_ptr;
     /** Or, the parent surface. In that case, window_ptr is NULL. */
     wlmaker_xwl_surface_t     *parent_surface_ptr;
 
@@ -105,6 +110,9 @@ static void _xwl_surface_handle_destroy(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _xwl_surface_handle_request_configure(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _xwl_surface_handle_request_minimize(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
@@ -174,6 +182,37 @@ static const wlmtk_element_vmt_t _wlmaker_xwl_surface_base_element_vmt = {
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Handler for the `request_minimize` event of `struct wlr_xwayland_surface`:
+ * Minimizes the window, or restores it.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to struct wlr_xwayland_minimize_event.
+ */
+void _xwl_surface_handle_request_minimize(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xwl_surface_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, request_minimize_listener);
+    struct wlr_xwayland_minimize_event *event_ptr = data_ptr;
+
+    if (NULL == xwl_surface_ptr->window_ptr) return;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+        xwl_surface_ptr->window_ptr);
+    if (NULL == workspace_ptr) return;
+
+    if (event_ptr->minimize) {
+        wlmtk_window_request_minimize(xwl_surface_ptr->window_ptr);
+    } else {
+        wlmtk_workspace_raise_window(workspace_ptr, xwl_surface_ptr->window_ptr);
+    }
+    wlr_xwayland_surface_set_minimized(
+        xwl_surface_ptr->wlr_xwayland_surface_ptr,
+        wlmtk_window_is_minimized(xwl_surface_ptr->window_ptr));
+}
+
+/* ------------------------------------------------------------------------- */
 wlmaker_xwl_surface_t *wlmaker_xwl_surface_create(
     struct wlr_xwayland_surface *wlr_xwayland_surface_ptr,
     wlmaker_xwl_t *xwl_ptr,
@@ -203,6 +242,10 @@ wlmaker_xwl_surface_t *wlmaker_xwl_surface_create(
         &wlr_xwayland_surface_ptr->events.request_configure,
         &xwl_surface_ptr->request_configure_listener,
         _xwl_surface_handle_request_configure);
+    wlmtk_util_connect_listener_signal(
+        &wlr_xwayland_surface_ptr->events.request_minimize,
+        &xwl_surface_ptr->request_minimize_listener,
+        _xwl_surface_handle_request_minimize);
 
     wlmtk_util_connect_listener_signal(
         &wlr_xwayland_surface_ptr->events.associate,
@@ -250,6 +293,7 @@ void wlmaker_xwl_surface_destroy(wlmaker_xwl_surface_t *xwl_surface_ptr)
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->dissociate_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->associate_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_configure_listener);
+    wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_minimize_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->destroy_listener);
 
     if (NULL != xwl_surface_ptr->title_ptr) {
@@ -437,6 +481,13 @@ void _xwl_surface_handle_associate(
         wlmtk_window_set_title(xwl_surface_ptr->window_ptr,
                                 xwl_surface_ptr->title_ptr);
 
+        xwl_surface_ptr->tl_menu_ptr = wlmaker_tl_menu_create(
+            xwl_surface_ptr->window_ptr, xwl_surface_ptr->server_ptr);
+        if (NULL == xwl_surface_ptr->tl_menu_ptr) {
+            bs_log(BS_WARNING, "Failed wlmaker_tl_menu_create(%p, %p)",
+                   xwl_surface_ptr->window_ptr, xwl_surface_ptr->server_ptr);
+        }
+
         wlmtk_util_connect_listener_signal(
             &wlmtk_window_events(xwl_surface_ptr->window_ptr)->request_close,
             &xwl_surface_ptr->window_request_close_listener,
@@ -504,6 +555,10 @@ void _xwl_surface_handle_dissociate(
             &xwl_surface_ptr->server_ptr->window_destroyed_event,
             xwl_surface_ptr->window_ptr);
 
+        if (NULL != xwl_surface_ptr->tl_menu_ptr) {
+            wlmaker_tl_menu_destroy(xwl_surface_ptr->tl_menu_ptr);
+            xwl_surface_ptr->tl_menu_ptr = NULL;
+        }
         wlmtk_window_destroy(xwl_surface_ptr->window_ptr);
         xwl_surface_ptr->window_ptr = NULL;
     }
@@ -907,6 +962,7 @@ void fake_init_wlr_xwayland_surface(
     *wlr_xwayland_surface_ptr = (struct wlr_xwayland_surface){};
     wl_signal_init(&wlr_xwayland_surface_ptr->events.destroy);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.request_configure);
+    wl_signal_init(&wlr_xwayland_surface_ptr->events.request_minimize);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.associate);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.dissociate);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.set_title);
