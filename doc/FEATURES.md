@@ -239,6 +239,10 @@ TBD: Raise/Lower.
 
 * [x] :white_check_mark: Implemented, feedback provided by the wlroots scene graph.
 
+### `single-pixel-buffer-v1`
+
+* [x] :white_check_mark: Implemented.
+
 ### `wlr-foreign-toplevel-management-unstable-v1`
 
 * [ ] Implement.

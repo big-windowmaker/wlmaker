@@ -45,6 +45,7 @@
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_screencopy_v1.h>
+#include <wlr/types/wlr_single_pixel_buffer_v1.h>
 #include <wlr/types/wlr_subcompositor.h>
 #undef WLR_USE_UNSTABLE
 
@@ -81,6 +82,8 @@ struct _wlmbe_backend_t {
     struct wlr_ext_image_copy_capture_manager_v1 *wlr_ext_image_copy_capture_manager_ptr;
     /** Presentation time feedback. wl_display will take ownership. */
     struct wlr_presentation   *wlr_presentation_ptr;
+    /** Single-pixel buffer manager. wl_display will take ownership. */
+    struct wlr_single_pixel_buffer_manager_v1 *wlr_single_pixel_buffer_manager_ptr;
     /** The output manager(s). */
     wlmbe_output_manager_t    *output_manager_ptr;
 
@@ -323,6 +326,16 @@ wlmbe_backend_t *wlmbe_backend_create(
     if (NULL == backend_ptr->wlr_presentation_ptr) {
         bs_log(BS_ERROR, "Failed wlr_presentation_create(%p, %p, 2)",
                wl_display_ptr, backend_ptr->wlr_backend_ptr);
+        wlmbe_backend_destroy(backend_ptr);
+        return NULL;
+    }
+
+    backend_ptr->wlr_single_pixel_buffer_manager_ptr =
+        wlr_single_pixel_buffer_manager_v1_create(wl_display_ptr);
+    if (NULL == backend_ptr->wlr_single_pixel_buffer_manager_ptr) {
+        bs_log(BS_ERROR,
+               "Failed wlr_single_pixel_buffer_manager_v1_create(%p)",
+               wl_display_ptr);
         wlmbe_backend_destroy(backend_ptr);
         return NULL;
     }

@@ -32,6 +32,14 @@ graphics while the session is locked. An example of such a client is
   (`finished`) while a lock is held.
 * Reference: https://wayland.app/protocols/ext-session-lock-v1
 
+# Single-pixel buffer
+
+Lets clients create a buffer for a single, solid color pixel. Cheap way to
+draw backgrounds and solid areas, eg. by GTK4 and video players.
+
+* Status: Supported.
+* Reference: https://wayland.app/protocols/single-pixel-buffer-v1
+
 # wlr layer shell {#protocols_wlr_layer_shell}
 
 Clients can use this interface to associate `wl_surface` with a *layer* of the
