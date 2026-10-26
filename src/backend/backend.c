@@ -43,6 +43,7 @@
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_output_power_management_v1.h>
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_screencopy_v1.h>
@@ -87,6 +88,10 @@ struct _wlmbe_backend_t {
     struct wlr_single_pixel_buffer_manager_v1 *wlr_single_pixel_buffer_manager_ptr;
     /** Gamma control manager. wl_display will take ownership. */
     struct wlr_gamma_control_manager_v1 *wlr_gamma_control_manager_ptr;
+    /** Output power manager. wl_display will take ownership. */
+    struct wlr_output_power_manager_v1 *wlr_output_power_manager_ptr;
+    /** Listener for `set_mode` of `wlr_output_power_manager_v1::events`. */
+    struct wl_listener        output_power_set_mode_listener;
     /** The output manager(s). */
     wlmbe_output_manager_t    *output_manager_ptr;
 
@@ -136,6 +141,9 @@ struct _wlmbe_backend_t {
 };
 
 static void _wlmbe_backend_handle_new_output(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmbe_backend_handle_output_power_set_mode(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
@@ -360,6 +368,19 @@ wlmbe_backend_t *wlmbe_backend_create(
         wlr_scene_ptr,
         backend_ptr->wlr_gamma_control_manager_ptr);
 
+    backend_ptr->wlr_output_power_manager_ptr =
+        wlr_output_power_manager_v1_create(wl_display_ptr);
+    if (NULL == backend_ptr->wlr_output_power_manager_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_output_power_manager_v1_create(%p)",
+               wl_display_ptr);
+        wlmbe_backend_destroy(backend_ptr);
+        return NULL;
+    }
+    wlmtk_util_connect_listener_signal(
+        &backend_ptr->wlr_output_power_manager_ptr->events.set_mode,
+        &backend_ptr->output_power_set_mode_listener,
+        _wlmbe_backend_handle_output_power_set_mode);
+
     backend_ptr->output_manager_ptr = wlmbe_output_manager_create(
         wl_display_ptr,
         wlr_scene_ptr,
@@ -381,6 +402,7 @@ wlmbe_backend_t *wlmbe_backend_create(
 /* ------------------------------------------------------------------------- */
 void wlmbe_backend_destroy(wlmbe_backend_t *backend_ptr)
 {
+    wlmtk_util_disconnect_listener(&backend_ptr->output_power_set_mode_listener);
     wlmtk_util_disconnect_listener(&backend_ptr->new_output_listener);
 
     if (NULL != backend_ptr->output_manager_ptr) {
@@ -624,6 +646,49 @@ void _wlmbe_backend_handle_new_output(
         wlmbe_output_destroy(output_ptr);
     }
     wlr_output_destroy(wlr_output_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles `set_mode` of `wlr_output_power_manager_v1`: Powers the output
+ * off or on, by disabling or enabling it.
+ *
+ * Only applies to outputs that are part of the output layout: Outputs that
+ * were disabled through configuration are not powered on. The output remains
+ * in the layout while powered off, so that windows remain where they are.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to struct wlr_output_power_v1_set_mode_event.
+ */
+void _wlmbe_backend_handle_output_power_set_mode(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmbe_backend_t *backend_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmbe_backend_t, output_power_set_mode_listener);
+    struct wlr_output_power_v1_set_mode_event *event_ptr = data_ptr;
+    struct wlr_output *wlr_output_ptr = event_ptr->output;
+    bool enable = ZWLR_OUTPUT_POWER_V1_MODE_ON == event_ptr->mode;
+
+    if (NULL == wlr_output_layout_get(backend_ptr->wlr_output_layout_ptr,
+                                      wlr_output_ptr)) {
+        bs_log(BS_INFO, "Output power: \"%s\" not in layout, ignored.",
+               wlr_output_ptr->name);
+        return;
+    }
+    if (enable == wlr_output_ptr->enabled) return;
+
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    wlr_output_state_set_enabled(&state, enable);
+    if (!wlr_output_commit_state(wlr_output_ptr, &state)) {
+        bs_log(BS_WARNING, "Output power: Failed to power %s \"%s\"",
+               enable ? "on" : "off", wlr_output_ptr->name);
+    } else {
+        bs_log(BS_INFO, "Output power: Powered %s \"%s\"",
+               enable ? "on" : "off", wlr_output_ptr->name);
+    }
+    wlr_output_state_finish(&state);
 }
 
 /* ------------------------------------------------------------------------- */
