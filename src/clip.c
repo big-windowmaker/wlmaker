@@ -39,6 +39,7 @@
 
 #include "backend/backend.h"
 #include "backend/output_config.h"
+#include "dockapps.h"
 #include "toolkit/toolkit.h"
 #include "util/files.h"
 
@@ -56,6 +57,8 @@ struct _wlmaker_clip_t {
 
     /** The toolkit dock, holding the clip tile. */
     wlmtk_dock_t              *wlmtk_dock_ptr;
+    /** Placement of the dock-apps in the clip's dock. */
+    wlmaker_dockapps_t        *dockapps_ptr;
 
     /** The tile's texture buffer without any buttons pressed */
     struct wlr_buffer         *tile_buffer_ptr;
@@ -309,6 +312,21 @@ wlmaker_clip_t *wlmaker_clip_create(
         server_ptr->wlr_output_layout_ptr->events.change.listener_list.next,
         &clip_ptr->output_layout_change_listener.link);
 
+    // Dock-apps are placed in the order of the `Dockapps` array, or as
+    // re-arranged by the user (stored in `Dockapps.plist`).
+    char *fname_ptr = wlm_util_files_xdg_config_fname(
+        server_ptr->files_ptr, "Dockapps.plist");
+    clip_ptr->dockapps_ptr = wlmaker_dockapps_create(
+        clip_ptr->wlmtk_dock_ptr,
+        bspl_dict_get_array(dict_ptr, "Dockapps"),
+        fname_ptr);
+    if (NULL != fname_ptr) free(fname_ptr);
+    if (NULL == clip_ptr->dockapps_ptr) {
+        wlmaker_clip_destroy(clip_ptr);
+        return NULL;
+    }
+    server_ptr->dockapps_ptr = clip_ptr->dockapps_ptr;
+
     server_ptr->clip_dock_ptr = clip_ptr->wlmtk_dock_ptr;
     bs_log(BS_INFO, "Created clip %p", clip_ptr);
     return clip_ptr;
@@ -319,6 +337,11 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
 {
     if (NULL != clip_ptr->server_ptr) {
         clip_ptr->server_ptr->clip_dock_ptr = NULL;
+        clip_ptr->server_ptr->dockapps_ptr = NULL;
+    }
+    if (NULL != clip_ptr->dockapps_ptr) {
+        wlmaker_dockapps_destroy(clip_ptr->dockapps_ptr);
+        clip_ptr->dockapps_ptr = NULL;
     }
 
     wlmtk_util_disconnect_listener(&clip_ptr->output_layout_change_listener);

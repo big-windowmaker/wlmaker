@@ -162,3 +162,27 @@ Example:
 
 That example will configure any added output to use `Normal` transformation
 with a scale of `1.0`.
+
+# State file {#state_file}
+
+The state file (`State.plist`, see [etc/State.plist](../etc/State.plist))
+holds the workspaces, and the setup of the *Dock* (`wlmdock`) and the *Clip*.
+
+## Clip {#state_clip}
+
+* `Edge`, `Anchor`: Where the clip is placed, eg. `Edge = LEFT; Anchor = TOP;`.
+
+* *Optional* `Output`: Dictionary, see @ref config_output.
+
+* *Optional* `Dockapps`: Array of strings, the order in which dock-apps (eg.
+  `wlmclock`, `wlmcpugraph`) are attached to the Clip, going away from the
+  Clip. A dock-app is identified by the name of its executable. Dock-apps that
+  are not listed are attached after the listed ones, in the order they start.
+
+  Example: `Dockapps = ( "wlmclock", "wlmcpugraph", "wlmnetgraph" );`
+
+  Dock-apps can be re-arranged by dragging them with the left mouse button,
+  while holding the `MoveWindowModifier` (see @ref config_file, default
+  `Alt`). The resulting order is stored in `Dockapps.plist`, in the user's
+  configuration directory (`~/.config/wlmaker/`). When that file exists, it
+  takes precedence over `Dockapps`. Remove it to return to `Dockapps`.
