@@ -220,14 +220,15 @@ void wlmtk_surface_set_activated(
         struct wlr_keyboard *wlr_keyboard_ptr = wlr_seat_get_keyboard(
             surface_ptr->wlr_seat_ptr);
         if (activated) {
-            if (NULL != wlr_keyboard_ptr) {
-                wlr_seat_keyboard_notify_enter(
-                    surface_ptr->wlr_seat_ptr,
-                    surface_ptr->wlr_surface_ptr,
-                    wlr_keyboard_ptr->keycodes,
-                    wlr_keyboard_ptr->num_keycodes,
-                    &wlr_keyboard_ptr->modifiers);
-            }
+            // Sets keyboard focus also without a keyboard: The seat tracks
+            // the focus, so that keys of a keyboard added later (hotplug,
+            // virtual keyboard) go to this surface.
+            wlr_seat_keyboard_notify_enter(
+                surface_ptr->wlr_seat_ptr,
+                surface_ptr->wlr_surface_ptr,
+                NULL != wlr_keyboard_ptr ? wlr_keyboard_ptr->keycodes : NULL,
+                NULL != wlr_keyboard_ptr ? wlr_keyboard_ptr->num_keycodes : 0,
+                NULL != wlr_keyboard_ptr ? &wlr_keyboard_ptr->modifiers : NULL);
         } else if (surface_ptr->wlr_seat_ptr->keyboard_state.focused_surface ==
                    surface_ptr->wlr_surface_ptr) {
             wlr_seat_keyboard_clear_focus(surface_ptr->wlr_seat_ptr);
