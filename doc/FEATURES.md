@@ -33,6 +33,7 @@ that map to above states.
 #### Elements of the window decoration
 
 * [x] :white_check_mark: XDG decoration protocol implemented, applies decoration as negotiated.
+* [x] :white_check_mark: KDE server decoration protocol implemented (for GTK3), applies decoration as negotiated.
 * [ ] Override decoration setting per application.
 * [ ] Configure applying window decoration in case application does not support decoration protocol.
 
@@ -262,6 +263,10 @@ TBD: Raise/Lower.
 * [x] :white_check_mark: Implemented: Activates and raises the window on the current workspace.
 * [ ] Switch to the window's workspace, when on a different workspace.
 * [ ] Consider focus stealing prevention (validate token seat and serial).
+
+### `server-decoration` (KDE)
+
+* [x] :white_check_mark: Implemented, same decoration modes as for `xdg-decoration`. Used by GTK3.
 
 ### `xdg-decoration`
 

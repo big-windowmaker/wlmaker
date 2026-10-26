@@ -21,6 +21,7 @@
 
 #include "xdg_decoration.h"
 
+#include <inttypes.h>
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <stdbool.h>
@@ -30,7 +31,9 @@
 #include <wayland-util.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_xdg_shell.h>
 #undef WLR_USE_UNSTABLE
 
 #include "config.h"
@@ -57,7 +60,29 @@ struct _wlmaker_xdg_decoration_manager_t {
     /** Listener for `destroy` of `wlr_xdg_decoration_manager_v1`. */
     struct wl_listener        destroy_listener;
 
+    /**
+     * The (KDE) server decoration manager. Used by GTK3, which does not
+     * implement the XDG decoration protocol. Owned by wl_display.
+     */
+    struct wlr_server_decoration_manager *wlr_server_decoration_manager_ptr;
+    /** Listener for `new_decoration` of `wlr_server_decoration_manager`. */
+    struct wl_listener        new_server_decoration_listener;
 };
+
+/** A (KDE) server decoration handle. */
+typedef struct {
+    /** Points to the wlroots `wlr_server_decoration`. */
+    struct wlr_server_decoration *wlr_server_decoration_ptr;
+    /** Back-link to the decoration manager. */
+    wlmaker_xdg_decoration_manager_t *decoration_manager_ptr;
+
+    /** Listener for `mode` of `wlr_server_decoration`. */
+    struct wl_listener        mode_listener;
+    /** Listener for `destroy` of `wlr_server_decoration`. */
+    struct wl_listener        destroy_listener;
+    /** Listener for `commit` of `wlr_surface`, until the toplevel exists. */
+    struct wl_listener        surface_commit_listener;
+} wlmaker_server_decoration_t;
 
 /** A decoration handle. */
 typedef struct {
@@ -99,6 +124,26 @@ static void _xdg_decoration_handle_surface_commit(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _xdg_decoration_handle_surface_destroy(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+
+static uint32_t _wlmaker_server_decoration_default_mode(
+    wlmaker_config_decoration_t config_mode);
+static bool _wlmaker_server_decoration_is_server_side(
+    wlmaker_config_decoration_t config_mode,
+    uint32_t requested_mode);
+static bool _wlmaker_server_decoration_apply(
+    wlmaker_server_decoration_t *server_decoration_ptr);
+static void _wlmaker_server_decoration_handle_new(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_server_decoration_handle_mode(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_server_decoration_handle_destroy(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_server_decoration_handle_surface_commit(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
@@ -163,6 +208,23 @@ wlmaker_xdg_decoration_manager_t *wlmaker_xdg_decoration_manager_create(
         return NULL;
     }
 
+    decoration_manager_ptr->wlr_server_decoration_manager_ptr =
+        wlr_server_decoration_manager_create(wl_display_ptr);
+    if (NULL == decoration_manager_ptr->wlr_server_decoration_manager_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_server_decoration_manager_create(%p)",
+               wl_display_ptr);
+        wlmaker_xdg_decoration_manager_destroy(decoration_manager_ptr);
+        return NULL;
+    }
+    wlr_server_decoration_manager_set_default_mode(
+        decoration_manager_ptr->wlr_server_decoration_manager_ptr,
+        _wlmaker_server_decoration_default_mode(decoration_manager_ptr->mode));
+    wlmtk_util_connect_listener_signal(
+        &decoration_manager_ptr->wlr_server_decoration_manager_ptr->
+        events.new_decoration,
+        &decoration_manager_ptr->new_server_decoration_listener,
+        _wlmaker_server_decoration_handle_new);
+
     wlmtk_util_connect_listener_signal(
         &decoration_manager_ptr->wlr_xdg_decoration_manager_v1_ptr->
         events.new_toplevel_decoration,
@@ -181,6 +243,7 @@ wlmaker_xdg_decoration_manager_t *wlmaker_xdg_decoration_manager_create(
 void wlmaker_xdg_decoration_manager_destroy(
     wlmaker_xdg_decoration_manager_t *decoration_manager_ptr)
 {
+    wlmtk_util_disconnect_listener(&decoration_manager_ptr->new_server_decoration_listener);
     wlmtk_util_disconnect_listener(&decoration_manager_ptr->new_toplevel_decoration_listener);
     wlmtk_util_disconnect_listener(&decoration_manager_ptr->destroy_listener);
 
@@ -230,6 +293,8 @@ static void handle_destroy(
     wlmaker_xdg_decoration_manager_t *decoration_manager_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_xdg_decoration_manager_t, destroy_listener);
 
+    wlmtk_util_disconnect_listener(
+        &decoration_manager_ptr->new_server_decoration_listener);
     free(decoration_manager_ptr);
 }
 
@@ -427,17 +492,182 @@ void _xdg_decoration_handle_surface_destroy(
     wlmtk_util_disconnect_listener(&decoration_ptr->surface_destroy_listener);
 }
 
+/* ------------------------------------------------------------------------- */
+/**
+ * Returns the (KDE) server decoration default mode for the configured mode.
+ *
+ * @param config_mode
+ *
+ * @return A value of enum wlr_server_decoration_manager_mode.
+ */
+uint32_t _wlmaker_server_decoration_default_mode(
+    wlmaker_config_decoration_t config_mode)
+{
+    switch (config_mode) {
+    case WLMAKER_CONFIG_DECORATION_SUGGEST_CLIENT:
+    case WLMAKER_CONFIG_DECORATION_ENFORCE_CLIENT:
+        return WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT;
+    case WLMAKER_CONFIG_DECORATION_SUGGEST_SERVER:
+    case WLMAKER_CONFIG_DECORATION_ENFORCE_SERVER:
+    default:
+        return WLR_SERVER_DECORATION_MANAGER_MODE_SERVER;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Returns whether to decorate a toplevel with (KDE) server decoration mode
+ * `requested_mode`, given the configured mode.
+ *
+ * @param config_mode
+ * @param requested_mode      Value of enum wlr_server_decoration_manager_mode.
+ *
+ * @return true if wlmaker should draw the decoration.
+ */
+bool _wlmaker_server_decoration_is_server_side(
+    wlmaker_config_decoration_t config_mode,
+    uint32_t requested_mode)
+{
+    switch (config_mode) {
+    case WLMAKER_CONFIG_DECORATION_ENFORCE_CLIENT:
+        return false;
+    case WLMAKER_CONFIG_DECORATION_ENFORCE_SERVER:
+        return true;
+    default:
+        return WLR_SERVER_DECORATION_MANAGER_MODE_SERVER == requested_mode;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Applies the server decoration's mode to the XDG toplevel of its surface.
+ *
+ * @param server_decoration_ptr
+ *
+ * @return true if applied, false if there is no wlmaker XDG toplevel (yet).
+ */
+bool _wlmaker_server_decoration_apply(
+    wlmaker_server_decoration_t *server_decoration_ptr)
+{
+    struct wlr_server_decoration *wsd_ptr =
+        server_decoration_ptr->wlr_server_decoration_ptr;
+    struct wlr_xdg_toplevel *wlr_xdg_toplevel_ptr =
+        wlr_xdg_toplevel_try_from_wlr_surface(wsd_ptr->surface);
+    if (NULL == wlr_xdg_toplevel_ptr) return false;
+    struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr =
+        wlr_xdg_toplevel_ptr->base->data;
+    if (NULL == wlmaker_xdg_toplevel_ptr) return false;
+
+    bool server_side = _wlmaker_server_decoration_is_server_side(
+        server_decoration_ptr->decoration_manager_ptr->mode,
+        wsd_ptr->mode);
+    bs_log(BS_INFO, "Server decoration mode %"PRIu32" for XDG toplevel %p: "
+           "Server-side decorated: %d",
+           wsd_ptr->mode, wlmaker_xdg_toplevel_ptr, server_side);
+    wlmaker_xdg_toplevel_set_server_side_decorated(
+        wlmaker_xdg_toplevel_ptr, server_side);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handler for `new_decoration` of `wlr_server_decoration_manager`.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to struct wlr_server_decoration.
+ */
+void _wlmaker_server_decoration_handle_new(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_xdg_decoration_manager_t *decoration_manager_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xdg_decoration_manager_t,
+        new_server_decoration_listener);
+    struct wlr_server_decoration *wlr_server_decoration_ptr = data_ptr;
+
+    wlmaker_server_decoration_t *server_decoration_ptr = logged_calloc(
+        1, sizeof(wlmaker_server_decoration_t));
+    if (NULL == server_decoration_ptr) return;
+    server_decoration_ptr->wlr_server_decoration_ptr =
+        wlr_server_decoration_ptr;
+    server_decoration_ptr->decoration_manager_ptr = decoration_manager_ptr;
+
+    wlmtk_util_connect_listener_signal(
+        &wlr_server_decoration_ptr->events.destroy,
+        &server_decoration_ptr->destroy_listener,
+        _wlmaker_server_decoration_handle_destroy);
+    wlmtk_util_connect_listener_signal(
+        &wlr_server_decoration_ptr->events.mode,
+        &server_decoration_ptr->mode_listener,
+        _wlmaker_server_decoration_handle_mode);
+
+    // The decoration may be created before the XDG toplevel: Then apply it
+    // with the first commit that has a toplevel.
+    if (!_wlmaker_server_decoration_apply(server_decoration_ptr)) {
+        wlmtk_util_connect_listener_signal(
+            &wlr_server_decoration_ptr->surface->events.commit,
+            &server_decoration_ptr->surface_commit_listener,
+            _wlmaker_server_decoration_handle_surface_commit);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handler for `mode` of `wlr_server_decoration`: Applies the mode. */
+void _wlmaker_server_decoration_handle_mode(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_server_decoration_t *server_decoration_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_server_decoration_t, mode_listener);
+    _wlmaker_server_decoration_apply(server_decoration_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handler for `destroy` of `wlr_server_decoration`: Cleans up. */
+void _wlmaker_server_decoration_handle_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_server_decoration_t *server_decoration_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_server_decoration_t, destroy_listener);
+
+    wlmtk_util_disconnect_listener(
+        &server_decoration_ptr->surface_commit_listener);
+    wlmtk_util_disconnect_listener(&server_decoration_ptr->mode_listener);
+    wlmtk_util_disconnect_listener(&server_decoration_ptr->destroy_listener);
+    free(server_decoration_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handler for `commit` of the surface: Applies, once there's a toplevel. */
+void _wlmaker_server_decoration_handle_surface_commit(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_server_decoration_t *server_decoration_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_server_decoration_t, surface_commit_listener);
+    if (_wlmaker_server_decoration_apply(server_decoration_ptr)) {
+        wlmtk_util_disconnect_listener(
+            &server_decoration_ptr->surface_commit_listener);
+    }
+}
+
 /* == Unit tests =========================================================== */
 
 static void test_manager(bs_test_t *test_ptr);
 static void test_decoration_initialized(bs_test_t *test_ptr);
 static void test_decoration_uninitialized(bs_test_t *test_ptr);
+static void test_server_decoration_modes(bs_test_t *test_ptr);
+static void test_server_decoration_no_toplevel(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t wlmaker_xdg_decoration_test_cases[] = {
     { true, "manager", test_manager },
     { true, "decoration_initialized", test_decoration_initialized },
     { true, "decoration_uninitialized", test_decoration_uninitialized },
+    { true, "server_decoration_modes", test_server_decoration_modes },
+    { true, "server_decoration_no_toplevel",
+      test_server_decoration_no_toplevel },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -482,6 +712,10 @@ void test_manager(bs_test_t *test_ptr)
         wlmaker_xdg_decoration_manager_create(
             wl_display_ptr, bspl_dict_from_object(o));
     BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    BS_TEST_VERIFY_EQ(
+        test_ptr,
+        WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT,
+        d->wlr_server_decoration_manager_ptr->default_mode);
 
     wlmaker_xdg_decoration_manager_destroy(d);
     bspl_object_unref(o);
@@ -606,6 +840,91 @@ void test_decoration_uninitialized(bs_test_t *test_ptr)
         t.set_mode_arg);
 
     wl_signal_emit(&t.decoration.events.destroy, NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests the mapping of configured & requested modes for server decoration. */
+void test_server_decoration_modes(bs_test_t *test_ptr)
+{
+    BS_TEST_VERIFY_EQ(
+        test_ptr, WLR_SERVER_DECORATION_MANAGER_MODE_SERVER,
+        _wlmaker_server_decoration_default_mode(
+            WLMAKER_CONFIG_DECORATION_SUGGEST_SERVER));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, WLR_SERVER_DECORATION_MANAGER_MODE_SERVER,
+        _wlmaker_server_decoration_default_mode(
+            WLMAKER_CONFIG_DECORATION_ENFORCE_SERVER));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT,
+        _wlmaker_server_decoration_default_mode(
+            WLMAKER_CONFIG_DECORATION_SUGGEST_CLIENT));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT,
+        _wlmaker_server_decoration_default_mode(
+            WLMAKER_CONFIG_DECORATION_ENFORCE_CLIENT));
+
+    // Suggest*: Follows what the client requests.
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, _wlmaker_server_decoration_is_server_side(
+            WLMAKER_CONFIG_DECORATION_SUGGEST_CLIENT,
+            WLR_SERVER_DECORATION_MANAGER_MODE_SERVER));
+    BS_TEST_VERIFY_FALSE(
+        test_ptr, _wlmaker_server_decoration_is_server_side(
+            WLMAKER_CONFIG_DECORATION_SUGGEST_SERVER,
+            WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT));
+    BS_TEST_VERIFY_FALSE(
+        test_ptr, _wlmaker_server_decoration_is_server_side(
+            WLMAKER_CONFIG_DECORATION_SUGGEST_SERVER,
+            WLR_SERVER_DECORATION_MANAGER_MODE_NONE));
+
+    // Enforce*: Ignores what the client requests.
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, _wlmaker_server_decoration_is_server_side(
+            WLMAKER_CONFIG_DECORATION_ENFORCE_SERVER,
+            WLR_SERVER_DECORATION_MANAGER_MODE_CLIENT));
+    BS_TEST_VERIFY_FALSE(
+        test_ptr, _wlmaker_server_decoration_is_server_side(
+            WLMAKER_CONFIG_DECORATION_ENFORCE_CLIENT,
+            WLR_SERVER_DECORATION_MANAGER_MODE_SERVER));
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tests a server decoration for a surface without (wlmaker) XDG toplevel:
+ * Waits for commits, does not crash on mode, and cleans up on destroy.
+ */
+void test_server_decoration_no_toplevel(bs_test_t *test_ptr)
+{
+    wlmaker_xdg_decoration_manager_t m = {
+        .mode = WLMAKER_CONFIG_DECORATION_SUGGEST_SERVER,
+    };
+    struct wlr_surface ws = {};
+    wl_signal_init(&ws.events.commit);
+    struct wlr_server_decoration d = {
+        .surface = &ws,
+        .mode = WLR_SERVER_DECORATION_MANAGER_MODE_SERVER };
+    wl_signal_init(&d.events.destroy);
+    wl_signal_init(&d.events.mode);
+
+    _wlmaker_server_decoration_handle_new(
+        &m.new_server_decoration_listener, &d);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 1, wl_list_length(&d.events.destroy.listener_list));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 1, wl_list_length(&ws.events.commit.listener_list));
+
+    // No toplevel yet: Commit and mode keep waiting.
+    wl_signal_emit(&ws.events.commit, NULL);
+    wl_signal_emit(&d.events.mode, NULL);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 1, wl_list_length(&ws.events.commit.listener_list));
+
+    // Destroy disconnects all listeners.
+    wl_signal_emit(&d.events.destroy, NULL);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 0, wl_list_length(&ws.events.commit.listener_list));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 0, wl_list_length(&d.events.mode.listener_list));
 }
 
 /* == End of xdg_decoration.c ============================================== */
