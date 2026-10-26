@@ -324,10 +324,19 @@ bool _wlmdock_subcompositor_start(wlmdock_subcompositor_t *subcompositor_ptr)
         subcompositor_ptr->positioning.anchor |
         subcompositor_ptr->positioning.edge);
     zwlr_layer_surface_v1_set_exclusive_zone(
-        subcompositor_ptr->zwlr_layer_surface_ptr, 64);
+        subcompositor_ptr->zwlr_layer_surface_ptr,
+        subcompositor_ptr->positioning.overlay ? -1 : 64);
     zwlr_layer_surface_v1_set_exclusive_edge(
         subcompositor_ptr->zwlr_layer_surface_ptr,
         subcompositor_ptr->positioning.edge);
+    int m = subcompositor_ptr->positioning.margin;
+    uint32_t anchor = subcompositor_ptr->positioning.anchor;
+    zwlr_layer_surface_v1_set_margin(
+        subcompositor_ptr->zwlr_layer_surface_ptr,
+        anchor == WLR_EDGE_TOP ? m : 0,
+        anchor == WLR_EDGE_RIGHT ? m : 0,
+        anchor == WLR_EDGE_BOTTOM ? m : 0,
+        anchor == WLR_EDGE_LEFT ? m : 0);
     wl_surface_commit(subcompositor_ptr->wl_surface_ptr);
 
     if (0 != zwlr_layer_surface_v1_add_listener(

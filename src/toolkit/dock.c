@@ -416,6 +416,24 @@ bool _wlmtk_dock_positioning(
         return false;
     }
 
+    // Distance from the anchor.
+    switch (dock_ptr->dock_positioning.anchor) {
+    case WLR_EDGE_TOP:
+        panel_positioning_ptr->margin_top = dock_ptr->dock_positioning.margin;
+        break;
+    case WLR_EDGE_BOTTOM:
+        panel_positioning_ptr->margin_bottom = dock_ptr->dock_positioning.margin;
+        break;
+    case WLR_EDGE_LEFT:
+        panel_positioning_ptr->margin_left = dock_ptr->dock_positioning.margin;
+        break;
+    case WLR_EDGE_RIGHT:
+        panel_positioning_ptr->margin_right = dock_ptr->dock_positioning.margin;
+        break;
+    default:
+        break;
+    }
+
     panel_positioning_ptr->exclusive_edge = dock_ptr->dock_positioning.edge;
     return true;
 }

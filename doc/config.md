@@ -186,3 +186,41 @@ holds the workspaces, and the setup of the *Dock* (`wlmdock`) and the *Clip*.
   `Alt`). The resulting order is stored in `Dockapps.plist`, in the user's
   configuration directory (`~/.config/wlmaker/`). When that file exists, it
   takes precedence over `Dockapps`. Remove it to return to `Dockapps`.
+
+* *Optional* `Launchers`: Array of launchers attached below the Clip (eg. web
+  browser and file manager), in the same format as the Dock's `Launchers`.
+  The Clip leaves room for them, and the dock-apps follow after. They are
+  shown by a second instance of `wlmdock`, started as `wlmdock --clip`, eg.
+  from the configuration's `Autostart`.
+
+* *Optional* `Margin`: For `wlmdock --clip` only: Distance of the launchers
+  from the anchor, in pixels. Defaults to one tile, ie. right below the Clip.
+
+Example:
+
+```
+Clip = {
+  Edge = LEFT;
+  Anchor = TOP;
+  Launchers = (
+    { AppID = "firefox"; CommandLine = "/usr/bin/firefox"; Icon = "firefox-56x56.png"; },
+    { CommandLine = "/usr/bin/pcmanfm"; Icon = "system-file-manager.png"; }
+  );
+  Dockapps = ( "wlmclock", "wlmcpugraph" );
+};
+```
+
+## Dock {#state_dock}
+
+Read by `wlmdock` (without `--clip`).
+
+* `Edge`, `Anchor`: Where the dock is placed, eg. `Edge = RIGHT; Anchor = TOP;`.
+
+* `Launchers`: Array of dictionaries, each with:
+  * `CommandLine`: The command to execute.
+  * `Icon`: The icon's file name, searched in `${XDG_DATA_DIRS}/wlmaker/icons`.
+  * *Optional* `AppID`: The application ID of the launched application's
+    windows, to show the launcher as running. Without it, the launcher shows
+    as running only while processes it launched itself are alive.
+
+* *Optional* `Margin`: Distance from the anchor, in pixels. Defaults to 0.
