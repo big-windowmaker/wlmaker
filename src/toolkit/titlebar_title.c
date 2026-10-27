@@ -41,6 +41,7 @@
 #include "primitives.h"
 #include "style.h"
 #include "test.h"  // IWYU pragma: keep
+#include "titlebar.h"
 #include "tile.h"
 #include "workspace.h"
 
@@ -86,9 +87,11 @@ struct wlr_buffer *title_create_buffer(
 
 /**
  * Maximum time between two left-button presses on the title, to be taken as
- * a double-click (which toggles shading the window).
+ * a double-click (which toggles shading the window). See
+ * @ref wlmtk_titlebar_set_double_click_msec.
  */
-static const uint32_t _wlmtk_titlebar_title_double_click_msec = 300;
+static uint32_t _wlmtk_titlebar_title_double_click_msec =
+    WLMTK_TITLEBAR_DOUBLE_CLICK_MSEC;
 
 /* == Data ================================================================= */
 
@@ -184,6 +187,13 @@ wlmtk_element_t *wlmtk_titlebar_title_element(
     wlmtk_titlebar_title_t *titlebar_title_ptr)
 {
     return &titlebar_title_ptr->super_buffer.super_element;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_titlebar_set_double_click_msec(uint32_t msec)
+{
+    _wlmtk_titlebar_title_double_click_msec =
+        0 < msec ? msec : WLMTK_TITLEBAR_DOUBLE_CLICK_MSEC;
 }
 
 /* == Local (static) methods =============================================== */
