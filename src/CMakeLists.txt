@@ -151,6 +151,12 @@ set(WLMAKER_DEFAULT_STATE_FILE "" CACHE STRING
 target_compile_definitions(
   wlmaker_lib PRIVATE
   "WLMAKER_DEFAULT_STATE_FILE=\"${WLMAKER_DEFAULT_STATE_FILE}\"")
+# Icon of the Clip, when the state has no 'Clip.Icon'.
+set(WLMAKER_CLIP_DEFAULT_ICON "" CACHE STRING
+  "Clip icon: A path, or a name in \${XDG_DATA_DIRS}/wlmaker/icons.")
+target_compile_definitions(
+  wlmaker_lib PRIVATE
+  "WLMAKER_CLIP_DEFAULT_ICON=\"${WLMAKER_CLIP_DEFAULT_ICON}\"")
 
 
 add_executable(

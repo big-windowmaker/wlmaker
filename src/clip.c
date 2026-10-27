@@ -174,6 +174,9 @@ static bool _wlmaker_clip_update_overlay(
 static bool _wlmaker_clip_update_image(
     wlmaker_clip_t *clip_ptr,
     const struct wlmtk_tile_style *tile_style_ptr);
+static char *_wlmaker_clip_resolve_image(
+    wlm_util_files_t *files_ptr,
+    const char *icon_ptr);
 static struct wlr_buffer *_wlmaker_clip_create_tile(
     const struct wlmtk_tile_style *tile_style_ptr,
     bool prev_pressed,
@@ -204,6 +207,11 @@ static const wlmtk_element_vmt_t _wlmaker_clip_element_vmt = {
     .pointer_accepts_motion = _wlmaker_clip_pointer_accepts_motion,
     .pointer_grab_cancel = _wlmaker_clip_pointer_grab_cancel,
 };
+
+#ifndef WLMAKER_CLIP_DEFAULT_ICON
+/** Clip icon configured at build time. */
+#define WLMAKER_CLIP_DEFAULT_ICON ""
+#endif
 
 /** Distance the pointer must move with the button held, to start a drag. */
 static const double _wlmaker_clip_drag_threshold = 8;
@@ -353,17 +361,8 @@ wlmaker_clip_t *wlmaker_clip_create(
     }
 
     // Resolves to a full path, and verifies the icon file exists.
-    clip_ptr->image_path_ptr = wlm_util_files_xdg_data_find(
-        server_ptr->files_ptr, "icons/clip-56x56.png", S_IFREG);
-    if (NULL == clip_ptr->image_path_ptr) {
-        bs_log(
-            BS_WARNING,
-            "Failed to locate ${XDG_DATA_DIRS}/wlmaker/icons/clip-56x56.png");
-#ifdef WLMAKER_SOURCE_DIR
-        clip_ptr->image_path_ptr = logged_strdup(
-            WLMAKER_SOURCE_DIR "/share/wlmaker/icons/clip-56x56.png");
-#endif
-    }
+    clip_ptr->image_path_ptr = _wlmaker_clip_resolve_image(
+        server_ptr->files_ptr, bspl_dict_get_string_value(dict_ptr, "Icon"));
     if (NULL == clip_ptr->image_path_ptr) {
         wlmaker_clip_destroy(clip_ptr);
         return NULL;
@@ -991,6 +990,53 @@ bool _wlmaker_clip_update_image(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Finds the Clip's image: The `Icon` of the Clip's state, else the icon
+ * configured at build time (CMake `WLMAKER_CLIP_DEFAULT_ICON`), else
+ * `clip-56x56.png`. Each is a path (starting with '/' or '~'), or a name in
+ * `${XDG_DATA_DIRS}/wlmaker/icons`. Candidates that aren't found are logged.
+ *
+ * @param files_ptr
+ * @param icon_ptr            The `Icon` value from the state, or NULL.
+ *
+ * @return Path to the image file, to be released with free(), or NULL.
+ */
+char *_wlmaker_clip_resolve_image(
+    wlm_util_files_t *files_ptr,
+    const char *icon_ptr)
+{
+    const char *candidates[] = {
+        icon_ptr, WLMAKER_CLIP_DEFAULT_ICON, "clip-56x56.png" };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        const char *c = candidates[i];
+        if (NULL == c || '\0' == *c) continue;
+
+        char *path_ptr = NULL;
+        if ('/' == c[0] || '~' == c[0]) {
+            path_ptr = bs_file_resolve_path(c, NULL);
+        } else {
+            char *p = bs_strdupf("icons/%s", c);
+            if (NULL != p && NULL != files_ptr) {
+                path_ptr = wlm_util_files_xdg_data_find(files_ptr, p, S_IFREG);
+            }
+            free(p);
+#ifdef WLMAKER_SOURCE_DIR
+            if (NULL == path_ptr) {
+                path_ptr = bs_strdupf(
+                    WLMAKER_SOURCE_DIR "/share/wlmaker/icons/%s", c);
+            }
+#endif
+        }
+        if (NULL != path_ptr && bs_file_realpath_is(path_ptr, S_IFREG)) {
+            return path_ptr;
+        }
+        free(path_ptr);
+        bs_log(BS_WARNING, "Clip icon \"%s\" not found.", c);
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Creates (or updates) the tile buffers for the button states.
  *
  * @param clip_ptr
@@ -1566,10 +1612,12 @@ bool _wlmaker_clip_set_spacers(
 /* == Unit tests =========================================================== */
 
 static void test_draw_tile(bs_test_t *test_ptr);
+static void test_resolve_image(bs_test_t *test_ptr);
 
 /** Test cases. */
 static const bs_test_case_t wlmaker_clip_test_cases[] = {
     { true, "draw_tile", test_draw_tile },
+    { true, "resolve_image", test_resolve_image },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -1604,6 +1652,46 @@ void test_draw_tile(bs_test_t *test_ptr)
     BS_TEST_VERIFY_GFXBUF_EQUALS_PNG(
         test_ptr, gfxbuf_ptr, "clip_pressed.png");
     wlr_buffer_drop(wlr_buffer_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests finding the Clip's image: `Icon`, by name or path, and fallbacks. */
+void test_resolve_image(bs_test_t *test_ptr)
+{
+    bs_test_setenv(test_ptr, "XDG_DATA_DIRS", WLMAKER_SOURCE_DIR "/share");
+    wlm_util_files_t *files_ptr = wlm_util_files_create("wlmaker");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, files_ptr);
+
+    // A name in wlmaker/icons.
+    char *p = _wlmaker_clip_resolve_image(files_ptr, "dock-56x56.png");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, p);
+    BS_TEST_VERIFY_STREQ(
+        test_ptr, "dock-56x56.png", p + strlen(p) - strlen("dock-56x56.png"));
+    free(p);
+
+    // A path.
+    p = _wlmaker_clip_resolve_image(
+        files_ptr, WLMAKER_SOURCE_DIR "/share/wlmaker/icons/chrome-56x56.png");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, p);
+    BS_TEST_VERIFY_STREQ(
+        test_ptr, "chrome-56x56.png",
+        p + strlen(p) - strlen("chrome-56x56.png"));
+    free(p);
+
+    // Missing, or no `Icon`: The default icon. (Without a build-time icon).
+    if ('\0' == *WLMAKER_CLIP_DEFAULT_ICON) {
+        const char *icons[] = { "does-not-exist.png", "/does/not/exist", NULL };
+        for (size_t i = 0; i < sizeof(icons) / sizeof(icons[0]); ++i) {
+            p = _wlmaker_clip_resolve_image(files_ptr, icons[i]);
+            BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, p);
+            BS_TEST_VERIFY_STREQ(
+                test_ptr, "clip-56x56.png",
+                p + strlen(p) - strlen("clip-56x56.png"));
+            free(p);
+        }
+    }
+
+    wlm_util_files_destroy(files_ptr);
 }
 
 /* == End of clip.c ======================================================== */

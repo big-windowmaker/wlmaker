@@ -192,6 +192,10 @@ holds the workspaces, and the setup of the *Dock* (`wlmdock`) and the *Clip*.
 
 * *Optional* `Output`: Dictionary, see @ref config_output.
 
+* *Optional* `Icon`: Image of the Clip's tile: A path, or a name in
+  `${XDG_DATA_DIRS}/wlmaker/icons`. Defaults to the icon configured at build
+  time (CMake `WLMAKER_CLIP_DEFAULT_ICON`), else `clip-56x56.png`.
+
 * *Optional* `Dockapps`: Array of strings, the order in which dock-apps (eg.
   `wlmclock`, `wlmcpugraph`) are attached to the Clip, going away from the
   Clip. A dock-app is identified by the name of its executable. Dock-apps that
@@ -227,6 +231,7 @@ Example:
 Clip = {
   Edge = LEFT;
   Anchor = TOP;
+  Icon = "clip-56x56.png";
   Launchers = (
     { AppID = "firefox"; CommandLine = "/usr/bin/firefox"; Icon = "firefox-56x56.png"; },
     { CommandLine = "/usr/bin/pcmanfm"; Icon = "system-file-manager.png"; }
