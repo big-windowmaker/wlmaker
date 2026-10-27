@@ -105,6 +105,8 @@ struct _wlmaker_layer_panel_t {
     uint32_t                  last_click_msec;
     /** Tile of the last click. */
     int                       last_click_index;
+    /** Tile the balloon is shown (or pending) for. -1 for none. */
+    int                       balloon_index;
 };
 
 wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
@@ -320,6 +322,7 @@ wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
         server_ptr->clip_layer_panel_ptr = layer_panel_ptr;
     }
     layer_panel_ptr->press_index = -1;
+    layer_panel_ptr->balloon_index = -1;
     wlmtk_util_connect_listener_signal(
         &wlmtk_panel_element(&layer_panel_ptr->super_panel)->events.pointer_leave,
         &layer_panel_ptr->pointer_leave_listener,
@@ -591,6 +594,7 @@ bool _wlmaker_layer_panel_element_pointer_button(
 
     if (docklike && NULL != server_ptr->dock_fx_ptr) {
         wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, NULL);
+        layer_panel_ptr->balloon_index = -1;
     }
 
     // A launcher being dragged: Dropped, when the button is released.
@@ -930,8 +934,12 @@ void _wlmaker_layer_panel_balloon(
                                       &index, &tx, &ty) ||
         (dock && 0 == index)) {
         wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, layer_panel_ptr);
+        layer_panel_ptr->balloon_index = -1;
         return;
     }
+    // Still the same tile: Its balloon is already shown, or pending.
+    if (index == layer_panel_ptr->balloon_index) return;
+    layer_panel_ptr->balloon_index = index;
     if (dock) --index;
     bspl_array_t *a = wlmaker_dock_launchers_load(
         server_ptr, dock ? "Dock" : "Clip");
@@ -980,6 +988,7 @@ void _wlmaker_layer_panel_handle_pointer_leave(
         wlmaker_clip_dock_left(layer_panel_ptr->server_ptr,
                                layer_panel_ptr->is_dock);
     }
+    layer_panel_ptr->balloon_index = -1;
     if (NULL == layer_panel_ptr->server_ptr->dock_fx_ptr) return;
     wlmaker_dock_fx_balloon_leave(
         layer_panel_ptr->server_ptr->dock_fx_ptr, layer_panel_ptr);
