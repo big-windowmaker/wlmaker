@@ -32,6 +32,7 @@
 
 #include "action.h"
 #include "clip.h"
+#include "dialog.h"
 #include "config.h"
 #include "dock_launchers.h"
 #include "dock_position.h"
@@ -475,10 +476,11 @@ void _wlmaker_dock_menu_settings(void *ud_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
-/** Callback: "Kill". The application's windows' processes, or dock-app. */
-void _wlmaker_dock_menu_kill(void *ud_ptr)
+/** The answer to "Kill Application": Terminates, if confirmed. */
+static void _wlmaker_dock_menu_kill_confirmed(void *ud_ptr, bool confirmed)
 {
     _wlmaker_dock_menu_arg_t *arg_ptr = ud_ptr;
+    if (!confirmed) return;
     if (1 < arg_ptr->pid && getpid() != arg_ptr->pid) {
         bs_log(BS_INFO, "Terminating dock-app with PID %"PRIdMAX,
                (intmax_t)arg_ptr->pid);
@@ -489,6 +491,59 @@ void _wlmaker_dock_menu_kill(void *ud_ptr)
         return;
     }
     wlmaker_dock_app_kill(arg_ptr->server_ptr, arg_ptr->app_id_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Callback: "Kill". Asks first, as Window Maker: "<name> will be forcibly
+ * closed. Any unsaved changes will be lost. Please confirm." Then terminates
+ * the application's windows' processes, or the dock-app.
+ */
+void _wlmaker_dock_menu_kill(void *ud_ptr)
+{
+    _wlmaker_dock_menu_arg_t *arg_ptr = ud_ptr;
+    _wlmaker_dock_menu_arg_t *copy_ptr = logged_calloc(1, sizeof(*copy_ptr));
+    if (NULL == copy_ptr) return;
+    *copy_ptr = *arg_ptr;
+    copy_ptr->app_id_ptr = NULL != arg_ptr->app_id_ptr ?
+        logged_strdup(arg_ptr->app_id_ptr) : NULL;
+    copy_ptr->command_ptr = NULL;
+    copy_ptr->dockapp_name_ptr = NULL != arg_ptr->dockapp_name_ptr ?
+        logged_strdup(arg_ptr->dockapp_name_ptr) : NULL;
+
+    const char *name_ptr = NULL != arg_ptr->dockapp_name_ptr ?
+        arg_ptr->dockapp_name_ptr : arg_ptr->app_id_ptr;
+    char *message_ptr = bs_strdupf(
+        "%s%s", NULL != name_ptr ? name_ptr : "",
+        wlmaker_i18n(" will be forcibly closed.\n"
+                     "Any unsaved changes will be lost.\n"
+                     "Please confirm."));
+    char *icon_ptr = wlmaker_dock_menu_logo_path(arg_ptr->server_ptr);
+    wlmaker_dialog_confirm(
+        arg_ptr->server_ptr, wlmaker_i18n("Kill Application"),
+        NULL != message_ptr ? message_ptr : "",
+        wlmaker_i18n("Yes"), wlmaker_i18n("No"), icon_ptr,
+        _wlmaker_dock_menu_kill_confirmed, copy_ptr,
+        _wlmaker_dock_menu_arg_destroy);
+    if (NULL != icon_ptr) free(icon_ptr);
+    if (NULL != message_ptr) free(message_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+char *wlmaker_dock_menu_logo_path(wlmaker_server_t *server_ptr)
+{
+    // The Dock's main tile: Window Maker's dialogs show its logo.
+    bspl_dict_t *d = wlmaker_state_load(server_ptr->files_ptr,
+                                        server_ptr->state_fname_ptr);
+    char *p = wlmaker_dock_launcher_icon_path(
+        server_ptr->files_ptr,
+        wlmaker_dock_launcher_value(bspl_dict_get_dict(d, "Dock"), "Icon"));
+    if (NULL != d) bspl_dict_unref(d);
+    if (NULL == p) {
+        p = wlmaker_dock_launcher_icon_path(server_ptr->files_ptr,
+                                            "dock-56x56.png");
+    }
+    return p;
 }
 
 /* ------------------------------------------------------------------------- */
