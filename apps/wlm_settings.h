@@ -160,7 +160,8 @@ const wlm_theme_t *wlm_theme_find(const char *name_ptr);
 
 /**
  * Starts `command_ptr` through `/bin/sh -c`, in its own process group, with
- * default signal handling. Does nothing for NULL or an empty command.
+ * default signal handling. Does nothing for NULL or an empty command. From
+ * then on, SIGCHLD is ignored: The processes are reaped automatically.
  *
  * @return true if started (or nothing to start).
  */

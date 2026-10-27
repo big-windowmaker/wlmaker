@@ -343,6 +343,8 @@ uint32_t wlm_theme_blend(uint32_t from, uint32_t to, uint32_t i)
 bool wlm_settings_spawn(const char *command_ptr)
 {
     if (NULL == command_ptr || '\0' == *command_ptr) return true;
+    // The command's processes are reaped automatically.
+    signal(SIGCHLD, SIG_IGN);
 
     posix_spawnattr_t attr;
     if (0 != posix_spawnattr_init(&attr)) return false;

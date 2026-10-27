@@ -11,8 +11,12 @@
  * in proportion to the volume (0% at the left, 100% at the right). Clicking
  * on the meter sets the volume to that position, also when dragging along
  * it; the mouse wheel changes it by steps. A left click elsewhere toggles
- * mute, and a right or middle click starts a full mixer application
- * (`pavucontrol`, by default).
+ * mute, and a middle click starts a full mixer application (`pavucontrol`,
+ * by default). The right button opens the dock-app's menu, in wlmaker: It
+ * offers muting and the mixer application, too.
+ *
+ * Preferences (see wlm_settings.h), set from the dock-app's menu: Theme,
+ * ShowPercent, ClickMutes, ScrollVolume, Step, MaxVolume, MixerCommand.
  *
  * The PulseAudio mainloop runs in a separate thread, and signals updates to
  * the Wayland mainloop through an `eventfd`.
@@ -43,7 +47,6 @@
 #include <primitives/segment_display.h>
 #include <pulse/pulseaudio.h>
 #include <signal.h>
-#include <spawn.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -58,6 +61,7 @@
 #include <wlclient/icon.h>
 #include <wlclient/wlclient.h>
 
+#include "wlm_settings.h"
 #include "wlm_volume.h"
 
 /* == Declarations ========================================================= */
@@ -143,13 +147,30 @@ typedef struct {
     pa_usec_t                 reconnect_usec;
     /** State of the sink. Accessed with the mainloop lock held. */
     sink_state_t              state;
+
+    /** Preferences. */
+    wlm_settings_t            *settings_ptr;
+    /** Colors. */
+    const wlm_theme_t         *theme_ptr;
+    /** Whether to show the volume in percent. */
+    bool                      show_percent;
+    /** Whether a left click (not on the meter) toggles mute. */
+    bool                      click_mutes;
+    /** Whether the mouse wheel changes the volume. */
+    bool                      scroll_volume;
+    /** Volume step, in percent. */
+    unsigned                  step;
+    /** Maximum volume to raise to, in percent. */
+    unsigned                  max_volume;
+    /** Command for a middle click. */
+    const char                *mixer_command_ptr;
 } mixer_t;
 
 static void _context_connect(mixer_t *mixer_ptr);
 static void _schedule_reconnect(mixer_t *mixer_ptr);
 static void _notify(mixer_t *mixer_ptr);
 
-/** Command to run on right or middle click. */
+/** Command to run on a middle click. */
 static char *arg_mixer_command_ptr = NULL;
 /** Volume step, in percent. */
 static uint32_t arg_step = 5;
@@ -160,8 +181,9 @@ static uint32_t arg_max_volume = 100;
 static const bs_arg_t wlmmixer_args[] = {
     BS_ARG_STRING(
         "mixer_command",
-        "Optional: Command to run on a right or middle click. It is run "
-        "through `/bin/sh -c`. An empty string disables it.",
+        "Optional: Command to run on a middle click. It is run through "
+        "`/bin/sh -c`. An empty string disables it. The preference "
+        "'MixerCommand' overrides it.",
         "pavucontrol",
         &arg_mixer_command_ptr),
     BS_ARG_UINT32(
@@ -179,16 +201,14 @@ static const bs_arg_t wlmmixer_args[] = {
     BS_ARG_SENTINEL()
 };
 
-/** Illuminated LED, as in the other DockApps. */
-static const uint32_t color_led = 0xff55ffff;
-/** Color of a turned-off element in the VFD-style display. */
-static const uint32_t color_off = 0xff114444;
-/** Background color in the VFD-style display. */
-static const uint32_t color_background = 0xff111111;
-/** Color for 'muted'. */
-static const uint32_t color_mute = 0xffff4040;
-/** Color of illuminated meter bars while muted. */
-static const uint32_t color_bar_muted = 0xff3c6464;
+/** The app's own colors: A VFD-style display, as in the other DockApps. */
+static const wlm_theme_t default_theme = {
+    .name_ptr = "Default",
+    .background = 0xff111111,
+    .led = 0xff55ffff,
+    .off = 0xff114444,
+    .accent = 0xffff4040,
+};
 
 /** Segments for the percentage. */
 static const wlm_cairo_7segment_param_t param_digits = {
@@ -385,11 +405,12 @@ void _notify(mixer_t *mixer_ptr)
 
 /* ------------------------------------------------------------------------- */
 /** Draws a speaker symbol, with sound waves or a cross for 'muted'. */
-static void _draw_speaker(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
+static void _draw_speaker(cairo_t *cairo_ptr, const sink_state_t *state_ptr,
+                          const wlm_theme_t *t)
 {
     bool active = state_ptr->connected && state_ptr->have_sink;
-    uint32_t color = active ? color_led : color_off;
-    if (active && state_ptr->mute) color = color_mute;
+    uint32_t color = active ? t->led : t->off;
+    if (active && state_ptr->mute) color = t->accent;
 
     cairo_set_source_argb8888(cairo_ptr, color);
     cairo_move_to(cairo_ptr, 4, 10);
@@ -415,7 +436,7 @@ static void _draw_speaker(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
     unsigned percent = wlm_volume_to_percent(pa_cvolume_max(&state_ptr->cvolume));
     for (int i = 0; i < 2; ++i) {
         bool lit = active && 0 < percent && (0 == i || 50 < percent);
-        cairo_set_source_argb8888(cairo_ptr, lit ? color_led : color_off);
+        cairo_set_source_argb8888(cairo_ptr, lit ? t->led : t->off);
         cairo_new_sub_path(cairo_ptr);
         cairo_arc(cairo_ptr, 10.5, 12.5, 4.5 + 3.8 * i, -M_PI / 4, M_PI / 4);
         cairo_stroke(cairo_ptr);
@@ -424,7 +445,8 @@ static void _draw_speaker(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
 
 /* ------------------------------------------------------------------------- */
 /** Draws the volume in percent, or "--" if there is no sink. */
-static void _draw_percent(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
+static void _draw_percent(cairo_t *cairo_ptr, const sink_state_t *state_ptr,
+                          const wlm_theme_t *t)
 {
     const uint32_t baseline = 18;
     const uint32_t x = 27;
@@ -432,7 +454,7 @@ static void _draw_percent(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
         for (int i = 0; i < 3; ++i) {
             wlm_cairo_7segment_display_segments(
                 cairo_ptr, &param_digits, x + i * 8, baseline,
-                color_led, color_off,
+                t->led, t->off,
                 0 < i ? WLM_CAIRO_7SEGMENT_MINUS : 0);
         }
         return;
@@ -440,27 +462,33 @@ static void _draw_percent(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
 
     unsigned percent = BS_MIN(
         wlm_volume_to_percent(pa_cvolume_max(&state_ptr->cvolume)), 999U);
-    uint32_t color = state_ptr->mute ? color_mute : color_led;
+    uint32_t color = state_ptr->mute ? t->accent : t->led;
     char digits[4];
     snprintf(digits, sizeof(digits), "%3u", percent);
     for (int i = 0; i < 3; ++i) {
         if (' ' == digits[i]) {
             wlm_cairo_7segment_display_segments(
                 cairo_ptr, &param_digits, x + i * 8, baseline,
-                color, color_off, 0);
+                color, t->off, 0);
         } else {
             wlm_cairo_7segment_display_digit(
                 cairo_ptr, &param_digits, x + i * 8, baseline,
-                color, color_off, digits[i] - '0');
+                color, t->off, digits[i] - '0');
         }
     }
 }
 
 /* ------------------------------------------------------------------------- */
-/** Color of the illuminated bar `i`: From green over yellow to red. */
-static uint32_t _bar_color(int i, bool mute)
+/**
+ * Color of the illuminated bar `i`: From green over yellow to red, with the
+ * app's own colors. With a theme: Its LED color, the last ones accented.
+ * Dimmed while muted.
+ */
+static uint32_t _bar_color(int i, bool mute, const wlm_theme_t *t)
 {
-    if (mute) return color_bar_muted;
+    bool own = 0 == strcmp(t->name_ptr, default_theme.name_ptr);
+    if (mute) return wlm_theme_blend(t->off, t->led, 80);
+    if (!own) return i < BARS * 5 / 6 ? t->led : t->accent;
     if (i < BARS / 2) return 0xff40e040;
     if (i < BARS * 5 / 6) return 0xffe0e040;
     return 0xffff5030;
@@ -472,7 +500,8 @@ static uint32_t _bar_color(int i, bool mute)
  * 100% at the right. They are illuminated up to the volume, exactly: The
  * last one partly. Clicking on the meter sets the volume to that position.
  */
-static void _draw_meter(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
+static void _draw_meter(cairo_t *cairo_ptr, const sink_state_t *state_ptr,
+                        const wlm_theme_t *t)
 {
     double fraction = 0;
     if (state_ptr->connected && state_ptr->have_sink) {
@@ -484,13 +513,13 @@ static void _draw_meter(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
     for (int i = 0; i < BARS; ++i) {
         double height = 4.0 + (METER_MAX_HEIGHT - 4.0) * i / (BARS - 1);
         double x = METER_LEFT + i * BAR_PITCH;
-        cairo_set_source_argb8888(cairo_ptr, color_off);
+        cairo_set_source_argb8888(cairo_ptr, t->off);
         cairo_rectangle(cairo_ptr, x, METER_BOTTOM - height, BAR_WIDTH, height);
         cairo_fill(cairo_ptr);
 
         double lit_width = BS_MIN(BAR_WIDTH, lit_until - x);
         if (0 >= lit_width) continue;
-        cairo_set_source_argb8888(cairo_ptr, _bar_color(i, state_ptr->mute));
+        cairo_set_source_argb8888(cairo_ptr, _bar_color(i, state_ptr->mute, t));
         cairo_rectangle(cairo_ptr, x, METER_BOTTOM - height, lit_width, height);
         cairo_fill(cairo_ptr);
     }
@@ -512,15 +541,18 @@ static bool _icon_callback(bs_gfxbuf_t *gfxbuf_ptr, void *ud_ptr)
                 gfxbuf_ptr->width / ICON_SIZE,
                 gfxbuf_ptr->height / ICON_SIZE);
 
-    cairo_set_source_argb8888(cairo_ptr, color_background);
+    const wlm_theme_t *t = mixer_ptr->theme_ptr;
+    cairo_set_source_argb8888(cairo_ptr, t->background);
     cairo_rectangle(cairo_ptr, 1, 1, ICON_SIZE - 2, ICON_SIZE - 2);
     cairo_fill(cairo_ptr);
     wlm_primitives_draw_bezel_at(
         cairo_ptr, 0, 0, ICON_SIZE, ICON_SIZE, 1.0, false);
 
-    _draw_speaker(cairo_ptr, &mixer_ptr->shown);
-    _draw_percent(cairo_ptr, &mixer_ptr->shown);
-    _draw_meter(cairo_ptr, &mixer_ptr->shown);
+    _draw_speaker(cairo_ptr, &mixer_ptr->shown, t);
+    if (mixer_ptr->show_percent) {
+        _draw_percent(cairo_ptr, &mixer_ptr->shown, t);
+    }
+    _draw_meter(cairo_ptr, &mixer_ptr->shown, t);
 
     cairo_destroy(cairo_ptr);
     return true;
@@ -569,7 +601,7 @@ static void _change_volume(mixer_t *mixer_ptr, int steps)
         pa_cvolume_valid(&state_ptr->cvolume)) {
         pa_volume_t volume = wlm_volume_step(
             pa_cvolume_max(&state_ptr->cvolume), steps,
-            arg_step, arg_max_volume);
+            mixer_ptr->step, mixer_ptr->max_volume);
         // Scales all channels, keeping the balance.
         pa_cvolume_scale(&state_ptr->cvolume, volume);
         pa_operation *op_ptr = pa_context_set_sink_volume_by_index(
@@ -585,7 +617,7 @@ static void _change_volume(mixer_t *mixer_ptr, int steps)
 /** Sets the volume to `percent`, at most to `--max_volume`. */
 static void _set_volume_percent(mixer_t *mixer_ptr, unsigned percent)
 {
-    percent = BS_MIN(percent, arg_max_volume);
+    percent = BS_MIN(percent, mixer_ptr->max_volume);
     pa_threaded_mainloop_lock(mixer_ptr->mainloop_ptr);
     sink_state_t *state_ptr = &mixer_ptr->state;
     if (state_ptr->connected && state_ptr->have_sink &&
@@ -660,38 +692,31 @@ static void _toggle_mute(mixer_t *mixer_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
-/** Starts the mixer command, in its own process group, default signals. */
-static void _start_mixer_command(void)
+/** Applies the preferences. */
+static void _apply_prefs(mixer_t *mixer_ptr)
 {
-    if (NULL == arg_mixer_command_ptr || '\0' == *arg_mixer_command_ptr) return;
+    wlm_settings_t *s = mixer_ptr->settings_ptr;
+    mixer_ptr->theme_ptr = wlm_settings_theme(s, &default_theme);
+    mixer_ptr->show_percent = wlm_settings_bool(s, "ShowPercent", true);
+    mixer_ptr->click_mutes = wlm_settings_bool(s, "ClickMutes", true);
+    mixer_ptr->scroll_volume = wlm_settings_bool(s, "ScrollVolume", true);
+    mixer_ptr->step = (unsigned)wlm_settings_number(s, "Step", arg_step, 1, 50);
+    mixer_ptr->max_volume = (unsigned)wlm_settings_number(
+        s, "MaxVolume", arg_max_volume, 10, 150);
+    mixer_ptr->mixer_command_ptr = wlm_settings_string(
+        s, "MixerCommand",
+        NULL != arg_mixer_command_ptr ? arg_mixer_command_ptr : "");
+}
 
-    posix_spawnattr_t attr;
-    if (0 != posix_spawnattr_init(&attr)) return;
-    sigset_t sigset;
-    sigemptyset(&sigset);
-    posix_spawnattr_setsigmask(&attr, &sigset);
-    sigaddset(&sigset, SIGCHLD);
-    sigaddset(&sigset, SIGINT);
-    sigaddset(&sigset, SIGPIPE);
-    posix_spawnattr_setsigdefault(&attr, &sigset);
-    // A process group of its own: Keeps it running when we are stopped.
-    posix_spawnattr_setpgroup(&attr, 0);
-    posix_spawnattr_setflags(
-        &attr,
-        POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP);
-
-    char *const argv[] = {
-        "/bin/sh", "-c", arg_mixer_command_ptr, NULL };
-    extern char **environ;
-    pid_t pid;
-    int rv = posix_spawn(&pid, "/bin/sh", NULL, &attr, argv, environ);
-    if (0 != rv) {
-        bs_log(BS_WARNING, "Failed to start \"%s\": %s",
-               arg_mixer_command_ptr, strerror(rv));
-    } else {
-        bs_log(BS_INFO, "Started \"%s\", pid %d", arg_mixer_command_ptr, pid);
-    }
-    posix_spawnattr_destroy(&attr);
+/* ------------------------------------------------------------------------- */
+/** The preferences file changed: Applies it, and redraws. */
+static void _handle_settings_fd(__UNUSED__ wlmcl_client_t *client_ptr,
+                                void *ud_ptr)
+{
+    mixer_t *mixer_ptr = ud_ptr;
+    if (!wlm_settings_handle_fd(mixer_ptr->settings_ptr)) return;
+    _apply_prefs(mixer_ptr);
+    _redraw(mixer_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -719,13 +744,14 @@ static void _handle_pointer_button(
             mixer_ptr->dragging = true;
             mixer_ptr->dragged_percent = -1;
             _set_volume_at(mixer_ptr, icon_x);
-        } else {
+        } else if (mixer_ptr->click_mutes) {
             _toggle_mute(mixer_ptr);
         }
         break;
     case BTN_RIGHT:
+        // Not seen within wlmaker: It opens the dock-app's menu.
     case BTN_MIDDLE:
-        _start_mixer_command();
+        wlm_settings_spawn(mixer_ptr->mixer_command_ptr);
         break;
     default:
         break;
@@ -771,7 +797,8 @@ static void _handle_pointer_axis(
         listener_ptr, mixer_t, pointer_axis_listener);
     struct wlmcl_client_pointer_axis_event *event_ptr = data_ptr;
     if (event_ptr->wl_surface_ptr != wlmcl_icon_wl_surface(mixer_ptr->icon_ptr) ||
-        WL_POINTER_AXIS_VERTICAL_SCROLL != event_ptr->axis) return;
+        WL_POINTER_AXIS_VERTICAL_SCROLL != event_ptr->axis ||
+        !mixer_ptr->scroll_volume) return;
 
     int steps = wlm_volume_axis_steps(
         &mixer_ptr->axis_accumulator, event_ptr->discrete, event_ptr->value);
@@ -838,6 +865,12 @@ static int _run(mixer_t *mixer_ptr)
     wl_signal_add(&events_ptr->pointer_leave,
                   &mixer_ptr->pointer_leave_listener);
 
+    const int settings_fd = wlm_settings_watch(mixer_ptr->settings_ptr);
+    if (0 <= settings_fd) {
+        wlmcl_client_register_fd(mixer_ptr->wlclient_ptr, settings_fd,
+                                 _handle_settings_fd, mixer_ptr);
+    }
+
     int rv = EXIT_FAILURE;
     if (wlmcl_client_register_fd(mixer_ptr->wlclient_ptr, mixer_ptr->event_fd,
                                  _handle_event_fd, mixer_ptr)) {
@@ -880,6 +913,9 @@ static int _run(mixer_t *mixer_ptr)
         wlmcl_client_unregister_fd(mixer_ptr->wlclient_ptr, mixer_ptr->event_fd);
     }
 
+    if (0 <= settings_fd) {
+        wlmcl_client_unregister_fd(mixer_ptr->wlclient_ptr, settings_fd);
+    }
     wl_list_remove(&mixer_ptr->pointer_leave_listener.link);
     wl_list_remove(&mixer_ptr->pointer_motion_listener.link);
     wl_list_remove(&mixer_ptr->pointer_axis_listener.link);
@@ -921,6 +957,12 @@ int main(int argc, const char **argv)
 
     mixer_t mixer = { .event_fd = -1 };
     int rv = EXIT_FAILURE;
+    mixer.settings_ptr = wlm_settings_create("wlmmixer", NULL);
+    if (NULL == mixer.settings_ptr) {
+        bs_arg_cleanup(wlmmixer_args);
+        return EXIT_FAILURE;
+    }
+    _apply_prefs(&mixer);
     mixer.event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (0 > mixer.event_fd) {
         bs_log(BS_ERROR | BS_ERRNO, "Failed eventfd()");
@@ -933,6 +975,7 @@ int main(int argc, const char **argv)
         close(mixer.event_fd);
     }
 
+    wlm_settings_destroy(mixer.settings_ptr);
     bs_arg_cleanup(wlmmixer_args);
     return rv;
 }

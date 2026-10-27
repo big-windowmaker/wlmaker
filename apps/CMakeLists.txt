@@ -80,7 +80,7 @@ install(
 
 # The mixer talks to PulseAudio, or to PipeWire through pipewire-pulse.
 if(LIBPULSE_FOUND)
-  add_wlm_app(wlmmixer wlm_volume wlmclient_lib primitives PkgConfig::LIBPULSE m)
+  add_wlm_app(wlmmixer wlm_volume wlm_settings wlmclient_lib primitives PkgConfig::LIBPULSE m)
   install(TARGETS wlmmixer DESTINATION "${CMAKE_INSTALL_BINDIR}")
 else()
   message(STATUS "libpulse not found. Will not build wlmmixer.")
