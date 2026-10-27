@@ -239,6 +239,60 @@ void wlmaker_dock_app_kill(
     wlmaker_server_t *server_ptr,
     const char *app_id_ptr);
 
+/**
+ * Builds the shell script for a launcher's `PasteCommand` (placeholder 's',
+ * Window Maker's "%s": the selection) or `DropCommand` ('d', "%d": the
+ * dropped files): The placeholder becomes `"$@"`, the arguments given to
+ * the script, so they are not parsed by the shell. "%%" becomes "%".
+ *
+ * @return The script, to be free()-ed. NULL on error.
+ */
+char *wlmaker_dock_launcher_command_script(
+    const char *template_ptr,
+    char placeholder);
+
+/**
+ * Runs a launcher's `PasteCommand` or `DropCommand` with `args_ptr`, as
+ * Window Maker does: Through `/bin/sh -c`. See
+ * @ref wlmaker_dock_launcher_command_script.
+ *
+ * @return true if started.
+ */
+bool wlmaker_dock_launcher_run_command(
+    wlmaker_server_t *server_ptr,
+    const char *template_ptr,
+    char placeholder,
+    const char **args_ptr,
+    size_t args);
+
+/** Called with the text read; NULL on error or time-out. */
+typedef void (*wlmaker_dock_launchers_text_callback_t)(
+    void *ud_ptr, const char *text_ptr);
+
+/**
+ * Reads all of `fd` (non-blocking, up to 1 MiB, within 5 seconds) from the
+ * event loop, then calls `callback` and closes `fd`. For data from a
+ * client: The selection, or dropped data.
+ *
+ * @return true if reading started (`callback` will be called).
+ */
+bool wlmaker_dock_launchers_read_fd(
+    wlmaker_server_t *server_ptr,
+    int fd,
+    wlmaker_dock_launchers_text_callback_t callback,
+    void *ud_ptr);
+
+/**
+ * The middle button on a launcher: As Window Maker, runs its
+ * `PasteCommand` with the selection (the primary selection, else the
+ * clipboard) for "%s".
+ *
+ * @return Whether the launcher has a `PasteCommand`.
+ */
+bool wlmaker_dock_launchers_paste_command(
+    wlmaker_server_t *server_ptr,
+    bspl_dict_t *dict_ptr);
+
 /** Unit test cases. */
 extern const bs_test_set_t wlmaker_dock_launchers_test_set;
 
