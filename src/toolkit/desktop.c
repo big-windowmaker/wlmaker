@@ -189,11 +189,13 @@ wlmtk_desktop_t *wlmtk_desktop_create(
     wlmtk_element_set_visible(
         &desktop_ptr->workspace_window_container.super_element,
         true);
-    wlmtk_layer_t *bg_layer_ptr = wlmtk_desktop_get_layer(
-        desktop_ptr, WLMTK_DESKTOP_LAYER_BACKGROUND);
+    // Windows are above the bottom layer, as layer-shell has it: Its
+    // surfaces are "below shell surfaces" (and above the background).
+    wlmtk_layer_t *bottom_layer_ptr = wlmtk_desktop_get_layer(
+        desktop_ptr, WLMTK_DESKTOP_LAYER_BOTTOM);
     wlmtk_container_add_element_atop(
         &desktop_ptr->container,
-        wlmtk_layer_element(bg_layer_ptr),
+        wlmtk_layer_element(bottom_layer_ptr),
         &desktop_ptr->workspace_window_container.super_element);
 
     if (!wlmtk_container_init(&desktop_ptr->workspace_fullscreen_container)) {
