@@ -37,10 +37,14 @@
 
 #include "clip.h"
 #include "config.h"
+#include "drawer.h"
 #include "toplevel_tracker.h"
 
 /* == Declarations ========================================================= */
 
+static bspl_array_t *_wlmaker_dock_launchers_shown(
+    wlmaker_server_t *server_ptr,
+    bspl_array_t *array_ptr);
 static void _wlmaker_dock_app_count(wlmtk_window_t *window_ptr, void *ud_ptr);
 static void _wlmaker_dock_app_hide(wlmtk_window_t *window_ptr, void *ud_ptr);
 static void _wlmaker_dock_app_unhide(wlmtk_window_t *window_ptr, void *ud_ptr);
@@ -85,26 +89,10 @@ bspl_array_t *wlmaker_dock_launchers_load(
     bspl_dict_t *state_dict_ptr = wlmaker_state_load(
         server_ptr->files_ptr, server_ptr->state_fname_ptr);
     if (NULL == state_dict_ptr) return NULL;
-    bspl_array_t *launchers_ptr = bspl_dict_get_array(
-        bspl_dict_get_dict(state_dict_ptr, section_ptr), "Launchers");
-    bspl_array_t *array_ptr = bspl_array_create();
-    for (size_t i = 0;
-         NULL != array_ptr && NULL != launchers_ptr &&
-             i < bspl_array_size(launchers_ptr);
-         ++i) {
-        bspl_object_t *o = bspl_array_at(launchers_ptr, i);
-        bspl_dict_t *d = bspl_dict_from_object(o);
-        if (NULL == d) continue;
-        // wlmdock leaves out launchers without icon.
-        char *p = wlmaker_dock_launcher_icon_path(
-            server_ptr->files_ptr, wlmaker_dock_launcher_value(d, "Icon"));
-        if (NULL == p) continue;
-        free(p);
-        if (!bspl_array_push_back(array_ptr, o)) {
-            bspl_array_unref(array_ptr);
-            array_ptr = NULL;
-        }
-    }
+    // wlmdock leaves out launchers without icon.
+    bspl_array_t *array_ptr = _wlmaker_dock_launchers_shown(
+        server_ptr, bspl_dict_get_array(
+            bspl_dict_get_dict(state_dict_ptr, section_ptr), "Launchers"));
     bspl_dict_unref(state_dict_ptr);
     return array_ptr;
 }
@@ -129,6 +117,274 @@ bool wlmaker_dock_launchers_store(
     }
     wlmaker_clip_launchers_changed(server_ptr);
     return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Keeps the entries of `array_ptr` whose icon is found. NULL on error. */
+static bspl_array_t *_wlmaker_dock_launchers_shown(
+    wlmaker_server_t *server_ptr,
+    bspl_array_t *array_ptr)
+{
+    bspl_array_t *shown_ptr = bspl_array_create();
+    for (size_t i = 0;
+         NULL != shown_ptr && NULL != array_ptr &&
+             i < bspl_array_size(array_ptr);
+         ++i) {
+        bspl_object_t *o = bspl_array_at(array_ptr, i);
+        bspl_dict_t *d = bspl_dict_from_object(o);
+        if (NULL == d) continue;
+        char *p = wlmaker_dock_launcher_icon_path(
+            server_ptr->files_ptr, wlmaker_dock_launcher_value(d, "Icon"));
+        if (NULL == p) continue;
+        free(p);
+        if (!bspl_array_push_back(shown_ptr, o)) {
+            bspl_array_unref(shown_ptr);
+            shown_ptr = NULL;
+        }
+    }
+    return shown_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The index of drawer `id_ptr` in the Dock's `array_ptr`, or -1. */
+static int _wlmaker_dock_launchers_drawer_index(
+    bspl_array_t *array_ptr,
+    const char *id_ptr)
+{
+    for (size_t i = 0; NULL != id_ptr && i < bspl_array_size(array_ptr); ++i) {
+        bspl_dict_t *d = bspl_dict_from_object(bspl_array_at(array_ptr, i));
+        const char *v = wlmaker_dock_launcher_value(d, "Id");
+        if (wlmaker_drawer_is_entry(d) && NULL != v && 0 == strcmp(v, id_ptr)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------------- */
+bspl_array_t *wlmaker_dock_launchers_load_column(
+    wlmaker_server_t *server_ptr,
+    int column)
+{
+    if (WLMAKER_COLUMN_CLIP == column) {
+        return wlmaker_dock_launchers_load(server_ptr, "Clip");
+    }
+    bspl_array_t *dock_ptr = wlmaker_dock_launchers_load(server_ptr, "Dock");
+    if (WLMAKER_COLUMN_DOCK == column || NULL == dock_ptr) return dock_ptr;
+    wlmaker_drawer_t *drawer_ptr = wlmaker_clip_drawer(server_ptr, column);
+    int i = NULL != drawer_ptr ? _wlmaker_dock_launchers_drawer_index(
+        dock_ptr, wlmaker_drawer_id(drawer_ptr)) : -1;
+    bspl_array_t *a = NULL;
+    if (0 <= i) {
+        a = _wlmaker_dock_launchers_shown(
+            server_ptr, bspl_dict_get_array(
+                bspl_dict_from_object(bspl_array_at(dock_ptr, i)),
+                "Launchers"));
+    }
+    bspl_array_unref(dock_ptr);
+    return a;
+}
+
+/* ------------------------------------------------------------------------- */
+/** A copy of `array_ptr` without `index`, or with `entry_ptr` at `index`. */
+static bspl_array_t *_wlmaker_dock_launchers_edited(
+    bspl_array_t *array_ptr,
+    size_t index,
+    bspl_object_t *entry_ptr)
+{
+    bspl_array_t *n = bspl_array_create();
+    size_t len = NULL != array_ptr ? bspl_array_size(array_ptr) : 0;
+    bool rv = NULL != n;
+    for (size_t i = 0; rv && i <= len; ++i) {
+        if (NULL != entry_ptr && i == BS_MIN(index, len)) {
+            rv = bspl_array_push_back(n, entry_ptr);
+        }
+        if (rv && i < len && (NULL != entry_ptr || i != index)) {
+            rv = bspl_array_push_back(n, bspl_array_at(array_ptr, i));
+        }
+    }
+    if (!rv && NULL != n) {
+        bspl_array_unref(n);
+        n = NULL;
+    }
+    return n;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Puts the arrays of the columns into the state: `dock_ptr` as the Dock's
+ * launchers, with the `Launchers` of drawers `ids` replaced by `arrays`.
+ */
+static bool _wlmaker_dock_launchers_store_dock(
+    wlmaker_server_t *server_ptr,
+    bspl_array_t *dock_ptr,
+    const char *ids[2],
+    bspl_array_t *arrays[2])
+{
+    bspl_array_t *d = bspl_array_create();
+    bool rv = NULL != d;
+    for (size_t i = 0; rv && i < bspl_array_size(dock_ptr); ++i) {
+        bspl_object_t *o = bspl_array_at(dock_ptr, i);
+        bspl_dict_t *e = bspl_dict_from_object(o);
+        const char *v = wlmaker_dock_launcher_value(e, "Id");
+        bspl_dict_t *replaced_ptr = NULL;
+        for (int k = 0; k < 2; ++k) {
+            if (NULL == ids[k] || NULL == v || !wlmaker_drawer_is_entry(e) ||
+                0 != strcmp(ids[k], v)) continue;
+            replaced_ptr = wlmaker_drawer_dict_with(
+                e, "Launchers", bspl_object_from_array(arrays[k]));
+        }
+        rv = bspl_array_push_back(
+            d, NULL != replaced_ptr ? bspl_object_from_dict(replaced_ptr) : o);
+        if (NULL != replaced_ptr) bspl_dict_unref(replaced_ptr);
+    }
+    if (rv) rv = wlmaker_dock_launchers_store(server_ptr, "Dock", d);
+    if (NULL != d) bspl_array_unref(d);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launchers_move(
+    wlmaker_server_t *server_ptr,
+    int from_column,
+    size_t from_index,
+    int to_column,
+    size_t to_index)
+{
+    bspl_array_t *from_ptr = wlmaker_dock_launchers_load_column(
+        server_ptr, from_column);
+    bspl_array_t *to_ptr = from_column == to_column ? NULL :
+        wlmaker_dock_launchers_load_column(server_ptr, to_column);
+    bspl_array_t *new_from = NULL, *new_to = NULL, *dock_ptr = NULL;
+    bool rv = NULL != from_ptr && from_index < bspl_array_size(from_ptr) &&
+        (from_column == to_column || NULL != to_ptr);
+    if (!rv) goto done;
+    bspl_object_t *moved_ptr = bspl_array_at(from_ptr, from_index);
+
+    bspl_array_t *without_ptr = _wlmaker_dock_launchers_edited(
+        from_ptr, from_index, NULL);
+    if (from_column == to_column) {
+        new_from = _wlmaker_dock_launchers_edited(
+            without_ptr, to_index, moved_ptr);
+        if (NULL != without_ptr) bspl_array_unref(without_ptr);
+    } else {
+        new_from = without_ptr;
+        new_to = _wlmaker_dock_launchers_edited(to_ptr, to_index, moved_ptr);
+    }
+    rv = NULL != new_from && (from_column == to_column || NULL != new_to);
+    if (!rv) goto done;
+
+    // The Clip's are separate; the Dock's and the drawers' go together.
+    bspl_array_t *dock_new_ptr = NULL;
+    const char *ids[2] = { NULL, NULL };
+    bspl_array_t *arrays[2] = { new_from, new_to };
+    int columns[2] = { from_column, to_column };
+    for (int k = 0; k < 2; ++k) {
+        if (1 == k && from_column == to_column) break;
+        if (WLMAKER_COLUMN_CLIP == columns[k]) {
+            rv = rv && wlmaker_dock_launchers_store(server_ptr, "Clip",
+                                                    arrays[k]);
+        } else if (WLMAKER_COLUMN_DOCK == columns[k]) {
+            dock_new_ptr = arrays[k];
+        } else {
+            wlmaker_drawer_t *d_ptr = wlmaker_clip_drawer(server_ptr, columns[k]);
+            ids[k] = NULL != d_ptr ? wlmaker_drawer_id(d_ptr) : NULL;
+        }
+    }
+    if (rv && (NULL != dock_new_ptr || NULL != ids[0] || NULL != ids[1])) {
+        dock_ptr = NULL != dock_new_ptr ? bspl_array_ref(dock_new_ptr) :
+            wlmaker_dock_launchers_load(server_ptr, "Dock");
+        rv = NULL != dock_ptr &&
+            _wlmaker_dock_launchers_store_dock(server_ptr, dock_ptr, ids, arrays);
+    }
+
+done:
+    if (NULL != dock_ptr) bspl_array_unref(dock_ptr);
+    if (NULL != new_to) bspl_array_unref(new_to);
+    if (NULL != new_from) bspl_array_unref(new_from);
+    if (NULL != to_ptr) bspl_array_unref(to_ptr);
+    if (NULL != from_ptr) bspl_array_unref(from_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launchers_edit(
+    wlmaker_server_t *server_ptr,
+    int column,
+    size_t index,
+    bspl_dict_t *entry_ptr)
+{
+    bspl_array_t *a = wlmaker_dock_launchers_load_column(server_ptr, column);
+    if (NULL == a) return false;
+    bspl_array_t *n = _wlmaker_dock_launchers_edited(
+        a, index, NULL != entry_ptr ? bspl_object_from_dict(entry_ptr) : NULL);
+    bspl_array_unref(a);
+    if (NULL == n) return false;
+    bool rv;
+    if (WLMAKER_COLUMN_CLIP == column) {
+        rv = wlmaker_dock_launchers_store(server_ptr, "Clip", n);
+    } else if (WLMAKER_COLUMN_DOCK == column) {
+        rv = wlmaker_dock_launchers_store(server_ptr, "Dock", n);
+    } else {
+        wlmaker_drawer_t *d_ptr = wlmaker_clip_drawer(server_ptr, column);
+        const char *ids[2] = { NULL != d_ptr ? wlmaker_drawer_id(d_ptr) : NULL,
+                               NULL };
+        bspl_array_t *arrays[2] = { n, NULL };
+        bspl_array_t *dock_ptr = wlmaker_dock_launchers_load(server_ptr, "Dock");
+        rv = NULL != dock_ptr && NULL != ids[0] &&
+            _wlmaker_dock_launchers_store_dock(server_ptr, dock_ptr, ids, arrays);
+        if (NULL != dock_ptr) bspl_array_unref(dock_ptr);
+    }
+    bspl_array_unref(n);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launchers_replace_drawer(
+    wlmaker_server_t *server_ptr,
+    const char *id_ptr,
+    bspl_dict_t *entry_ptr)
+{
+    bspl_array_t *dock_ptr = wlmaker_dock_launchers_load(server_ptr, "Dock");
+    if (NULL == dock_ptr) return false;
+    int i = _wlmaker_dock_launchers_drawer_index(dock_ptr, id_ptr);
+    bool rv = false;
+    if (0 <= i) {
+        bspl_array_t *a = _wlmaker_dock_launchers_edited(dock_ptr, i, NULL);
+        bspl_array_t *b = NULL != a ? _wlmaker_dock_launchers_edited(
+            a, i, bspl_object_from_dict(entry_ptr)) : NULL;
+        if (NULL != b) rv = wlmaker_dock_launchers_store(server_ptr, "Dock", b);
+        if (NULL != b) bspl_array_unref(b);
+        if (NULL != a) bspl_array_unref(a);
+    }
+    bspl_array_unref(dock_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launchers_set_drawer_flag(
+    wlmaker_server_t *server_ptr,
+    const char *id_ptr,
+    const char *key_ptr,
+    bool value)
+{
+    bspl_array_t *dock_ptr = wlmaker_dock_launchers_load(server_ptr, "Dock");
+    if (NULL == dock_ptr) return false;
+    int i = _wlmaker_dock_launchers_drawer_index(dock_ptr, id_ptr);
+    bool rv = false;
+    if (0 <= i) {
+        bspl_string_t *v = bspl_string_create(value ? "Yes" : "No");
+        bspl_dict_t *n = NULL != v ? wlmaker_drawer_dict_with(
+            bspl_dict_from_object(bspl_array_at(dock_ptr, i)), key_ptr,
+            bspl_object_from_string(v)) : NULL;
+        if (NULL != n) {
+            rv = wlmaker_dock_launchers_replace_drawer(server_ptr, id_ptr, n);
+            bspl_dict_unref(n);
+        }
+        if (NULL != v) bspl_string_unref(v);
+    }
+    bspl_array_unref(dock_ptr);
+    return rv;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -464,12 +720,14 @@ void _wlmaker_dock_app_collect_pid(wlmtk_window_t *window_ptr, void *ud_ptr)
 static void test_balloon_text(bs_test_t *test_ptr);
 static void test_index_at(bs_test_t *test_ptr);
 static void test_tile_buffer(bs_test_t *test_ptr);
+static void test_edited(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t _wlmaker_dock_launchers_test_cases[] = {
     { true, "balloon_text", test_balloon_text },
     { true, "index_at", test_index_at },
     { true, "tile_buffer", test_tile_buffer },
+    { true, "edited", test_edited },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -547,6 +805,36 @@ void test_tile_buffer(bs_test_t *test_ptr)
         NULL);
     BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, t);
     wlr_buffer_drop(t);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests editing a column's launchers: Removing, inserting. */
+void test_edited(bs_test_t *test_ptr)
+{
+    bspl_object_t *o = bspl_create_object_from_plist_string("(a, b, c)");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, o);
+    bspl_array_t *a = bspl_array_from_object(o);
+    bspl_object_t *x = bspl_create_object_from_plist_string("x");
+
+    bspl_array_t *r = _wlmaker_dock_launchers_edited(a, 1, NULL);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, bspl_array_size(r));
+    BS_TEST_VERIFY_STREQ(test_ptr, "c", bspl_array_string_value_at(r, 1));
+    bspl_array_unref(r);
+
+    r = _wlmaker_dock_launchers_edited(a, 1, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 4, bspl_array_size(r));
+    BS_TEST_VERIFY_STREQ(test_ptr, "x", bspl_array_string_value_at(r, 1));
+    BS_TEST_VERIFY_STREQ(test_ptr, "b", bspl_array_string_value_at(r, 2));
+    bspl_array_unref(r);
+
+    // Beyond the end: Appended.
+    r = _wlmaker_dock_launchers_edited(a, 7, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 4, bspl_array_size(r));
+    BS_TEST_VERIFY_STREQ(test_ptr, "x", bspl_array_string_value_at(r, 3));
+    bspl_array_unref(r);
+
+    bspl_object_unref(x);
+    bspl_object_unref(o);
 }
 
 /* == End of dock_launchers.c ============================================== */

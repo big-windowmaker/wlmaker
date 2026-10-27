@@ -790,7 +790,8 @@ void _wlmaker_toplevel_icon_open_menu(
     };
 
     wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(server_ptr, tile_ptr);
-    bool dock = NULL != d_ptr && d_ptr == wlmaker_clip_dockapps(server_ptr, true);
+    int column = wlmaker_clip_dockapps_column_of(server_ptr, tile_ptr);
+    if (0 > column) column = WLMAKER_COLUMN_CLIP;
     char *name_ptr = NULL;
     if (NULL != toplevel_icon_ptr->wl_client_ptr) {
         name_ptr = wlmaker_dockapps_client_name(toplevel_icon_ptr->wl_client_ptr);
@@ -815,11 +816,11 @@ void _wlmaker_toplevel_icon_open_menu(
         .command_ptr = cmdline_ptr,
         .pid = pid,
         .dockapp_name_ptr = name_ptr,
-        .dock = dock,
+        .column = column,
         .launcher_index = -1,
         .prefs_ptr = prefs_ptr };
 
-    bool rv = wlmaker_dock_menu_add_dock_items(server_ptr, cm_ptr, dock);
+    bool rv = wlmaker_dock_menu_add_dock_items(server_ptr, cm_ptr, &icon);
     // The dock-app's own actions.
     if (rv && NULL != prefs_ptr) {
         rv = wlmaker_dockapp_prefs_add_actions(prefs_ptr, server_ptr, cm_ptr);
@@ -834,7 +835,9 @@ void _wlmaker_toplevel_icon_open_menu(
             toplevel_icon_ptr);
     }
     // Moves the Clip, which the dock-app is part of.
-    if (rv && !dock) rv = wlmaker_clip_add_move_items(server_ptr, cm_ptr);
+    if (rv && WLMAKER_COLUMN_CLIP == column) {
+        rv = wlmaker_clip_add_move_items(server_ptr, cm_ptr);
+    }
 
     if (NULL != prefs_ptr) wlmaker_dockapp_prefs_destroy(prefs_ptr);
     if (NULL != cmdline_ptr) free(cmdline_ptr);
@@ -925,7 +928,7 @@ static void _wlmaker_toplevel_icon_start_drag(
     if (NULL == image_ptr) return;
     wlmaker_tile_drag_source_t source = {
         .kind = WLMAKER_TILE_DRAG_DOCKAPP,
-        .from_dock = d_ptr == wlmaker_clip_dockapps(server_ptr, true),
+        .column = wlmaker_clip_dockapps_column_of(server_ptr, tile_ptr),
         .index = wlmaker_dockapps_index(d_ptr, tile_ptr),
         .tile_ptr = tile_ptr,
         .pid = _wlmaker_toplevel_icon_pid(toplevel_icon_ptr),
@@ -1059,10 +1062,14 @@ bool _wlmaker_toplevel_icon_element_pointer_accepts_motion(
         }
     } else {
         _wlmaker_toplevel_icon_balloon(toplevel_icon_ptr, motion_event_ptr);
-        wlmaker_clip_dock_hovered(
-            server_ptr,
-            wlmaker_clip_dockapps_of(server_ptr, &toplevel_icon_ptr->super_tile) ==
-            wlmaker_clip_dockapps(server_ptr, true));
+        int column = wlmaker_clip_dockapps_column_of(
+            server_ptr, &toplevel_icon_ptr->super_tile);
+        if (0 <= column) {
+            wlmaker_clip_dock_hovered(server_ptr, WLMAKER_COLUMN_CLIP != column);
+        }
+        // In a drawer: It stays open.
+        wlmaker_drawer_t *drawer_ptr = wlmaker_clip_drawer(server_ptr, column);
+        if (NULL != drawer_ptr) wlmaker_drawer_hovered(drawer_ptr);
     }
     return toplevel_icon_ptr->orig_element_vmt.pointer_accepts_motion(
         element_ptr, motion_event_ptr);
@@ -1142,12 +1149,13 @@ void _wlmaker_toplevel_icon_handle_pointer_leave(
     toplevel_icon_ptr->balloon_entered = false;
     if (NULL == server_ptr || NULL == server_ptr->dock_fx_ptr) return;
     wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, toplevel_icon_ptr);
-    wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(
+    int column = wlmaker_clip_dockapps_column_of(
         server_ptr, &toplevel_icon_ptr->super_tile);
-    if (NULL != d_ptr) {
-        wlmaker_clip_dock_left(
-            server_ptr, d_ptr == wlmaker_clip_dockapps(server_ptr, true));
+    if (0 <= column) {
+        wlmaker_clip_dock_left(server_ptr, WLMAKER_COLUMN_CLIP != column);
     }
+    wlmaker_drawer_t *drawer_ptr = wlmaker_clip_drawer(server_ptr, column);
+    if (NULL != drawer_ptr) wlmaker_drawer_left(drawer_ptr);
 }
 
 /* ------------------------------------------------------------------------- */

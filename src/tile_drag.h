@@ -42,9 +42,12 @@ extern "C" {
 
 /** What is dragged. */
 typedef enum {
-    /** A launcher of the Dock or the Clip, shown by `wlmdock`. */
+    /**
+     * A launcher of the Dock or the Clip (shown by `wlmdock`), or of a
+     * drawer. Or a drawer's tile on the Dock.
+     */
     WLMAKER_TILE_DRAG_LAUNCHER,
-    /** A dock-app, attached to the Dock or the Clip. */
+    /** A dock-app, attached to the Dock, the Clip or a drawer. */
     WLMAKER_TILE_DRAG_DOCKAPP,
 } wlmaker_tile_drag_kind_t;
 
@@ -55,8 +58,13 @@ typedef void (*wlmaker_tile_drag_lift_t)(void *ud_ptr, bool lifted);
 typedef struct {
     /** What it is. */
     wlmaker_tile_drag_kind_t  kind;
-    /** Whether it comes from the Dock (else from the Clip). */
-    bool                      from_dock;
+    /** The column it comes from, see @ref WLMAKER_COLUMN_CLIP. */
+    int                       column;
+    /**
+     * Whether it is a drawer's tile: It stays on the Dock, and is removed
+     * only when empty (else it stays where it was, as if locked).
+     */
+    bool                      drawer;
     /** Its index among the launchers, or among the dock-apps there. */
     size_t                    index;
     /** The dock-app's tile. */
@@ -87,8 +95,8 @@ typedef struct {
 
 /** Where a dragged tile will be attached. */
 typedef struct {
-    /** Whether on the Dock (else on the Clip). */
-    bool                      dock;
+    /** The column, see @ref WLMAKER_COLUMN_CLIP. */
+    int                       column;
     /** Index among the launchers or the dock-apps there. */
     size_t                    index;
     /** Slot in the column: 0 is the Dock's main tile, or the Clip. */
