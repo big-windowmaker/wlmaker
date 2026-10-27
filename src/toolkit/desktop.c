@@ -449,6 +449,31 @@ void wlmtk_desktop_switch_to_previous_workspace(wlmtk_desktop_t *desktop_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+wlmtk_workspace_t *wlmtk_desktop_get_workspace_at(
+    wlmtk_desktop_t *desktop_ptr,
+    size_t index)
+{
+    bs_dllist_node_t *dlnode_ptr = desktop_ptr->workspaces.head_ptr;
+    for (; NULL != dlnode_ptr && 0 < index; --index) {
+        dlnode_ptr = dlnode_ptr->next_ptr;
+    }
+    if (NULL == dlnode_ptr) return NULL;
+    return wlmtk_workspace_from_dlnode(dlnode_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_desktop_switch_to_workspace_at(
+    wlmtk_desktop_t *desktop_ptr,
+    size_t index)
+{
+    wlmtk_workspace_t *workspace_ptr = wlmtk_desktop_get_workspace_at(
+        desktop_ptr, index);
+    if (NULL == workspace_ptr) return false;
+    _wlmtk_desktop_switch_to_workspace(desktop_ptr, workspace_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmtk_desktop_for_each_workspace(
     wlmtk_desktop_t *desktop_ptr,
     void (*func)(bs_dllist_node_t *dlnode_ptr, void *ud_ptr),
@@ -1004,6 +1029,25 @@ void test_workspaces(bs_test_t *test_ptr)
         wlmtk_workspace_fullscreen_element(ws2_ptr)->visible);
     BS_TEST_VERIFY_EQ(test_ptr, 1, l.calls);
     BS_TEST_VERIFY_EQ(test_ptr, ws2_ptr, l.last_data_ptr);
+    wlmtk_util_clear_test_listener(&l);
+
+    // Switching by position: to the 2nd, then back to the 1st.
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws2_ptr, wlmtk_desktop_get_workspace_at(desktop_ptr, 1));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, NULL, wlmtk_desktop_get_workspace_at(desktop_ptr, 2));
+    BS_TEST_VERIFY_FALSE(
+        test_ptr, wlmtk_desktop_switch_to_workspace_at(desktop_ptr, 2));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws1_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, wlmtk_desktop_switch_to_workspace_at(desktop_ptr, 1));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws2_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, wlmtk_desktop_switch_to_workspace_at(desktop_ptr, 0));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws1_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
     wlmtk_util_clear_test_listener(&l);
 
     wlmtk_desktop_remove_workspace(desktop_ptr, ws1_ptr);
