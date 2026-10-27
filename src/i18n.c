@@ -48,9 +48,20 @@ static const wlmaker_i18n_entry_t _wlmaker_i18n_pt_br[] = {
     { "Move to Right Side", "Mover para o lado direito" },
     { "Move to Top", "Mover para o topo" },
     { "Move to Bottom", "Mover para a base" },
-    { "Launch", "Lançar" },
-    { "Kill", "Encerrar" },
+    { "Launch", "Executar" },
+    { "Kill", "Terminar" },
     { "Remove", "Remover" },
+    // Window Maker's menu of docked icons, as its Portuguese catalog (pt.po)
+    // has them. "Dock position", "Normal", "Auto raise & lower", "Add a
+    // drawer" and "Autoraise" are untranslated there, and stay so.
+    { "Bring Here", "Trazer aqui" },
+    { "Unhide Here", "Mostrar Aqui" },
+    { "Hide", "Esconder" },
+    { "Unhide", "Mostrar" },
+    { "Settings...", "Configurações..." },
+    { "Keep on Top", "Manter sobre outros" },
+    { "Clip Options", "Opções do Clip" },
+    { "Remove Icon", "Remover Ícone" },
     { "Restore Default Launchers", "Restaurar lançadores padrão" },
     { "Dock-app", "Dockapp" },
     { "Workspace", "Área" },
@@ -192,7 +203,10 @@ void test_translate(bs_test_t *test_ptr)
                          wlmaker_i18n("Show Seconds"));
 
     wlmaker_i18n_set_locale("pt");
-    BS_TEST_VERIFY_STREQ(test_ptr, "Lançar", wlmaker_i18n("Launch"));
+    BS_TEST_VERIFY_STREQ(test_ptr, "Executar", wlmaker_i18n("Launch"));
+    BS_TEST_VERIFY_STREQ(test_ptr, "Trazer aqui", wlmaker_i18n("Bring Here"));
+    BS_TEST_VERIFY_STREQ(test_ptr, "Dock position",
+                         wlmaker_i18n("Dock position"));
 
     wlmaker_i18n_set_locale("en_US.UTF-8");
     BS_TEST_VERIFY_STREQ(test_ptr, "Move Up", wlmaker_i18n("Move Up"));
@@ -205,7 +219,7 @@ void test_translate(bs_test_t *test_ptr)
     bs_test_setenv(test_ptr, "LC_ALL", "%s", "");
     bs_test_setenv(test_ptr, "LC_MESSAGES", "pt_BR.UTF-8");
     bs_test_setenv(test_ptr, "LANG", "en_US.UTF-8");
-    BS_TEST_VERIFY_STREQ(test_ptr, "Encerrar", wlmaker_i18n("Kill"));
+    BS_TEST_VERIFY_STREQ(test_ptr, "Terminar", wlmaker_i18n("Kill"));
     bs_test_setenv(test_ptr, "LC_ALL", "C");
     BS_TEST_VERIFY_STREQ(test_ptr, "Kill", wlmaker_i18n("Kill"));
 }
