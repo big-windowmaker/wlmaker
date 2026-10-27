@@ -145,6 +145,11 @@ struct _wlmaker_clip_t {
     wlmtk_dock_t              *dock_side_ptr;
     /** Placement of the dock-apps attached to the Dock. */
     wlmaker_dockapps_t        *dock_dockapps_ptr;
+    /**
+     * The state's `Dock.Dockapps`: Dock-apps that go on the Dock when not
+     * placed anywhere yet (eg. the system tray, right after its launchers).
+     */
+    bspl_array_t              *dock_default_dockapps_ptr;
     /** Where the Dock is. */
     wlmaker_dock_place_t      dock_place;
     /** Number of the Dock's launchers, after its main tile. */
@@ -542,6 +547,10 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
         wlmaker_dockapps_destroy(clip_ptr->dock_dockapps_ptr);
         clip_ptr->dock_dockapps_ptr = NULL;
     }
+    if (NULL != clip_ptr->dock_default_dockapps_ptr) {
+        bspl_array_unref(clip_ptr->dock_default_dockapps_ptr);
+        clip_ptr->dock_default_dockapps_ptr = NULL;
+    }
     if (NULL != clip_ptr->dock_side_ptr) {
         wlmtk_layer_t *l_ptr = wlmtk_panel_get_layer(
             wlmtk_dock_panel(clip_ptr->dock_side_ptr));
@@ -758,6 +767,22 @@ bool wlmaker_clip_add_dockapp(
         if (NULL != d_ptr && wlmaker_dockapps_has_name(d_ptr, name_ptr)) {
             return wlmaker_dockapps_add(d_ptr, tile_ptr, name_ptr);
         }
+    }
+    // Not placed yet, and meant for the Dock: There.
+    for (size_t i = 0;
+         NULL != name_ptr && NULL != clip_ptr->dock_dockapps_ptr &&
+             NULL != clip_ptr->dock_default_dockapps_ptr &&
+             !wlmaker_dockapps_has_name(clip_ptr->dockapps_ptr, name_ptr) &&
+             i < bspl_array_size(clip_ptr->dock_default_dockapps_ptr);
+         ++i) {
+        const char *n = bspl_array_string_value_at(
+            clip_ptr->dock_default_dockapps_ptr, i);
+        if (NULL == n || 0 != strcmp(n, name_ptr)) continue;
+        bool rv = wlmaker_dockapps_insert(
+            clip_ptr->dock_dockapps_ptr, tile_ptr, name_ptr,
+            wlmaker_dockapps_size(clip_ptr->dock_dockapps_ptr));
+        _wlmaker_clip_publish_dock_tiles(clip_ptr);
+        return rv;
     }
     return wlmaker_dockapps_add(clip_ptr->dockapps_ptr, tile_ptr, name_ptr);
 }
@@ -2227,6 +2252,11 @@ bool _wlmaker_clip_create_dock_side(
     clip_ptr->dock_dockapps_ptr = wlmaker_dockapps_create_with_key(
         clip_ptr->dock_side_ptr, NULL, clip_ptr->dockapps_fname_ptr, "Dock");
     if (NULL == clip_ptr->dock_dockapps_ptr) return false;
+    bspl_array_t *defaults_ptr = bspl_dict_get_array(
+        bspl_dict_get_dict(state_dict_ptr, "Dock"), "Dockapps");
+    if (NULL != defaults_ptr) {
+        clip_ptr->dock_default_dockapps_ptr = bspl_array_ref(defaults_ptr);
+    }
 
     wlmtk_layer_t *layer_ptr = wlmtk_desktop_get_layer(
         clip_ptr->server_ptr->desktop_ptr, WLMTK_DESKTOP_LAYER_TOP);
