@@ -258,6 +258,9 @@ install(FILES
   "wlmaker/icons/firefox-56x56.png"
   "wlmaker/icons/terminal-56x56.png"
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/wlmaker/icons")
+install(FILES
+  "wlmaker/Dockapps.plist"
+  DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/wlmaker")
 install(
   FILES
   "Themes/Default.plist"
