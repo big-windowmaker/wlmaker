@@ -149,6 +149,27 @@ void wlmaker_primitives_draw_window_title(
     uint32_t color);
 
 /**
+ * Draws the window title into the `cairo_t`, aligned within `width`.
+ *
+ * A title wider than the space keeps to the left, as with
+ * @ref wlmaker_primitives_draw_window_title.
+ *
+ * @param cairo_ptr
+ * @param font_style_ptr      The font style to use.
+ * @param title_ptr           Title string, or NULL.
+ * @param color               As an ARGB 8888 value.
+ * @param width               Width of the title's area, in pixels.
+ * @param justify             Alignment of the title.
+ */
+void wlmaker_primitives_draw_justified_window_title(
+    cairo_t *cairo_ptr,
+    const wlmtk_style_font_t *font_style_ptr,
+    const char *title_ptr,
+    uint32_t color,
+    unsigned width,
+    wlmtk_style_justify_t justify);
+
+/**
  * Draws the text with given parameters into the `cairo_t` at (x, y).
  *
  * @param cairo_ptr
