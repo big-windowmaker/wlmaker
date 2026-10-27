@@ -40,13 +40,17 @@ static const char _app_help[] =
     "  - Buffers: middle of graph (dark cyan)\n"
     "  - Used: bottom of graph (green)\n"
     "\n"
-    "The label displays total memory usage.";
+    "The label displays total memory usage.\n"
+    "\n"
+    "Preferences, in ~/.config/wlmaker/wlmmemgraph.plist: Theme, Interval,\n"
+    "GraphStyle (Filled, Line), ShowLabel, Units (Size, Percent), ShowSwap,\n"
+    "ClickCommand (run on a left click).";
 
 /** Line buffer size for /proc/meminfo parsing. */
 #define LINE_BUFFER_SIZE 256
 
 /** Number of fields to parse from /proc/meminfo. */
-#define MEMINFO_FIELD_COUNT 5
+#define MEMINFO_FIELD_COUNT 7
 
 /* == Definitions ========================================================== */
 
@@ -87,7 +91,7 @@ static void _memgraph_lut_init(uint32_t lut[256])
 }
 
 /** Maximum length of the label string. */
-#define LABEL_BUFFER_SIZE 16
+#define LABEL_BUFFER_SIZE 64
 
 /** Kilobytes per megabyte. */
 #define KB_PER_MB 1024UL
@@ -108,6 +112,10 @@ typedef struct {
     unsigned long mem_used_kb;
     /** Formatted label string. */
     char label[LABEL_BUFFER_SIZE];
+    /** Label in percent, instead of a size. */
+    bool percent;
+    /** Label also shows the swap used. */
+    bool show_swap;
 } memgraph_state_t;
 
 /* == Cleanup ============================================================== */
@@ -220,6 +228,8 @@ static wlm_graph_read_result_t _stats_read_fn(void *app_state, wlm_graph_values_
     unsigned long buffers = 0;
     unsigned long cached = 0;
     unsigned long sreclaimable = 0;
+    unsigned long swap_total = 0;
+    unsigned long swap_free = 0;
 
     char line[LINE_BUFFER_SIZE];
     size_t label_len = 0;
@@ -254,6 +264,12 @@ static wlm_graph_read_result_t _stats_read_fn(void *app_state, wlm_graph_values_
         } else if (LABEL_MATCH("SReclaimable")) {
             sreclaimable = value;
             fields_found++;
+        } else if (LABEL_MATCH("SwapTotal")) {
+            swap_total = value;
+            fields_found++;
+        } else if (LABEL_MATCH("SwapFree")) {
+            swap_free = value;
+            fields_found++;
         }
     }
 
@@ -277,11 +293,42 @@ static wlm_graph_read_result_t _stats_read_fn(void *app_state, wlm_graph_values_
     // Store values and format label for display.
     state->mem_total_kb = mem_total;
     state->mem_used_kb = used;
-    _format_memory_size(state->label, sizeof(state->label), used);
+    char mem[24], swap[24];
+    const unsigned long swap_used =
+        swap_total > swap_free ? swap_total - swap_free : 0;
+    if (state->percent) {
+        snprintf(mem, sizeof(mem), "%lu%%", (used * 100 + mem_total / 2) / mem_total);
+        snprintf(swap, sizeof(swap), "%lu%%", 0 == swap_total ? 0UL :
+                 (swap_used * 100 + swap_total / 2) / swap_total);
+    } else if (state->show_swap) {
+        // Two lines: Compact, to fit the width.
+        snprintf(mem, sizeof(mem), "%lu.%luG", used / KB_PER_GB,
+                 (used % KB_PER_GB) * 10 / KB_PER_GB);
+        snprintf(swap, sizeof(swap), "%lu.%luG", swap_used / KB_PER_GB,
+                 (swap_used % KB_PER_GB) * 10 / KB_PER_GB);
+    } else {
+        _format_memory_size(mem, sizeof(mem), used);
+        swap[0] = '\0';
+    }
+    if (state->show_swap) {
+        snprintf(state->label, sizeof(state->label), "%s\nS %s", mem, swap);
+    } else {
+        snprintf(state->label, sizeof(state->label), "%s", mem);
+    }
 
     return WLM_GRAPH_READ_OK;
 }
 #undef LABEL_MATCH
+
+/* ------------------------------------------------------------------------- */
+/** Applies the preferences: `Units` (Size, Percent), `ShowSwap`. */
+static void _settings_fn(void *app_state, wlm_settings_t *settings_ptr)
+{
+    memgraph_state_t *state = app_state;
+    static const char *const units[] = { "Size", "Percent", NULL };
+    state->percent = 1 == wlm_settings_choice(settings_ptr, "Units", units, 0);
+    state->show_swap = wlm_settings_bool(settings_ptr, "ShowSwap", false);
+}
 
 /* == Main program ========================================================= */
 
@@ -309,6 +356,7 @@ int main(const int argc, const char **argv)
         .state_free_fn = _state_free,
         .pixel_lut = pixel_lut,
         .label_fn = _label_fn,
+        .settings_fn = _settings_fn,
     };
 
     return wlm_graph_app_run(argc, argv, &config);

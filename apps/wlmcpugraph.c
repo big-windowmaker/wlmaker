@@ -45,7 +45,11 @@ static const char _app_help[] =
     "  - 1/4 cores active (cyan)\n"
     "  - 1/2 cores active (green)\n"
     "  - 3/4 cores active (yellow)\n"
-    "  - All cores active (red)";
+    "  - All cores active (red)\n"
+    "\n"
+    "Preferences, in ~/.config/wlmaker/wlmcpugraph.plist: Theme, Interval,\n"
+    "GraphStyle (Filled, Line), ShowLabel (total usage in percent),\n"
+    "Cores (PerCore, Total), ClickCommand (run on a left click).";
 
 /** Line buffer size for /proc/stat parsing. */
 #define LINE_BUFFER_SIZE 256
@@ -73,6 +77,12 @@ typedef struct {
     cpu_times_t *cpu_times_prev;
     /** Number of elements in cpu_times_prev. */
     uint32_t cpu_usage_num;
+    /** Usage per CPU of the last sample (cpu_usage_num elements). */
+    uint8_t *usage;
+    /** Whether to show the total usage, instead of each core's. */
+    bool total;
+    /** Label: The total usage, in percent. */
+    char label[8];
 } cpugraph_state_t;
 
 /* == Memory management ==================================================== */
@@ -97,6 +107,13 @@ static bool _cpu_state_arrays_alloc(cpugraph_state_t *state, const uint32_t cpu_
     if (NULL == state->cpu_times_prev) {
         return false;
     }
+    free(state->usage);
+    state->usage = calloc(cpu_usage_num, sizeof(uint8_t));
+    if (NULL == state->usage) {
+        free(state->cpu_times_prev);
+        state->cpu_times_prev = NULL;
+        return false;
+    }
 
     state->cpu_usage_num = cpu_usage_num;
     return true;
@@ -115,6 +132,8 @@ static void _state_free(void *app_state)
 
     free(state->cpu_times_prev);
     state->cpu_times_prev = NULL;
+    free(state->usage);
+    state->usage = NULL;
     state->cpu_usage_num = 0;
 }
 
@@ -158,14 +177,15 @@ static wlm_graph_read_result_t _stats_read_fn(void *app_state, wlm_graph_values_
         return WLM_GRAPH_READ_ERROR;
     }
 
-    // Reallocate buffer if size doesn't match.
-    if (cpu_count != values->num) {
-        uint8_t *new_buf = realloc(values->data, cpu_count);
+    // Reallocate buffer if size doesn't match: One value per CPU, or one.
+    const uint32_t values_num = state->total ? 1 : cpu_count;
+    if (values_num != values->num) {
+        uint8_t *new_buf = realloc(values->data, values_num);
         if (NULL == new_buf) {
             return WLM_GRAPH_READ_ERROR;
         }
         values->data = new_buf;
-        values->num = cpu_count;
+        values->num = values_num;
     }
 
     // Reallocate internal state arrays if CPU count changed.
@@ -203,7 +223,7 @@ static wlm_graph_read_result_t _stats_read_fn(void *app_state, wlm_graph_values_
                 usage = (uint8_t)(((total_diff - idle_diff) * 255) / total_diff);
             }
 
-            values->data[read_count] = usage;
+            state->usage[read_count] = usage;
 
             // Update previous absolute values for next iteration.
             prev->total = abs_total;
@@ -213,7 +233,36 @@ static wlm_graph_read_result_t _stats_read_fn(void *app_state, wlm_graph_values_
         }
     }
 
-    return (read_count == cpu_count) ? WLM_GRAPH_READ_OK : WLM_GRAPH_READ_ERROR;
+    if (read_count != cpu_count) return WLM_GRAPH_READ_ERROR;
+
+    unsigned sum = 0;
+    for (uint32_t i = 0; i < cpu_count; i++) sum += state->usage[i];
+    const uint8_t average = (uint8_t)(sum / cpu_count);
+    if (state->total) {
+        values->data[0] = average;
+    } else {
+        memcpy(values->data, state->usage, cpu_count);
+    }
+    snprintf(state->label, sizeof(state->label), "%u%%",
+             (unsigned)((average * 100 + 127) / 255));
+    return WLM_GRAPH_READ_OK;
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The label: Total usage, in percent. */
+static const char *_label_fn(void *app_state)
+{
+    cpugraph_state_t *state = app_state;
+    return state->label;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Applies the preferences: `Cores` = PerCore or Total. */
+static void _settings_fn(void *app_state, wlm_settings_t *settings_ptr)
+{
+    cpugraph_state_t *state = app_state;
+    static const char *const cores[] = { "PerCore", "Total", NULL };
+    state->total = 1 == wlm_settings_choice(settings_ptr, "Cores", cores, 0);
 }
 
 /* == Main program ========================================================= */
@@ -243,6 +292,9 @@ int main(const int argc, const char **argv)
         .stats_read_fn = _stats_read_fn,
         .app_state = &state,
         .state_free_fn = _state_free,
+        .label_fn = _label_fn,
+        .label_hidden_by_default = true,
+        .settings_fn = _settings_fn,
     };
 
     return wlm_graph_app_run(argc, argv, &config);

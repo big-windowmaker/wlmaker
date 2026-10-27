@@ -40,6 +40,7 @@ add_library(wlm_graph_shared STATIC wlm_graph_shared.c)
 target_include_directories(wlm_graph_shared PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(
   wlm_graph_shared
+  wlm_settings
   wlmclient_lib
   primitives)
 if(iwyu_path_and_options)
