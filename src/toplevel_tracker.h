@@ -77,6 +77,29 @@ bool wlmaker_toplevel_tracker_handle_set_app_id(
     struct wlmaker_toplevel_tracker_handle *handle_ptr,
     const char *title_ptr);
 
+/** Callback for @ref wlmaker_toplevel_tracker_for_each_app_window. */
+typedef void (*wlmaker_toplevel_tracker_window_callback_t)(
+    wlmtk_window_t *window_ptr,
+    void *ud_ptr);
+
+/**
+ * Calls `callback` for each window of the application `app_id_ptr`: The
+ * toplevels with that app ID. Like Window Maker's application, for the
+ * docked icon's "Hide", "Bring Here" and "Kill".
+ *
+ * @param toplevel_tracker_ptr
+ * @param app_id_ptr          Neither NULL nor empty, else nothing matches.
+ * @param callback            May be NULL, to just count.
+ * @param ud_ptr
+ *
+ * @return Number of windows.
+ */
+size_t wlmaker_toplevel_tracker_for_each_app_window(
+    struct wlmaker_toplevel_tracker *toplevel_tracker_ptr,
+    const char *app_id_ptr,
+    wlmaker_toplevel_tracker_window_callback_t callback,
+    void *ud_ptr);
+
 /** Toplevel tracker test set. */
 extern const bs_test_set_t wlmaker_toplevel_tracker_test_set;
 
