@@ -25,6 +25,8 @@
 #include <basedir.h>
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -135,6 +137,9 @@ static const bs_arg_t wlmaker_args[] = {
     BS_ARG_SENTINEL()
 };
 
+/** Event source for SIGHUP, which reloads the configuration. */
+static struct wl_event_source *wlmaker_sighup_event_source_ptr = NULL;
+
 /** References auto-started subprocesses. */
 static bs_ptr_stack_t         wlmaker_subprocess_stack;
 
@@ -215,6 +220,24 @@ bool create_workspaces(
     return rv;
 }
 
+/* ------------------------------------------------------------------------- */
+/** Handles SIGHUP: Reloads configuration, theme, key bindings and menu. */
+static int _wlmaker_handle_sighup(__UNUSED__ int signal_number, void *data_ptr)
+{
+    wlmaker_server_reload(data_ptr);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Unblocks SIGHUP in forked processes: Only wlmaker monitors it. */
+static void _wlmaker_atfork_child(void)
+{
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGHUP);
+    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
+}
+
 /* == Main program ========================================================= */
 /** The main program. */
 int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
@@ -263,7 +286,6 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
 
     bspl_dict_t *config_dict_ptr = wlmaker_config_load(
         files_ptr, wlmaker_arg_config_file_ptr);
-    if (NULL != wlmaker_arg_config_file_ptr) free(wlmaker_arg_config_file_ptr);
     if (NULL == config_dict_ptr) {
         fprintf(stderr, "Failed to load & initialize configuration.\n");
         return EXIT_FAILURE;
@@ -293,6 +315,10 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
     // Kept, for storing changes (eg. a Dock moved to another corner).
     server_ptr->state_fname_ptr = wlmaker_arg_state_file_ptr;
     wlmaker_arg_state_file_ptr = NULL;
+    // Kept, for reloading.
+    server_ptr->config_fname_ptr = wlmaker_arg_config_file_ptr;
+    server_ptr->theme_fname_ptr = wlmaker_arg_theme_file_ptr;
+    server_ptr->root_menu_fname_ptr = wlmaker_arg_root_menu_file_ptr;
 
     // TODO(kaeser@gubbe.ch): Uh, that's ugly...
     server_ptr->root_menu_ptr = wlmaker_root_menu_create(
@@ -307,14 +333,27 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
         wlmaker_root_menu_menu(server_ptr->root_menu_ptr),
         false);
 
-    wlmaker_action_handle_t *action_handle_ptr = wlmaker_action_bind_keys(
+    server_ptr->action_handle_ptr = wlmaker_action_bind_keys(
         server_ptr,
         bspl_dict_get_dict(config_dict_ptr, wlmaker_action_config_dict_key),
         wlmaker_server_options.bind_with_logo);
-    if (NULL == action_handle_ptr) {
+    if (NULL == server_ptr->action_handle_ptr) {
         bs_log(BS_ERROR, "Failed to bind keys.");
         return EXIT_FAILURE;
     }
+
+    // SIGHUP reloads the configuration. The signal is blocked for regular
+    // delivery: Not for launched programs.
+    wlmaker_sighup_event_source_ptr = wl_event_loop_add_signal(
+        wl_display_get_event_loop(server_ptr->wl_display_ptr),
+        SIGHUP,
+        _wlmaker_handle_sighup,
+        server_ptr);
+    if (NULL == wlmaker_sighup_event_source_ptr) {
+        bs_log(BS_WARNING, "Failed wl_event_loop_add_signal(SIGHUP): "
+               "Reloading by signal is not available.");
+    }
+    pthread_atfork(NULL, NULL, _wlmaker_atfork_child);
 
     if (!create_workspaces(state_dict_ptr, server_ptr)) {
         return EXIT_FAILURE;
@@ -360,7 +399,12 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
 
     if (NULL != task_list_ptr) wlmaker_task_list_destroy(task_list_ptr);
     if (NULL != clip_ptr) wlmaker_clip_destroy(clip_ptr);
-    wlmaker_action_unbind_keys(action_handle_ptr);
+    if (NULL != wlmaker_sighup_event_source_ptr) {
+        wl_event_source_remove(wlmaker_sighup_event_source_ptr);
+        wlmaker_sighup_event_source_ptr = NULL;
+    }
+    wlmaker_action_unbind_keys(server_ptr->action_handle_ptr);
+    server_ptr->action_handle_ptr = NULL;
     bspl_array_unref(server_ptr->root_menu_array_ptr);
     wlmaker_server_destroy(server_ptr);
 
@@ -370,6 +414,7 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
     }
     bs_ptr_stack_fini(&wlmaker_subprocess_stack);
 
+    if (NULL != wlmaker_arg_config_file_ptr) free(wlmaker_arg_config_file_ptr);
     bspl_decoded_destroy(wlmaker_config_style_desc, &style);
     bspl_dict_unref(config_dict_ptr);
     bspl_dict_unref(state_dict_ptr);

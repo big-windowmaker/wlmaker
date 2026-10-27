@@ -304,6 +304,40 @@ void wlmaker_root_menu_destroy(wlmaker_root_menu_t *root_menu_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmaker_root_menu_reload(
+    wlmaker_server_t *server_ptr,
+    const char *arg_root_menu_file_ptr)
+{
+    wlmaker_root_menu_t *old_ptr = server_ptr->root_menu_ptr;
+    if (NULL != old_ptr &&
+        NULL != wlmtk_window_get_workspace(old_ptr->window_ptr)) {
+        bs_log(BS_WARNING, "Root menu is open, not reloading it.");
+        return false;
+    }
+
+    // wlmaker_root_menu_create() registers the new menu with the server.
+    server_ptr->root_menu_ptr = NULL;
+    wlmaker_root_menu_t *new_ptr = wlmaker_root_menu_create(
+        server_ptr,
+        arg_root_menu_file_ptr,
+        wlmtk_window_style_to_ref(server_ptr->style_ptr->window_style_ptr),
+        wlmtk_menu_style_to_ref(server_ptr->style_ptr->menu_style_ptr));
+    if (NULL == new_ptr) {
+        bs_log(BS_WARNING, "Failed to reload the root menu, keeping it.");
+        server_ptr->root_menu_ptr = old_ptr;
+        return false;
+    }
+    wlmtk_menu_set_open(wlmaker_root_menu_menu(new_ptr), false);
+
+    if (NULL != old_ptr) {
+        server_ptr->root_menu_ptr = old_ptr;
+        wlmaker_root_menu_destroy(old_ptr);
+    }
+    server_ptr->root_menu_ptr = new_ptr;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 wlmtk_window_t *wlmaker_root_menu_window(wlmaker_root_menu_t *root_menu_ptr)
 {
     return root_menu_ptr->window_ptr;

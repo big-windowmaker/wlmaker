@@ -85,6 +85,14 @@ struct _wlmaker_server_t {
     wlm_util_files_t           *files_ptr;
     /** The `--state_file` argument, or NULL. Where state gets stored. */
     char                      *state_fname_ptr;
+    /** The `--config_file` argument, or NULL. Re-read when reloading. */
+    const char                *config_fname_ptr;
+    /** The `--theme_file` argument, or NULL. Re-read when reloading. */
+    const char                *theme_fname_ptr;
+    /** The `--root_menu_file` argument, or NULL. Re-read when reloading. */
+    const char                *root_menu_fname_ptr;
+    /** The bound key bindings. Replaced when reloading. */
+    struct _wlmaker_action_handle_t *action_handle_ptr;
     /** Configuration dictionnary. */
     bspl_dict_t               *config_dict_ptr;
     /** Copy of the options. */
@@ -229,6 +237,22 @@ wlmaker_server_t *wlmaker_server_create(
  * @param server_ptr
  */
 void wlmaker_server_destroy(wlmaker_server_t *server_ptr);
+
+/**
+ * Reloads the configuration file and applies what can change while running:
+ * Key bindings, keyboard (layout, repeat), pointer (acceleration, touchpad),
+ * 'WindowPlacement', 'FocusMode', the hot corners, the theme (windows,
+ * menus, cursor) and the root menu. Triggered by SIGHUP or the action
+ * 'ReloadConfiguration'. What fails to load keeps its current setting.
+ *
+ * Other settings (outputs, decoration mode, screen lock, autostart, the
+ * state's workspaces) apply when wlmaker starts.
+ *
+ * @param server_ptr
+ *
+ * @return true if everything was reloaded.
+ */
+bool wlmaker_server_reload(wlmaker_server_t *server_ptr);
 
 /**
  * Applies the desktop's settings from the configuration: 'WindowPlacement'

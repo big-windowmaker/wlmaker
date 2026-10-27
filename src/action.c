@@ -89,10 +89,8 @@ static bool _wlmaker_keybindings_bind_item(
 static bool _wlmaker_action_bound_callback(
     const struct wlmim_keybinding_combo *binding_ptr);
 
-static bool _wlmaker_action_theme_load_from_file(
-    wlmaker_server_t *server_ptr,
-    const char *fname_ptr);
 
+static void _wlmaker_action_reload_idle(void *data_ptr);
 static bool _wlmaker_action_workspace_index(
     const char *arg_ptr,
     size_t *index_ptr);
@@ -142,6 +140,7 @@ const bspl_enum_desc_t wlmaker_action_desc[] = {
     BSPL_ENUM("RootMenu", WLMAKER_ACTION_ROOT_MENU),
 
     BSPL_ENUM("ThemeLoadFromFile", WLMAKER_ACTION_THEME_LOAD_FROM_FILE),
+    BSPL_ENUM("ReloadConfiguration", WLMAKER_ACTION_RELOAD_CONFIGURATION),
 
     BSPL_ENUM("OutputMagnify", WLMAKER_ACTION_OUTPUT_MAGNIFY),
     BSPL_ENUM("OutputReduce", WLMAKER_ACTION_OUTPUT_REDUCE),
@@ -480,7 +479,16 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         break;
 
     case WLMAKER_ACTION_THEME_LOAD_FROM_FILE:
-        _wlmaker_action_theme_load_from_file(server_ptr, arg_ptr);
+        wlmaker_action_theme_load_from_file(server_ptr, arg_ptr);
+        break;
+
+    case WLMAKER_ACTION_RELOAD_CONFIGURATION:
+        // Deferred: The key binding (or menu item) running this action
+        // gets replaced by the reload.
+        wl_event_loop_add_idle(
+            wl_display_get_event_loop(server_ptr->wl_display_ptr),
+            _wlmaker_action_reload_idle,
+            server_ptr);
         break;
 
     case WLMAKER_ACTION_OUTPUT_MAGNIFY:
@@ -699,6 +707,13 @@ bool _wlmaker_action_bound_callback(
 }
 
 /* ------------------------------------------------------------------------- */
+/** Idle callback for ReloadConfiguration. */
+void _wlmaker_action_reload_idle(void *data_ptr)
+{
+    wlmaker_server_reload(data_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 /**
  * Parses the workspace number of WorkspaceSwitchTo and WindowToWorkspace.
  *
@@ -724,8 +739,7 @@ bool _wlmaker_action_workspace_index(const char *arg_ptr, size_t *index_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
-/** Loads a theme file and applies it. */
-bool _wlmaker_action_theme_load_from_file(
+bool wlmaker_action_theme_load_from_file(
     wlmaker_server_t *server_ptr,
     const char *fname_ptr)
 {

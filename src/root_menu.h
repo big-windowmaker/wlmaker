@@ -57,6 +57,20 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
  */
 void wlmaker_root_menu_destroy(wlmaker_root_menu_t *root_menu_ptr);
 
+/**
+ * Replaces the server's root menu with one loaded anew, eg. after the menu
+ * file changed. Uses the server's current styles. Does nothing while the
+ * root menu is open.
+ *
+ * @param server_ptr
+ * @param arg_root_menu_file_ptr  As for @ref wlmaker_root_menu_create.
+ *
+ * @return true if replaced. On error, the current root menu stays.
+ */
+bool wlmaker_root_menu_reload(
+    wlmaker_server_t *server_ptr,
+    const char *arg_root_menu_file_ptr);
+
 /** @return the window holding the root menu. */
 wlmtk_window_t *wlmaker_root_menu_window(wlmaker_root_menu_t *root_menu_ptr);
 
