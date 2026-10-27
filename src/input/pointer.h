@@ -86,6 +86,17 @@ void wlmim_pointer_destroy(wlmim_pointer_t *pointer_ptr);
 /** @return @ref wlmim_pointer_t::enabled. */
 bool wlmim_pointer_enabled(wlmim_pointer_t *pointer_ptr);
 
+/**
+ * (Re)applies the options to the pointer device. Whether a touchpad is
+ * enabled only applies when the device is added.
+ *
+ * @param pointer_ptr
+ * @param options_ptr
+ */
+void wlmim_pointer_configure(
+    wlmim_pointer_t *pointer_ptr,
+    const struct wlmim_pointer_options *options_ptr);
+
 /** Plist descriptor for the "Touchpad" section. */
 extern const bspl_desc_t wlmim_pointer_options_desc[];
 /** Descriptor of the 'Mouse' section, decodes into wlmim_pointer_options. */

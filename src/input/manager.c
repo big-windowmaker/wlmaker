@@ -156,6 +156,9 @@ static void _wlmim_device_update_capabilities(
 static void _wlmim_device_configure_keyboard(
     bs_dllist_node_t *dlnode_ptr,
     void *ud_ptr);
+static void _wlmim_device_configure_pointer(
+    bs_dllist_node_t *dlnode_ptr,
+    void *ud_ptr);
 static bool _wlmim_process_keybinding(
     bs_dllist_node_t *dlnode_ptr,
     void *ud_ptr);
@@ -386,6 +389,45 @@ void wlmim_input_manager_set_keymap(
         &input_manager_ptr->devices,
         _wlmim_device_configure_keyboard,
         input_manager_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_input_manager_reconfigure(
+    wlmim_t *input_manager_ptr,
+    bspl_dict_t *config_dict_ptr)
+{
+    struct xkb_keymap *xkb_keymap_ptr = wlmim_keyboard_xkb_from_config(
+        config_dict_ptr);
+    if (NULL == xkb_keymap_ptr) {
+        bs_log(BS_WARNING, "Failed to load the keymap from the configuration.");
+        return false;
+    }
+
+    wlmim_t *new_ptr = logged_calloc(1, sizeof(*new_ptr));
+    if (NULL == new_ptr) {
+        xkb_keymap_unref(xkb_keymap_ptr);
+        return false;
+    }
+    if (!bspl_decode_dict(config_dict_ptr, _wlmim_manager_config, new_ptr)) {
+        bs_log(BS_WARNING, "Failed to decode the input configuration.");
+        free(new_ptr);
+        xkb_keymap_unref(xkb_keymap_ptr);
+        return false;
+    }
+    input_manager_ptr->keyboard_options = new_ptr->keyboard_options;
+    input_manager_ptr->pointer_options = new_ptr->pointer_options;
+    input_manager_ptr->cursor_options = new_ptr->cursor_options;
+    bspl_decoded_destroy(_wlmim_manager_config, new_ptr);
+    free(new_ptr);
+
+    // Applies the keymap and the keyboard options to all keyboards.
+    wlmim_input_manager_set_keymap(input_manager_ptr, xkb_keymap_ptr);
+    xkb_keymap_unref(xkb_keymap_ptr);
+    bs_dllist_for_each(
+        &input_manager_ptr->devices,
+        _wlmim_device_configure_pointer,
+        input_manager_ptr);
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -760,6 +802,28 @@ void _wlmim_device_configure_keyboard(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Configures devices of type pointer. Iterator for `bs_dllist_for_each`.
+ *
+ * @param dlnode_ptr
+ * @param ud_ptr              Points to a @ref wlmim_t.
+ */
+void _wlmim_device_configure_pointer(
+    bs_dllist_node_t *dlnode_ptr,
+    void *ud_ptr)
+{
+    struct wlmim_device *device_ptr = BS_CONTAINER_OF(
+        dlnode_ptr, struct wlmim_device, dlnode);
+    wlmim_t *input_manager_ptr = ud_ptr;
+
+    if (device_ptr->wlr_input_device_ptr->type == WLR_INPUT_DEVICE_POINTER) {
+        wlmim_pointer_configure(
+            device_ptr->handle_ptr,
+            &input_manager_ptr->pointer_options);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Process one keybinding, as iterator to `bs_dllist_all`.
  *
  * @param dlnode_ptr
@@ -808,8 +872,11 @@ void _wlmim_unbind_node(
 static void _wlmim_test_bind(bs_test_t *test_ptr);
 
 /** Test cases for the input manager. */
+static void _wlmim_test_reconfigure(bs_test_t *test_ptr);
+
 static const bs_test_case_t   _wlmim_test_cases[] = {
     { true, "bind", _wlmim_test_bind },
+    { true, "reconfigure", _wlmim_test_reconfigure },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -874,6 +941,48 @@ void _wlmim_test_bind(bs_test_t *test_ptr)
 
     wlmim_unbind_key(&im, kb2_ptr);
     wlmim_unbind_key(&im, kb1_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests re-reading the configuration. */
+void _wlmim_test_reconfigure(bs_test_t *test_ptr)
+{
+    wlmim_t *im_ptr = wlmim_input_manager_create(
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, im_ptr);
+
+    bspl_dict_t *d = bspl_dict_from_object(
+        bspl_create_object_from_plist_string(
+            "{"
+            "Keyboard = { Repeat = { Delay = 250; Rate = 40; };"
+            "  XkbRMLVO = { Rules = evdev; Model = pc105; Layout = us;"
+            "    Variant = \"\"; Options = \"\"; }; };"
+            "Mouse = { AccelSpeed = 0.5; };"
+            "Cursor = { MoveWindowModifier = Logo; };"
+            "}"));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmim_input_manager_reconfigure(im_ptr, d));
+    BS_TEST_VERIFY_EQ(test_ptr, 250, im_ptr->keyboard_options.repeat.delay);
+    BS_TEST_VERIFY_EQ(test_ptr, 40, im_ptr->keyboard_options.repeat.rate);
+    BS_TEST_VERIFY_TRUE(test_ptr, im_ptr->pointer_options.mouse.present);
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, 0.5 == im_ptr->pointer_options.mouse.accel_speed);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, WLR_MODIFIER_LOGO,
+        wlmim_cursor_options(im_ptr)->move_window_modifier);
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, im_ptr->xkb_keymap_ptr);
+    bspl_dict_unref(d);
+
+    // An invalid configuration keeps the current one.
+    d = bspl_dict_from_object(
+        bspl_create_object_from_plist_string(
+            "{ Keyboard = { Repeat = { Delay = Slow; }; }; }"));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmim_input_manager_reconfigure(im_ptr, d));
+    BS_TEST_VERIFY_EQ(test_ptr, 250, im_ptr->keyboard_options.repeat.delay);
+    bspl_dict_unref(d);
+
+    wlmim_input_manager_destroy(im_ptr);
 }
 
 /* == End of manager.c ===================================================== */

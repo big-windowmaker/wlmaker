@@ -183,6 +183,21 @@ void wlmim_input_manager_set_keymap(
     struct xkb_keymap *xkb_keymap_ptr);
 
 /**
+ * Re-reads the input sections of the configuration ('Keyboard', 'Touchpad',
+ * 'Mouse', 'Cursor') and applies them to the devices: Keymap and repeat
+ * rate to the keyboards, acceleration and touchpad options to the pointers.
+ * The cursor's modifiers apply to windows created afterwards.
+ *
+ * @param input_manager_ptr
+ * @param config_dict_ptr
+ *
+ * @return false on error, then the current configuration stays.
+ */
+bool wlmim_input_manager_reconfigure(
+    wlmim_t *input_manager_ptr,
+    bspl_dict_t *config_dict_ptr);
+
+/**
  * Sets repeat information for all keyboards of the input manager.
  *
  * @param input_manager_ptr
