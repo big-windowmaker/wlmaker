@@ -65,7 +65,7 @@ add_executable(apps_test apps_test.c)
 target_link_libraries(apps_test wlm_calendar wlm_volume wlm_settings libbase)
 add_test(NAME apps_test COMMAND apps_test)
 
-add_wlm_app(wlmclock wlmclient_lib primitives m)
+add_wlm_app(wlmclock wlm_settings wlmclient_lib primitives m)
 add_wlm_app(wlmcalclock wlm_calendar wlm_settings wlmclient_lib primitives m)
 add_wlm_app(wlmeyes m wlmclient_lib)
 add_wlm_app(wlmcpugraph wlm_graph_shared wlmclient_lib primitives)
