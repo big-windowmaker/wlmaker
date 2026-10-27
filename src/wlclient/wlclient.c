@@ -127,6 +127,10 @@ struct _wlmcl_client_t {
 
     /** Surface that currently has pointer focus, or NULL. */
     struct wl_surface         *pointer_focus_surface_ptr;
+    /** Pointer position on @ref wlmcl_client_t::pointer_focus_surface_ptr. */
+    double                    pointer_x;
+    /** Pointer position on @ref wlmcl_client_t::pointer_focus_surface_ptr. */
+    double                    pointer_y;
     /** Axis events accumulated for the current pointer frame. */
     struct wlmcl_client_pointer_axis_event pending_axis[2];
     /** Whether there is an axis event for the current frame, per axis. */
@@ -398,6 +402,7 @@ wlmcl_client_t *wlmcl_client_create(const char *app_id_ptr)
     wl_signal_init(&wlclient_ptr->events.keyboard_repeat_info);
     wl_signal_init(&wlclient_ptr->events.pointer_changed);
     wl_signal_init(&wlclient_ptr->events.pointer_leave);
+    wl_signal_init(&wlclient_ptr->events.pointer_motion);
     wl_signal_init(&wlclient_ptr->events.pointer_button);
     wl_signal_init(&wlclient_ptr->events.pointer_axis);
 
@@ -1222,11 +1227,13 @@ void wlmcl_client_pointer_handle_enter(
     struct wl_pointer *wl_pointer,
     uint32_t serial,
     struct wl_surface *surface,
-    __UNUSED__ wl_fixed_t surface_x,
-    __UNUSED__ wl_fixed_t surface_y)
+    wl_fixed_t surface_x,
+    wl_fixed_t surface_y)
 {
     wlmcl_client_t *client_ptr = data_ptr;
     client_ptr->pointer_focus_surface_ptr = surface;
+    client_ptr->pointer_x = wl_fixed_to_double(surface_x);
+    client_ptr->pointer_y = wl_fixed_to_double(surface_y);
     if (NULL == client_ptr->attributes.cursor_shape_manager_ptr) return;
 
     struct wp_cursor_shape_device_v1 *shape_device_ptr =
@@ -1260,13 +1267,21 @@ void wlmcl_client_pointer_handle_leave(
 /* ------------------------------------------------------------------------- */
 /** Called upon pointer motion. */
 void wlmcl_client_pointer_handle_motion(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer,
     __UNUSED__ uint32_t time,
-    __UNUSED__ wl_fixed_t surface_x,
-    __UNUSED__ wl_fixed_t surface_y)
+    wl_fixed_t surface_x,
+    wl_fixed_t surface_y)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    client_ptr->pointer_x = wl_fixed_to_double(surface_x);
+    client_ptr->pointer_y = wl_fixed_to_double(surface_y);
+    struct wlmcl_client_pointer_motion_event event = {
+        .wl_surface_ptr = client_ptr->pointer_focus_surface_ptr,
+        .x = client_ptr->pointer_x,
+        .y = client_ptr->pointer_y,
+    };
+    wl_signal_emit(&client_ptr->events.pointer_motion, &event);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1283,7 +1298,9 @@ void wlmcl_client_pointer_handle_button(
     struct wlmcl_client_pointer_button_event event = {
         .wl_surface_ptr = client_ptr->pointer_focus_surface_ptr,
         .button = button,
-        .pressed = WL_POINTER_BUTTON_STATE_PRESSED == state
+        .pressed = WL_POINTER_BUTTON_STATE_PRESSED == state,
+        .x = client_ptr->pointer_x,
+        .y = client_ptr->pointer_y,
     };
     wl_signal_emit(&client_ptr->events.pointer_button, &event);
 }
