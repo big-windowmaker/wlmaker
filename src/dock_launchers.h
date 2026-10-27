@@ -163,6 +163,15 @@ void wlmaker_dock_app_bring_here(
     const char *app_id_ptr);
 
 /**
+ * Shows the application, as a double-click on a running application's docked
+ * icon does on Window Maker: Restores its windows, switches to the workspace
+ * of one of them (unless on the current one), raises and activates it.
+ */
+void wlmaker_dock_app_activate(
+    wlmaker_server_t *server_ptr,
+    const char *app_id_ptr);
+
+/**
  * Terminates the application: Sends SIGTERM to the processes of its
  * windows. Window Maker's "Kill".
  */

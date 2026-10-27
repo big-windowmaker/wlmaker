@@ -92,6 +92,25 @@ void wlmdock_launcher_kill(wlmdock_launcher_t *launcher_ptr);
 bspl_dict_t *wlmdock_launcher_dict(wlmdock_launcher_t *launcher_ptr);
 
 /** Unit test set. */
+/**
+ * Sets how launchers launch, as Window Maker's `SingleClickLaunch`: By
+ * default, on a double-click (two clicks within `double_click_msec`); with
+ * `single_click`, on a click. A double-click on a launcher whose application
+ * runs launches nothing: The compositor shows the application.
+ *
+ * @param single_click
+ * @param double_click_msec   0 for the default of 300 ms.
+ */
+void wlmdock_launcher_set_click_mode(
+    bool single_click,
+    uint32_t double_click_msec);
+
+/**
+ * Launches the application if the launcher has `AutoLaunch` set: Window
+ * Maker's "Start when Window Maker is started".
+ */
+void wlmdock_launcher_autolaunch(wlmdock_launcher_t *launcher_ptr);
+
 extern const bs_test_set_t wlmdock_launcher_test_set;
 
 #ifdef __cplusplus

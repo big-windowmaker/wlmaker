@@ -101,6 +101,10 @@ struct _wlmaker_layer_panel_t {
     wlmaker_tile_drag_t       *tile_drag_ptr;
     /** Listener for @ref wlmtk_element_events_t::pointer_leave. */
     struct wl_listener        pointer_leave_listener;
+    /** Time of the last click on a launcher, for telling double-clicks. */
+    uint32_t                  last_click_msec;
+    /** Tile of the last click. */
+    int                       last_click_index;
 };
 
 wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
@@ -129,6 +133,9 @@ static bool _wlmaker_layer_panel_tile_at(
     int *index_ptr,
     int *tile_x_ptr,
     int *tile_y_ptr);
+static void _wlmaker_layer_panel_click(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    const wlmtk_button_event_t *button_event_ptr);
 static void _wlmaker_layer_panel_start_tile_drag(
     wlmaker_layer_panel_t *layer_panel_ptr,
     double x,
@@ -656,6 +663,13 @@ bool _wlmaker_layer_panel_element_pointer_button(
         _wlmaker_layer_panel_end_drag(layer_panel_ptr);
     }
 
+    // Window Maker: A double-click on the launcher of a running application
+    // shows it. (`wlmdock` launches it, if not running.)
+    if (docklike && BTN_LEFT == button_event_ptr->button &&
+        WLMTK_BUTTON_CLICK == button_event_ptr->type) {
+        _wlmaker_layer_panel_click(layer_panel_ptr, button_event_ptr);
+    }
+
     bool rv = layer_panel_ptr->orig_element_vmt.pointer_button(
         element_ptr, button_event_ptr);
 
@@ -807,6 +821,48 @@ bool _wlmaker_layer_panel_tile_at(
     if (NULL != tile_x_ptr) *tile_x_ptr = tx;
     if (NULL != tile_y_ptr) *tile_y_ptr = ty;
     return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** A click on a launcher: Shows its application, if double-clicked. */
+void _wlmaker_layer_panel_click(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+    wlmtk_element_t *e = wlmtk_panel_element(&layer_panel_ptr->super_panel);
+    int index;
+    if (!_wlmaker_layer_panel_tile_at(layer_panel_ptr,
+                                      e->last_pointer_motion_event.x,
+                                      e->last_pointer_motion_event.y,
+                                      &index, NULL, NULL)) return;
+    uint64_t msec = 0;
+    const char *msec_ptr = bspl_dict_get_string_value(
+        bspl_dict_get_dict(server_ptr->config_dict_ptr, "Mouse"),
+        "DoubleClickTime");
+    if (NULL == msec_ptr || !bs_strconvert_uint64(msec_ptr, &msec, 10) ||
+        0 == msec) msec = 300;
+    uint32_t t = button_event_ptr->time_msec;
+    bool double_click = 0 != layer_panel_ptr->last_click_msec &&
+        index == layer_panel_ptr->last_click_index &&
+        t - layer_panel_ptr->last_click_msec <= msec;
+    layer_panel_ptr->last_click_msec = double_click ? 0 : (t ? t : 1);
+    layer_panel_ptr->last_click_index = index;
+    if (!double_click) return;
+
+    int launcher = layer_panel_ptr->is_dock ? index - 1 : index;
+    if (0 > launcher) return;
+    bspl_array_t *a = wlmaker_dock_launchers_load(
+        server_ptr, layer_panel_ptr->is_dock ? "Dock" : "Clip");
+    if (NULL == a) return;
+    if ((size_t)launcher < bspl_array_size(a)) {
+        const char *app_id_ptr = wlmaker_dock_launcher_value(
+            bspl_dict_from_object(bspl_array_at(a, launcher)), "AppID");
+        if (0 < wlmaker_dock_app_windows(server_ptr, app_id_ptr, NULL)) {
+            wlmaker_dock_app_activate(server_ptr, app_id_ptr);
+        }
+    }
+    bspl_array_unref(a);
 }
 
 /* ------------------------------------------------------------------------- */
