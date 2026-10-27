@@ -660,6 +660,24 @@ void _wlmaker_server_unclaimed_button_event_handler(
         listener_ptr, wlmaker_server_t, unclaimed_button_event_listener);
     wlmtk_button_event_t *button_event_ptr = data_ptr;
 
+    // A client's popup holds a grab (eg. a menu of a panel): A press on
+    // the desktop is outside of the client, so it dismisses the popups. As
+    // clicking elsewhere closes menus on X11. Passed to the seat's grab,
+    // without a surface in focus: The xdg-shell popup grab ends.
+    struct wlr_seat *wlr_seat_ptr = server_ptr->wlr_seat_ptr;
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        NULL != wlr_seat_ptr &&
+        wlr_seat_ptr->pointer_state.grab !=
+        wlr_seat_ptr->pointer_state.default_grab) {
+        wlr_seat_pointer_notify_clear_focus(wlr_seat_ptr);
+        wlr_seat_pointer_notify_button(
+            wlr_seat_ptr, button_event_ptr->time_msec,
+            button_event_ptr->button, WL_POINTER_BUTTON_STATE_PRESSED);
+        wlr_seat_pointer_notify_button(
+            wlr_seat_ptr, button_event_ptr->time_msec,
+            button_event_ptr->button, WL_POINTER_BUTTON_STATE_RELEASED);
+    }
+
     if (BTN_RIGHT == button_event_ptr->button &&
         WLMTK_BUTTON_DOWN == button_event_ptr->type &&
         NULL != server_ptr->root_menu_ptr &&
