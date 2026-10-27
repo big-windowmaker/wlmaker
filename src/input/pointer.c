@@ -170,6 +170,16 @@ bool wlmim_pointer_enabled(wlmim_pointer_t *pointer_ptr)
     return pointer_ptr->enabled;
 }
 
+/* ------------------------------------------------------------------------- */
+void wlmim_pointer_configure(
+    wlmim_pointer_t *pointer_ptr,
+    const struct wlmim_pointer_options *options_ptr)
+{
+    bool enabled = pointer_ptr->enabled;
+    _wlmim_pointer_apply(pointer_ptr, options_ptr);
+    pointer_ptr->enabled = enabled;
+}
+
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */

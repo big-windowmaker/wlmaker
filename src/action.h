@@ -72,6 +72,7 @@ typedef enum {
     WLMAKER_ACTION_ROOT_MENU,
 
     WLMAKER_ACTION_THEME_LOAD_FROM_FILE,
+    WLMAKER_ACTION_RELOAD_CONFIGURATION,
 
     WLMAKER_ACTION_OUTPUT_MAGNIFY,
     WLMAKER_ACTION_OUTPUT_REDUCE,
@@ -132,6 +133,18 @@ void wlmaker_action_execute(
     wlmaker_server_t *server_ptr,
     wlmaker_action_t action,
     void *arg_ptr);
+
+/**
+ * Loads a theme file and applies it to the windows, menus and cursor.
+ *
+ * @param server_ptr
+ * @param fname_ptr           Theme file, or NULL for the default theme.
+ *
+ * @return true on success.
+ */
+bool wlmaker_action_theme_load_from_file(
+    wlmaker_server_t *server_ptr,
+    const char *fname_ptr);
 
 /** Unit test set. */
 extern const bs_test_set_t   wlmaker_action_test_set;

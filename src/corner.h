@@ -59,6 +59,18 @@ wlmaker_corner_t *wlmaker_corner_create(
     wlmaker_server_t *server_ptr);
 
 /**
+ * Re-reads the hot corners' configuration ('HotCorner' dict).
+ *
+ * @param corner_ptr
+ * @param hot_corner_config_dict_ptr
+ *
+ * @return false on error, then the current configuration stays.
+ */
+bool wlmaker_corner_reconfigure(
+    wlmaker_corner_t *corner_ptr,
+    bspl_dict_t *hot_corner_config_dict_ptr);
+
+/**
  * Destroys the hot-corner handler.
  *
  * @param corner_ptr

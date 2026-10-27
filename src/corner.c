@@ -248,6 +248,38 @@ wlmaker_corner_t *wlmaker_corner_create(
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmaker_corner_reconfigure(
+    wlmaker_corner_t *corner_ptr,
+    bspl_dict_t *hot_corner_config_dict_ptr)
+{
+    wlmaker_corner_t *new_ptr = logged_calloc(1, sizeof(wlmaker_corner_t));
+    if (NULL == new_ptr) return false;
+    if (!bspl_decode_dict(
+            hot_corner_config_dict_ptr,
+            _wlmaker_corner_config_desc,
+            new_ptr)) {
+        bs_log(BS_WARNING, "Failed to parse 'HotCorner' dict.");
+        free(new_ptr);
+        return false;
+    }
+
+    // Takes over the configured values (and the arguments' ownership).
+    bspl_decoded_destroy(_wlmaker_corner_config_desc, corner_ptr);
+    corner_ptr->trigger_delay_msec = new_ptr->trigger_delay_msec;
+    corner_ptr->top_left_enter_action = new_ptr->top_left_enter_action;
+    corner_ptr->top_left_leave_action = new_ptr->top_left_leave_action;
+    corner_ptr->top_right_enter_action = new_ptr->top_right_enter_action;
+    corner_ptr->top_right_leave_action = new_ptr->top_right_leave_action;
+    corner_ptr->bottom_left_enter_action = new_ptr->bottom_left_enter_action;
+    corner_ptr->bottom_left_leave_action = new_ptr->bottom_left_leave_action;
+    corner_ptr->bottom_right_enter_action = new_ptr->bottom_right_enter_action;
+    corner_ptr->bottom_right_leave_action =
+        new_ptr->bottom_right_leave_action;
+    free(new_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_corner_destroy(wlmaker_corner_t *corner_ptr)
 {
     wlmtk_util_disconnect_listener(
@@ -612,6 +644,34 @@ void _wlmaker_corner_test(bs_test_t *test_ptr)
             c_ptr, WLR_EDGE_TOP | WLR_EDGE_RIGHT, true)->arg_ptr);
     BS_TEST_VERIFY_EQ(
         test_ptr, NULL, _wlmaker_corner_action(c_ptr, WLR_EDGE_TOP, true));
+
+    // Reconfiguring replaces the actions; an invalid dict keeps them.
+    bspl_object_t *new_obj_ptr = bspl_create_object_from_plist_string(
+        "{ TriggerDelay = 250; TopLeftEnter = (ShellExecute, \"a\"); }");
+    BS_TEST_VERIFY_TRUE(
+        test_ptr,
+        wlmaker_corner_reconfigure(c_ptr, bspl_dict_from_object(new_obj_ptr)));
+    bspl_object_unref(new_obj_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, 250, c_ptr->trigger_delay_msec);
+    BS_TEST_VERIFY_STREQ(
+        test_ptr, "a",
+        _wlmaker_corner_action(
+            c_ptr, WLR_EDGE_TOP | WLR_EDGE_LEFT, true)->arg_ptr);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, WLMAKER_ACTION_NONE,
+        _wlmaker_corner_action(
+            c_ptr, WLR_EDGE_BOTTOM | WLR_EDGE_LEFT, true)->action);
+    new_obj_ptr = bspl_create_object_from_plist_string(
+        "{ TriggerDelay = 100; TopLeftEnter = NotAnAction; }");
+    BS_TEST_VERIFY_FALSE(
+        test_ptr,
+        wlmaker_corner_reconfigure(c_ptr, bspl_dict_from_object(new_obj_ptr)));
+    bspl_object_unref(new_obj_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, 250, c_ptr->trigger_delay_msec);
+    // Restores the test's configuration.
+    BS_TEST_VERIFY_TRUE(
+        test_ptr,
+        wlmaker_corner_reconfigure(c_ptr, bspl_dict_from_object(obj_ptr)));
 
     BS_TEST_VERIFY_EQ(
         test_ptr, 0, c_ptr->current_corner);

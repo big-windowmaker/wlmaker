@@ -42,6 +42,8 @@
 #include <wlr/types/wlr_xdg_activation_v1.h>
 #undef WLR_USE_UNSTABLE
 
+#include "action.h"
+#include "default_configuration.h"
 #include "input/manager.h"
 #include "task_list.h"
 #include "toolkit/toolkit.h"
@@ -372,6 +374,70 @@ wlmaker_server_t *wlmaker_server_create(
     }
 
     return server_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_server_reload(wlmaker_server_t *server_ptr)
+{
+    bs_log(BS_INFO, "Reloading configuration, theme and root menu.");
+    bspl_object_t *object_ptr = wlmaker_config_object_load(
+        server_ptr->files_ptr,
+        "wlmaker config",
+        server_ptr->config_fname_ptr,
+        "Config.plist",
+        embedded_binary_default_configuration_data,
+        embedded_binary_default_configuration_size);
+    bspl_dict_t *config_dict_ptr = bspl_dict_from_object(object_ptr);
+    if (NULL == config_dict_ptr) {
+        bs_log(BS_ERROR, "Failed to reload the configuration, keeping it.");
+        if (NULL != object_ptr) bspl_object_unref(object_ptr);
+        return false;
+    }
+    bool rv = true;
+
+    // Key bindings: The new ones replace the current, if they all bind.
+    wlmaker_action_handle_t *handle_ptr = wlmaker_action_bind_keys(
+        server_ptr,
+        bspl_dict_get_dict(config_dict_ptr, wlmaker_action_config_dict_key),
+        server_ptr->options_ptr->bind_with_logo);
+    if (NULL == handle_ptr) {
+        bs_log(BS_WARNING, "Failed to bind keys, keeping the key bindings.");
+        rv = false;
+    } else {
+        if (NULL != server_ptr->action_handle_ptr) {
+            wlmaker_action_unbind_keys(server_ptr->action_handle_ptr);
+        }
+        server_ptr->action_handle_ptr = handle_ptr;
+    }
+
+    if (!wlmim_input_manager_reconfigure(
+            server_ptr->input_manager_ptr, config_dict_ptr)) rv = false;
+    wlmaker_server_configure_desktop(server_ptr, config_dict_ptr);
+    bspl_dict_t *corner_dict_ptr = bspl_dict_get_dict(
+        config_dict_ptr, "HotCorner");
+    if (NULL != server_ptr->corner_ptr && NULL != corner_dict_ptr &&
+        !wlmaker_corner_reconfigure(server_ptr->corner_ptr, corner_dict_ptr)) {
+        rv = false;
+    }
+
+    bspl_dict_unref(server_ptr->config_dict_ptr);
+    server_ptr->config_dict_ptr = config_dict_ptr;
+
+    // Theme: As on start, the `--theme_file` argument or 'ThemeFile'.
+    const char *theme_fname_ptr = server_ptr->theme_fname_ptr;
+    if (NULL == theme_fname_ptr) {
+        theme_fname_ptr = bspl_dict_get_string_value(
+            config_dict_ptr, "ThemeFile");
+    }
+    if (!wlmaker_action_theme_load_from_file(server_ptr, theme_fname_ptr)) {
+        bs_log(BS_WARNING, "Failed to reload the theme, keeping it.");
+        rv = false;
+    }
+
+    // Root menu, after the theme: It takes the current styles.
+    if (!wlmaker_root_menu_reload(
+            server_ptr, server_ptr->root_menu_fname_ptr)) rv = false;
+    return rv;
 }
 
 /* ------------------------------------------------------------------------- */
