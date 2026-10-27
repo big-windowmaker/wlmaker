@@ -119,18 +119,9 @@ static void _wlmaker_task_list_handle_window_unmapped(
 
 /* == Data ================================================================= */
 
-const bspl_desc_t wlmaker_task_list_style_desc[] = {
-    BSPL_DESC_CUSTOM(
-        "Fill", true, struct wlmaker_task_list_style, fill, fill,
-        wlmtk_style_decode_fill, NULL, NULL, NULL),
-    BSPL_DESC_DICT(
-        "Font", true, struct wlmaker_task_list_style, font, font,
-        wlmtk_style_font_desc),
-    BSPL_DESC_ARGB32(
-        "TextColor", true, struct wlmaker_task_list_style,
-        text_color, text_color, 0),
-    BSPL_DESC_SENTINEL()
-};
+/* `wlmaker_task_list_style_desc` is defined in config.c: Referencing it
+ * from here would pull the compositor into every user of the config
+ * (eg. wlmdock links the config, and would link XCB and libinput). */
 
 /** Task list positioning: Fixed dimensions, at center of layer. */
 static const wlmtk_panel_positioning_t _wlmaker_task_list_positioning = {

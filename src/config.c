@@ -64,6 +64,22 @@ static const bspl_desc_t _wlmaker_clip_style_desc[] = {
     BSPL_DESC_SENTINEL()
 };
 
+/** Descriptor for the task list's style. Declared in task_list.h; defined
+ * here, so that loading the config does not require the task list (and,
+ * through it, the server, XWayland and the input devices). */
+const bspl_desc_t wlmaker_task_list_style_desc[] = {
+    BSPL_DESC_CUSTOM(
+        "Fill", true, struct wlmaker_task_list_style, fill, fill,
+        wlmtk_style_decode_fill, NULL, NULL, NULL),
+    BSPL_DESC_DICT(
+        "Font", true, struct wlmaker_task_list_style, font, font,
+        wlmtk_style_font_desc),
+    BSPL_DESC_ARGB32(
+        "TextColor", true, struct wlmaker_task_list_style,
+        text_color, text_color, 0),
+    BSPL_DESC_SENTINEL()
+};
+
 /** Desciptor for decoding the style information from a plist. */
 const bspl_desc_t wlmaker_config_style_desc[] = {
     BSPL_DESC_ARGB32(
