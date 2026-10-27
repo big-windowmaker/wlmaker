@@ -100,6 +100,13 @@ struct _wlmdock_subcompositor_t {
 
     /** For @ref wlmtk_container_t::events for layout_invalidated. */
     struct wl_listener        container_layout_invalidated_listener;
+    /**
+     * Requests the size from the event loop: Once for many invalidations in
+     * a row (eg. adding tiles, opening the menu). Committing each of them
+     * would use up the swapchain's buffers, before the parent compositor
+     * releases them ("No free output buffer slot"), and frames get lost.
+     */
+    struct wl_event_source    *request_size_event_source_ptr;
 };
 
 static bool _wlmdock_subcompositor_start(
@@ -122,6 +129,7 @@ static void _wlmdock_subcompositor_handle_wlclient_keyboard_repeat_info(
 static void _wlmdock_subcompositor_handle_container_layout_invalidated(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static void _wlmdock_subcompositor_idle_request_size(void *data_ptr);
 
 static void _wlmdock_subcompositor_layer_surface_handle_configure(
     void *data_ptr,
@@ -261,6 +269,10 @@ void wlmdock_subcompositor_prepare(
 /* ------------------------------------------------------------------------- */
 void wlmdock_subcompositor_destroy(wlmdock_subcompositor_t *subcompositor_ptr)
 {
+    if (NULL != subcompositor_ptr->request_size_event_source_ptr) {
+        wl_event_source_remove(subcompositor_ptr->request_size_event_source_ptr);
+        subcompositor_ptr->request_size_event_source_ptr = NULL;
+    }
     _wlmdock_subcompositor_stop(subcompositor_ptr);
 
     bs_listener_disconnect(
@@ -486,6 +498,20 @@ void _wlmdock_subcompositor_handle_container_layout_invalidated(
         listener_ptr, wlmdock_subcompositor_t,
         container_layout_invalidated_listener);
 
+    if (NULL != subcompositor_ptr->request_size_event_source_ptr) return;
+    subcompositor_ptr->request_size_event_source_ptr = wl_event_loop_add_idle(
+        wl_display_get_event_loop(subcompositor_ptr->wl_display_ptr),
+        _wlmdock_subcompositor_idle_request_size,
+        subcompositor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Requests the size, from the event loop. */
+void _wlmdock_subcompositor_idle_request_size(void *data_ptr)
+{
+    wlmdock_subcompositor_t *subcompositor_ptr = data_ptr;
+    // Once dispatched, the idle source is gone.
+    subcompositor_ptr->request_size_event_source_ptr = NULL;
     _wlmdock_subcompositor_request_size(subcompositor_ptr);
 }
 
