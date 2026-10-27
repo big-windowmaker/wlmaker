@@ -158,6 +158,39 @@ bspl_dict_t *wlmaker_state_load(
 }
 
 /* ------------------------------------------------------------------------- */
+bspl_dict_t *wlmaker_state_load_defaults(
+    wlm_util_files_t *files_ptr,
+    const char *fname_ptr)
+{
+#ifndef WLMAKER_DEFAULT_STATE_FILE
+#define WLMAKER_DEFAULT_STATE_FILE ""
+#endif
+    const char *candidates[] = { fname_ptr, WLMAKER_DEFAULT_STATE_FILE };
+    char *found_ptr = NULL;
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        if (NULL != candidates[i] && '\0' != *candidates[i] &&
+            bs_file_realpath_is(candidates[i], S_IFREG)) {
+            found_ptr = logged_strdup(candidates[i]);
+            break;
+        }
+    }
+    if (NULL == found_ptr && NULL != files_ptr) {
+        found_ptr = wlm_util_files_xdg_config_find_system(
+            files_ptr, "State.plist", S_IFREG);
+    }
+
+    bspl_object_t *o = _wlmaker_plist_load(
+        "default wlmaker state",
+        found_ptr,
+        embedded_binary_default_state_data,
+        embedded_binary_default_state_size);
+    if (NULL != found_ptr) free(found_ptr);
+    bspl_dict_t *dict_ptr = bspl_dict_from_object(o);
+    if (NULL == dict_ptr && NULL != o) bspl_object_unref(o);
+    return dict_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 char *wlmaker_state_fname(wlm_util_files_t *files_ptr, const char *fname_ptr)
 {
     if (NULL != fname_ptr) return logged_strdup(fname_ptr);
@@ -357,6 +390,7 @@ static void test_embedded(bs_test_t *test_ptr);
 static void test_file(bs_test_t *test_ptr);
 static void test_style_file(bs_test_t *test_ptr);
 static void test_state_store(bs_test_t *test_ptr);
+static void test_state_defaults(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t wlmaker_config_test_cases[] = {
@@ -364,6 +398,7 @@ static const bs_test_case_t wlmaker_config_test_cases[] = {
     { true, "file", test_file },
     { true, "style_file", test_style_file },
     { true, "state_store", test_state_store },
+    { true, "state_defaults", test_state_defaults },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -496,6 +531,24 @@ void test_state_store(bs_test_t *test_ptr)
         unlink(old_ptr);
         free(old_ptr);
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Loads defaults: From the given file, otherwise compiled-in. */
+void test_state_defaults(bs_test_t *test_ptr)
+{
+    bspl_dict_t *d = wlmaker_state_load_defaults(
+        NULL, WLMAKER_SOURCE_DIR "/etc/State.plist");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, bspl_dict_get_array(
+                           bspl_dict_get_dict(d, "Dock"), "Launchers"));
+    bspl_dict_unref(d);
+
+    // A missing file: Falls back (here, to the compiled-in default).
+    d = wlmaker_state_load_defaults(NULL, "/nonexistent/State.plist");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, bspl_dict_get_dict(d, "Dock"));
+    bspl_dict_unref(d);
 }
 
 /* == End of config.c ====================================================== */

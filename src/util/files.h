@@ -78,6 +78,18 @@ char *wlm_util_files_xdg_config_find(
     int mode_type);
 
 /**
+ * Like @ref wlm_util_files_xdg_config_find, but only looks in the system's
+ * directories `${XDG_CONFIG_DIRS}`: Not in the user's `${XDG_CONFIG_HOME}`.
+ * Eg. to find defaults of a file the user may have changed.
+ *
+ * @return Full path name, or NULL if not found. To be free()-ed.
+ */
+char *wlm_util_files_xdg_config_find_system(
+    wlm_util_files_t *files_ptr,
+    const char *fname_ptr,
+    int mode_type);
+
+/**
  * Finds a file (or directory, ...) from XDG data directories.
  *
  * Joins @ref wlm_util_files_t::dirname_ptr with `fname_ptr`, and then looks
