@@ -27,6 +27,8 @@
 #include <wlr/util/box.h>
 #undef WLR_USE_UNSTABLE
 
+#include "clip.h"
+#include "drawer.h"
 #include "input/manager.h"
 #include "menu_scroll.h"
 
@@ -295,14 +297,35 @@ void wlmaker_context_menu_open(wlmaker_context_menu_t *context_menu_ptr)
     // The bounding box is in workspace coordinates.
     struct wlr_box pos = wlmaker_context_menu_confine(
         &area, bbox.x, bbox.y, bbox.width, bbox.height);
+    int wx = x + pos.x - bbox.x, wy = y + pos.y - bbox.y;
     wlmtk_workspace_set_window_position(
-        workspace_ptr, context_menu_ptr->window_ptr,
-        x + pos.x - bbox.x, y + pos.y - bbox.y);
+        workspace_ptr, context_menu_ptr->window_ptr, wx, wy);
     wlmtk_menu_set_bounds(context_menu_ptr->menu_ptr, &area);
 
     wlmtk_menu_set_mode(context_menu_ptr->menu_ptr,
                         WLMTK_MENU_MODE_RIGHTCLICK);
     wlmtk_menu_set_open(context_menu_ptr->menu_ptr, true);
+
+    // Not over an open drawer (which is above the windows): Below, or
+    // above it. With its items, the menu has its full size now.
+    bbox = wlmtk_window_get_bounding_box(context_menu_ptr->window_ptr);
+    struct wlr_box moved = bbox;
+    for (int id = 2; NULL != server_ptr->clip_ptr &&
+             id < wlmaker_clip_columns(server_ptr); ++id) {
+        wlmaker_drawer_t *d_ptr = wlmaker_clip_drawer(server_ptr, id);
+        struct wlr_box row, i;
+        if (NULL == d_ptr || !wlmaker_drawer_row_box(d_ptr, &row) ||
+            !wlr_box_intersection(&i, &row, &moved)) continue;
+        moved.y = row.y + row.height;
+        if (moved.y + moved.height > area.y + area.height) {
+            moved.y = row.y - moved.height;
+        }
+    }
+    if (moved.y != bbox.y) {
+        wlmtk_workspace_set_window_position(
+            workspace_ptr, context_menu_ptr->window_ptr,
+            wx, wy + moved.y - bbox.y);
+    }
     // Keyboard focus: The menu's keys work, and Escape closes it.
     wlmtk_workspace_activate_window(workspace_ptr, context_menu_ptr->window_ptr);
 }

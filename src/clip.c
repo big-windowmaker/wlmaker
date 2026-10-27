@@ -158,6 +158,11 @@ struct _wlmaker_clip_t {
     bool                      raised[2];
     /** Timers for auto-raising and lowering the Clip [0] and Dock [1]. */
     struct wl_event_source    *level_timer_ptr[2];
+
+    /** Drawers of the Dock, in their order. */
+    wlmaker_drawer_t          **drawers_ptr;
+    /** Number of drawers. */
+    size_t                    drawers;
 };
 
 static bool _wlmaker_clip_pointer_axis(
@@ -191,6 +196,9 @@ static bool _wlmaker_clip_create_dock_side(
 static void _wlmaker_clip_reload_launchers(wlmaker_clip_t *clip_ptr);
 static void _wlmaker_clip_update_dock_side(wlmaker_clip_t *clip_ptr);
 static void _wlmaker_clip_publish_dock_tiles(wlmaker_clip_t *clip_ptr);
+static void _wlmaker_clip_sync_drawers(
+    wlmaker_clip_t *clip_ptr,
+    bspl_array_t *launchers_ptr);
 static wlmaker_dock_level_t _wlmaker_clip_decode_level(bspl_dict_t *dict_ptr);
 static void _wlmaker_clip_balloon(wlmaker_clip_t *clip_ptr);
 static void _wlmaker_clip_apply_level(wlmaker_clip_t *clip_ptr, bool dock);
@@ -484,6 +492,8 @@ wlmaker_clip_t *wlmaker_clip_create(
 
     server_ptr->clip_dock_ptr = clip_ptr->wlmtk_dock_ptr;
     server_ptr->clip_ptr = clip_ptr;
+    // The Dock's drawers.
+    _wlmaker_clip_reload_launchers(clip_ptr);
     _wlmaker_clip_apply_level(clip_ptr, false);
     _wlmaker_clip_apply_level(clip_ptr, true);
     bs_log(BS_INFO, "Created clip %p", clip_ptr);
@@ -517,6 +527,13 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
             clip_ptr->server_ptr->clip_ptr = NULL;
         }
     }
+    // Shutting down: The drawers don't move their dock-apps to the Clip.
+    for (size_t i = 0; i < clip_ptr->drawers; ++i) {
+        wlmaker_drawer_destroy(clip_ptr->drawers_ptr[i]);
+    }
+    if (NULL != clip_ptr->drawers_ptr) free(clip_ptr->drawers_ptr);
+    clip_ptr->drawers_ptr = NULL;
+    clip_ptr->drawers = 0;
     if (NULL != clip_ptr->dockapps_ptr) {
         wlmaker_dockapps_destroy(clip_ptr->dockapps_ptr);
         clip_ptr->dockapps_ptr = NULL;
@@ -707,6 +724,9 @@ void wlmaker_clip_dock_surface_changed(wlmaker_server_t *server_ptr)
 {
     if (NULL != server_ptr->clip_ptr) {
         _wlmaker_clip_update_dock_side(server_ptr->clip_ptr);
+        for (size_t i = 0; i < server_ptr->clip_ptr->drawers; ++i) {
+            wlmaker_drawer_update_position(server_ptr->clip_ptr->drawers_ptr[i]);
+        }
     }
 }
 
@@ -730,6 +750,14 @@ bool wlmaker_clip_add_dockapp(
             clip_ptr->dock_dockapps_ptr, tile_ptr, name_ptr);
         _wlmaker_clip_publish_dock_tiles(clip_ptr);
         return rv;
+    }
+    // In a drawer, where it was before.
+    for (size_t i = 0; i < clip_ptr->drawers; ++i) {
+        wlmaker_dockapps_t *d_ptr = wlmaker_drawer_dockapps(
+            clip_ptr->drawers_ptr[i]);
+        if (NULL != d_ptr && wlmaker_dockapps_has_name(d_ptr, name_ptr)) {
+            return wlmaker_dockapps_add(d_ptr, tile_ptr, name_ptr);
+        }
     }
     return wlmaker_dockapps_add(clip_ptr->dockapps_ptr, tile_ptr, name_ptr);
 }
@@ -761,7 +789,82 @@ wlmaker_dockapps_t *wlmaker_clip_dockapps_of(
         0 <= wlmaker_dockapps_index(clip_ptr->dock_dockapps_ptr, tile_ptr)) {
         return clip_ptr->dock_dockapps_ptr;
     }
+    for (size_t i = 0; i < clip_ptr->drawers; ++i) {
+        wlmaker_dockapps_t *d_ptr = wlmaker_drawer_dockapps(
+            clip_ptr->drawers_ptr[i]);
+        if (NULL != d_ptr && 0 <= wlmaker_dockapps_index(d_ptr, tile_ptr)) {
+            return d_ptr;
+        }
+    }
     return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+int wlmaker_clip_dockapps_column_of(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr)
+{
+    wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(server_ptr, tile_ptr);
+    if (NULL == d_ptr) return -1;
+    for (int id = 0; id < wlmaker_clip_columns(server_ptr); ++id) {
+        if (wlmaker_clip_dockapps_id(server_ptr, id) == d_ptr) return id;
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------------- */
+wlmaker_dockapps_t *wlmaker_clip_dockapps_id(
+    wlmaker_server_t *server_ptr,
+    int id)
+{
+    if (NULL == server_ptr->clip_ptr) return NULL;
+    if (WLMAKER_COLUMN_CLIP == id) return server_ptr->clip_ptr->dockapps_ptr;
+    if (WLMAKER_COLUMN_DOCK == id) return server_ptr->clip_ptr->dock_dockapps_ptr;
+    wlmaker_drawer_t *drawer_ptr = wlmaker_clip_drawer(server_ptr, id);
+    return NULL != drawer_ptr ? wlmaker_drawer_dockapps(drawer_ptr) : NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+int wlmaker_clip_columns(wlmaker_server_t *server_ptr)
+{
+    if (NULL == server_ptr->clip_ptr) return 0;
+    return 2 + (int)server_ptr->clip_ptr->drawers;
+}
+
+/* ------------------------------------------------------------------------- */
+wlmaker_drawer_t *wlmaker_clip_drawer(wlmaker_server_t *server_ptr, int id)
+{
+    wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
+    if (NULL == clip_ptr || 2 > id || (size_t)(id - 2) >= clip_ptr->drawers) {
+        return NULL;
+    }
+    return clip_ptr->drawers_ptr[id - 2];
+}
+
+/* ------------------------------------------------------------------------- */
+wlmaker_drawer_t *wlmaker_clip_drawer_at(
+    wlmaker_server_t *server_ptr,
+    size_t index)
+{
+    wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
+    for (size_t i = 0; NULL != clip_ptr && i < clip_ptr->drawers; ++i) {
+        if (wlmaker_drawer_launcher_index(clip_ptr->drawers_ptr[i]) == index) {
+            return clip_ptr->drawers_ptr[i];
+        }
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+int wlmaker_clip_drawer_column(
+    wlmaker_server_t *server_ptr,
+    wlmaker_drawer_t *drawer_ptr)
+{
+    wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
+    for (size_t i = 0; NULL != clip_ptr && i < clip_ptr->drawers; ++i) {
+        if (clip_ptr->drawers_ptr[i] == drawer_ptr) return 2 + i;
+    }
+    return -1;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -769,21 +872,20 @@ wlmaker_dockapps_t *wlmaker_clip_dockapps(
     wlmaker_server_t *server_ptr,
     bool dock)
 {
-    if (NULL == server_ptr->clip_ptr) return NULL;
-    return dock ? server_ptr->clip_ptr->dock_dockapps_ptr :
-        server_ptr->clip_ptr->dockapps_ptr;
+    return wlmaker_clip_dockapps_id(
+        server_ptr, dock ? WLMAKER_COLUMN_DOCK : WLMAKER_COLUMN_CLIP);
 }
 
 /* ------------------------------------------------------------------------- */
 void wlmaker_clip_move_dockapp(
     wlmaker_server_t *server_ptr,
     wlmtk_tile_t *tile_ptr,
-    bool to_dock,
+    int column,
     size_t index)
 {
     wlmaker_dockapps_t *from_ptr = wlmaker_clip_dockapps_of(
         server_ptr, tile_ptr);
-    wlmaker_dockapps_t *to_ptr = wlmaker_clip_dockapps(server_ptr, to_dock);
+    wlmaker_dockapps_t *to_ptr = wlmaker_clip_dockapps_id(server_ptr, column);
     if (NULL == from_ptr || NULL == to_ptr) return;
     if (from_ptr == to_ptr) {
         wlmaker_dockapps_move_to(to_ptr, tile_ptr, index);
@@ -803,10 +905,30 @@ bool wlmaker_clip_column(
     bool dock,
     wlmaker_dock_column_t *column_ptr)
 {
+    return wlmaker_clip_column_id(
+        server_ptr, dock ? WLMAKER_COLUMN_DOCK : WLMAKER_COLUMN_CLIP,
+        column_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_clip_column_id(
+    wlmaker_server_t *server_ptr,
+    int id,
+    wlmaker_dock_column_t *column_ptr)
+{
     wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
     if (NULL == clip_ptr) return false;
+    if (2 <= id) {
+        wlmaker_drawer_t *drawer_ptr = wlmaker_clip_drawer(server_ptr, id);
+        if (NULL == drawer_ptr ||
+            !wlmaker_drawer_column(drawer_ptr, column_ptr)) return false;
+        column_ptr->id = id;
+        return true;
+    }
+    bool dock = WLMAKER_COLUMN_DOCK == id;
     const struct wlmtk_tile_style *ts_ptr = &clip_ptr->super_tile.style;
     *column_ptr = (wlmaker_dock_column_t){
+        .id = id,
         .size = ts_ptr->size,
         .pitch = ts_ptr->size + server_ptr->style_ptr->dock.margin.width };
 
@@ -832,6 +954,10 @@ bool wlmaker_clip_column(
     if (NULL == clip_ptr->dock_side_ptr) return false;
     column_ptr->place = clip_ptr->dock_place;
     column_ptr->launchers = clip_ptr->dock_launchers;
+    for (size_t i = 0; i < clip_ptr->drawers; ++i) {
+        size_t index = wlmaker_drawer_launcher_index(clip_ptr->drawers_ptr[i]);
+        if (64 > index) column_ptr->drawers |= UINT64_C(1) << index;
+    }
     column_ptr->dockapps = wlmaker_dockapps_size(clip_ptr->dock_dockapps_ptr);
     struct wlr_box b;
     if (NULL != server_ptr->dock_layer_panel_ptr &&
@@ -2012,9 +2138,66 @@ void _wlmaker_clip_reload_launchers(wlmaker_clip_t *clip_ptr)
     bspl_array_t *a = wlmaker_dock_launchers_load(server_ptr, "Dock");
     if (NULL != a) {
         clip_ptr->dock_launchers = bspl_array_size(a);
+        _wlmaker_clip_update_dock_side(clip_ptr);
+        _wlmaker_clip_sync_drawers(clip_ptr, a);
         bspl_array_unref(a);
+    } else {
+        _wlmaker_clip_update_dock_side(clip_ptr);
     }
-    _wlmaker_clip_update_dock_side(clip_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Makes the drawers those of the Dock's launchers with `Drawer = Yes`, in
+ * their order: Creates new ones, updates the others, destroys those gone
+ * (their dock-apps go to the Clip).
+ */
+void _wlmaker_clip_sync_drawers(
+    wlmaker_clip_t *clip_ptr,
+    bspl_array_t *launchers_ptr)
+{
+    size_t n = bspl_array_size(launchers_ptr);
+    wlmaker_drawer_t **new_ptr = logged_calloc(n + 1, sizeof(*new_ptr));
+    if (NULL == new_ptr) return;
+    size_t new_n = 0;
+    for (size_t i = 0; i < n; ++i) {
+        bspl_dict_t *d = bspl_dict_from_object(bspl_array_at(launchers_ptr, i));
+        if (!wlmaker_drawer_is_entry(d)) continue;
+        const char *id_ptr = bspl_dict_get_string_value(d, "Id");
+        if (NULL == id_ptr) id_ptr = "";
+        wlmaker_drawer_t *drawer_ptr = NULL;
+        for (size_t j = 0; j < clip_ptr->drawers; ++j) {
+            if (NULL != clip_ptr->drawers_ptr[j] &&
+                0 == strcmp(wlmaker_drawer_id(clip_ptr->drawers_ptr[j]),
+                            id_ptr)) {
+                drawer_ptr = clip_ptr->drawers_ptr[j];
+                clip_ptr->drawers_ptr[j] = NULL;
+                break;
+            }
+        }
+        if (NULL == drawer_ptr) {
+            drawer_ptr = wlmaker_drawer_create(clip_ptr->server_ptr, id_ptr);
+        }
+        if (NULL == drawer_ptr) continue;
+        new_ptr[new_n++] = drawer_ptr;
+    }
+    // Gone: Destroyed, before the others are updated (they may take over
+    // their dock-apps).
+    for (size_t j = 0; j < clip_ptr->drawers; ++j) {
+        if (NULL != clip_ptr->drawers_ptr[j]) {
+            wlmaker_drawer_destroy(clip_ptr->drawers_ptr[j]);
+        }
+    }
+    if (NULL != clip_ptr->drawers_ptr) free(clip_ptr->drawers_ptr);
+    clip_ptr->drawers_ptr = new_ptr;
+    clip_ptr->drawers = new_n;
+
+    size_t k = 0;
+    for (size_t i = 0; i < n && k < new_n; ++i) {
+        bspl_dict_t *d = bspl_dict_from_object(bspl_array_at(launchers_ptr, i));
+        if (!wlmaker_drawer_is_entry(d)) continue;
+        wlmaker_drawer_update(new_ptr[k++], d, i);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2135,6 +2318,9 @@ void _wlmaker_clip_apply_level(wlmaker_clip_t *clip_ptr, bool dock)
         }
         if (NULL != server_ptr->dock_layer_panel_ptr) {
             wlmaker_layer_panel_update_layer(server_ptr->dock_layer_panel_ptr);
+        }
+        for (size_t i = 0; i < clip_ptr->drawers; ++i) {
+            wlmaker_drawer_update_layer(clip_ptr->drawers_ptr[i]);
         }
     } else {
         _wlmaker_clip_move_panel(

@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
 #define WLR_USE_UNSTABLE
@@ -107,6 +108,8 @@ struct _wlmaker_layer_panel_t {
     int                       last_click_index;
     /** Tile the balloon is shown (or pending) for. -1 for none. */
     int                       balloon_index;
+    /** The Dock's launcher index of the drawer under the pointer, or -1. */
+    int                       hover_drawer;
 };
 
 wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
@@ -146,6 +149,9 @@ static void _wlmaker_layer_panel_balloon(
     wlmaker_layer_panel_t *layer_panel_ptr,
     double x,
     double y);
+static void _wlmaker_layer_panel_hover_drawer(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    int index);
 static void _wlmaker_layer_panel_handle_pointer_leave(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -323,6 +329,7 @@ wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
     }
     layer_panel_ptr->press_index = -1;
     layer_panel_ptr->balloon_index = -1;
+    layer_panel_ptr->hover_drawer = -1;
     wlmtk_util_connect_listener_signal(
         &wlmtk_panel_element(&layer_panel_ptr->super_panel)->events.pointer_leave,
         &layer_panel_ptr->pointer_leave_listener,
@@ -654,7 +661,8 @@ bool _wlmaker_layer_panel_element_pointer_button(
                     &index, NULL, NULL)) {
                 // On the Dock, 0 is the main tile; launchers follow.
                 wlmaker_dock_menu_open_launcher(
-                    server_ptr, layer_panel_ptr->is_dock,
+                    server_ptr, layer_panel_ptr->is_dock ?
+                    WLMAKER_COLUMN_DOCK : WLMAKER_COLUMN_CLIP,
                     layer_panel_ptr->is_dock ? index - 1 : index);
             }
         }
@@ -768,6 +776,17 @@ bool _wlmaker_layer_panel_element_pointer_accepts_motion(
         _wlmaker_layer_panel_balloon(
             layer_panel_ptr, motion_event_ptr->x, motion_event_ptr->y);
     }
+    if (layer_panel_ptr->is_dock) {
+        // Window Maker's Autoexpand: A drawer opens on its tile.
+        int index;
+        if (!_wlmaker_layer_panel_tile_at(
+                layer_panel_ptr, motion_event_ptr->x, motion_event_ptr->y,
+                &index, NULL, NULL) ||
+            NULL == wlmaker_clip_drawer_at(server_ptr, index - 1)) {
+            index = 0;
+        }
+        _wlmaker_layer_panel_hover_drawer(layer_panel_ptr, index - 1);
+    }
     return rv;
 }
 
@@ -852,9 +871,24 @@ void _wlmaker_layer_panel_click(
         t - layer_panel_ptr->last_click_msec <= msec;
     layer_panel_ptr->last_click_msec = double_click ? 0 : (t ? t : 1);
     layer_panel_ptr->last_click_index = index;
-    if (!double_click) return;
-
     int launcher = layer_panel_ptr->is_dock ? index - 1 : index;
+
+    // Window Maker: A drawer opens, or closes, as a launcher would launch.
+    wlmaker_drawer_t *drawer_ptr = layer_panel_ptr->is_dock ?
+        wlmaker_clip_drawer_at(server_ptr, launcher) : NULL;
+    if (NULL != drawer_ptr) {
+        const char *v = bspl_dict_get_string_value(
+            server_ptr->config_dict_ptr, "SingleClickLaunch");
+        bool single = NULL != v &&
+            (0 == strcasecmp(v, "Yes") || 0 == strcasecmp(v, "True"));
+        if (single || double_click) {
+            wlmaker_drawer_set_collapsed(
+                drawer_ptr, !wlmaker_drawer_collapsed(drawer_ptr));
+            layer_panel_ptr->last_click_msec = 0;
+        }
+        return;
+    }
+    if (!double_click) return;
     if (0 > launcher) return;
     bspl_array_t *a = wlmaker_dock_launchers_load(
         server_ptr, layer_panel_ptr->is_dock ? "Dock" : "Clip");
@@ -900,16 +934,22 @@ void _wlmaker_layer_panel_start_tile_drag(
         bspl_array_unref(a);
         return;
     }
+    // A drawer's tile stays on the Dock, unless empty.
+    wlmaker_drawer_t *drawer_ptr = dock ?
+        wlmaker_clip_drawer_at(server_ptr, index) : NULL;
     wlmaker_tile_drag_source_t source = {
         .kind = WLMAKER_TILE_DRAG_LAUNCHER,
-        .from_dock = dock,
+        .column = dock ? WLMAKER_COLUMN_DOCK : WLMAKER_COLUMN_CLIP,
+        .drawer = NULL != drawer_ptr,
         .index = index,
         .image_ptr = image_ptr,
         .grab_x = layer_panel_ptr->press_tile_x,
         .grab_y = layer_panel_ptr->press_tile_y,
         .running = 0 < wlmaker_dock_app_windows(
             server_ptr, wlmaker_dock_launcher_value(dict_ptr, "AppID"), NULL),
-        .locked = wlmaker_dock_launcher_flag(dict_ptr, "Lock") };
+        .locked = wlmaker_dock_launcher_flag(dict_ptr, "Lock") ||
+        (NULL != drawer_ptr && !wlmaker_drawer_empty(drawer_ptr)) };
+    if (NULL != drawer_ptr) wlmaker_drawer_set_collapsed(drawer_ptr, true);
     layer_panel_ptr->tile_drag_ptr = wlmaker_tile_drag_start(
         server_ptr, &source, x, y);
     wlr_buffer_drop(image_ptr);
@@ -977,6 +1017,28 @@ void _wlmaker_layer_panel_balloon(
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * The pointer is on the Dock's launcher `index`, if a drawer (else -1): The
+ * drawer it was on before may close; the one it is on now opens.
+ */
+void _wlmaker_layer_panel_hover_drawer(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    int index)
+{
+    wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+    if (index != layer_panel_ptr->hover_drawer &&
+        0 <= layer_panel_ptr->hover_drawer && NULL != server_ptr->clip_ptr) {
+        wlmaker_drawer_t *d_ptr = wlmaker_clip_drawer_at(
+            server_ptr, layer_panel_ptr->hover_drawer);
+        if (NULL != d_ptr) wlmaker_drawer_left(d_ptr);
+    }
+    layer_panel_ptr->hover_drawer = index;
+    if (0 > index || NULL == server_ptr->clip_ptr) return;
+    wlmaker_drawer_t *d_ptr = wlmaker_clip_drawer_at(server_ptr, index);
+    if (NULL != d_ptr) wlmaker_drawer_hovered(d_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 /** Handles @ref wlmtk_element_events_t::pointer_leave: Hides the balloon. */
 void _wlmaker_layer_panel_handle_pointer_leave(
     struct wl_listener *listener_ptr,
@@ -988,6 +1050,7 @@ void _wlmaker_layer_panel_handle_pointer_leave(
         wlmaker_clip_dock_left(layer_panel_ptr->server_ptr,
                                layer_panel_ptr->is_dock);
     }
+    _wlmaker_layer_panel_hover_drawer(layer_panel_ptr, -1);
     layer_panel_ptr->balloon_index = -1;
     if (NULL == layer_panel_ptr->server_ptr->dock_fx_ptr) return;
     wlmaker_dock_fx_balloon_leave(

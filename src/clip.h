@@ -49,12 +49,20 @@ typedef enum {
     WLMAKER_DOCK_LEVEL_AUTO_RAISE_LOWER,
 } wlmaker_dock_level_t;
 
+/** Column of the Clip, for @ref wlmaker_clip_column_id. */
+#define WLMAKER_COLUMN_CLIP 0
+/** Column of the Dock. Columns from 2 on are the drawers, in their order. */
+#define WLMAKER_COLUMN_DOCK 1
+
 /**
  * A column of tiles: The Dock (its main tile, then its launchers, then the
- * dock-apps attached to it), or the Clip (the Clip, its launchers, then its
- * dock-apps). For placing tiles dragged onto the Dock or the Clip.
+ * dock-apps attached to it), the Clip (the Clip, its launchers, then its
+ * dock-apps), or a drawer (its tile on the Dock, then its launchers and its
+ * dock-apps, sticking out of the Dock). For placing tiles dragged onto them.
  */
-typedef struct {
+typedef struct _wlmaker_dock_column_t {
+    /** Which column: @ref WLMAKER_COLUMN_CLIP, _DOCK, or a drawer's. */
+    int                       id;
     /** Where the dock is. */
     wlmaker_dock_place_t      place;
     /** Position of the tile nearest the anchor, in layout coordinates. */
@@ -69,9 +77,13 @@ typedef struct {
     size_t                    launchers;
     /** Number of dock-apps, after the launchers. */
     size_t                    dockapps;
+    /** The Dock: Bit `i` is set if launcher `i` is a drawer. */
+    uint64_t                  drawers;
     /** The output. */
     struct wlr_box            output;
 } wlmaker_dock_column_t;
+
+#include "drawer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -164,6 +176,44 @@ void wlmaker_clip_remove_dockapp(
     wlmaker_server_t *server_ptr,
     wlmtk_tile_t *tile_ptr);
 
+/**
+ * @return The column of the placement holding `tile_ptr`, or -1.
+ */
+int wlmaker_clip_dockapps_column_of(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr);
+
+/** @return The placement of the dock-apps of column `id`, or NULL. */
+wlmaker_dockapps_t *wlmaker_clip_dockapps_id(
+    wlmaker_server_t *server_ptr,
+    int id);
+
+/** @return Number of columns: The Clip, the Dock, and the drawers. */
+int wlmaker_clip_columns(wlmaker_server_t *server_ptr);
+
+/** @return The drawer of column `id`, or NULL if not a drawer's column. */
+wlmaker_drawer_t *wlmaker_clip_drawer(wlmaker_server_t *server_ptr, int id);
+
+/** @return The drawer at the Dock's launcher `index`, or NULL. */
+wlmaker_drawer_t *wlmaker_clip_drawer_at(
+    wlmaker_server_t *server_ptr,
+    size_t index);
+
+/** @return The column of `drawer_ptr`, or -1. */
+int wlmaker_clip_drawer_column(
+    wlmaker_server_t *server_ptr,
+    wlmaker_drawer_t *drawer_ptr);
+
+/**
+ * Fills `column_ptr` with the geometry of column `id`.
+ *
+ * @return false if there is no such column.
+ */
+bool wlmaker_clip_column_id(
+    wlmaker_server_t *server_ptr,
+    int id,
+    wlmaker_dock_column_t *column_ptr);
+
 /** @return The placement holding `tile_ptr`: The Clip's, Dock's, or NULL. */
 wlmaker_dockapps_t *wlmaker_clip_dockapps_of(
     wlmaker_server_t *server_ptr,
@@ -175,14 +225,14 @@ wlmaker_dockapps_t *wlmaker_clip_dockapps(
     bool dock);
 
 /**
- * Attaches a dock-app to the Dock (or the Clip) at `index`, counted from
- * the anchor among the dock-apps there. Moves it within, or from the other.
- * The order is stored.
+ * Attaches a dock-app to column `column` (the Clip, the Dock or a drawer)
+ * at `index`, counted from the anchor among the dock-apps there. Moves it
+ * within, or from another column. The order is stored.
  */
 void wlmaker_clip_move_dockapp(
     wlmaker_server_t *server_ptr,
     wlmtk_tile_t *tile_ptr,
-    bool to_dock,
+    int column,
     size_t index);
 
 /**
