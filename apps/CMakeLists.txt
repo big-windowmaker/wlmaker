@@ -52,14 +52,16 @@ add_library(wlm_calendar STATIC wlm_calendar.c wlm_calendar.h)
 target_link_libraries(wlm_calendar libbase)
 add_library(wlm_volume STATIC wlm_volume.c wlm_volume.h)
 target_link_libraries(wlm_volume libbase m)
+add_library(wlm_settings STATIC wlm_settings.c wlm_settings.h)
+target_link_libraries(wlm_settings libbase libbase_plist)
 if(iwyu_path_and_options)
   set_target_properties(
-    wlm_calendar wlm_volume PROPERTIES
+    wlm_calendar wlm_volume wlm_settings PROPERTIES
     C_INCLUDE_WHAT_YOU_USE "${iwyu_path_and_options}")
 endif()
 
 add_executable(apps_test apps_test.c)
-target_link_libraries(apps_test wlm_calendar wlm_volume libbase)
+target_link_libraries(apps_test wlm_calendar wlm_volume wlm_settings libbase)
 add_test(NAME apps_test COMMAND apps_test)
 
 add_wlm_app(wlmclock wlmclient_lib primitives m)
