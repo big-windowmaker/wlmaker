@@ -422,6 +422,8 @@ int main(int argc, const char **argv)
         }
     }
 
+    // Drawers stick out of the Dock, away from its edge.
+    wlmdock_launcher_set_drawer_side(WLR_EDGE_LEFT != state.positioning.edge);
     wlmdock_t *dock_ptr = _wlmdock_create(state.positioning, &style);
     if (NULL == dock_ptr) {
         bs_log(BS_ERROR, "Failed to create wlmdock.");
@@ -855,6 +857,7 @@ void _wlmdock_set_positioning(
         return;
     }
     _wlmdock_destroy_menu(dock_ptr);
+    wlmdock_launcher_set_drawer_side(WLR_EDGE_LEFT != positioning_ptr->edge);
 
     dock_ptr->positioning = *positioning_ptr;
     wlmdock_tilebox_set_reverse(

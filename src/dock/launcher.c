@@ -88,6 +88,8 @@ struct _wlmdock_launcher_t {
     uint32_t                  last_click_msec;
     /** `AutoLaunch` of the plist: Launch when starting. */
     char                      *autolaunch_ptr;
+    /** `Drawer` of the plist: The tile of a drawer, opened by wlmaker. */
+    char                      *drawer_ptr;
     /** Handler for a right-click. */
     wlmdock_launcher_menu_handler_t menu_handler;
     /** Argument for @ref wlmdock_launcher_t::menu_handler. */
@@ -109,6 +111,9 @@ static const bspl_desc_t _wlmdock_launcher_plist_desc[] = {
     BSPL_DESC_STRING(
         "AutoLaunch", false, wlmdock_launcher_t, autolaunch_ptr,
         autolaunch_ptr, "No"),
+    // Window Maker's drawers: The compositor shows the drawer's icons.
+    BSPL_DESC_STRING(
+        "Drawer", false, wlmdock_launcher_t, drawer_ptr, drawer_ptr, "No"),
     BSPL_DESC_SENTINEL(),
 };
 
@@ -116,6 +121,8 @@ static const bspl_desc_t _wlmdock_launcher_plist_desc[] = {
 static bool _wlmdock_launcher_single_click = false;
 /** Maximum time between the clicks of a double-click. */
 static uint32_t _wlmdock_launcher_double_click_msec = 300;
+/** Whether drawers stick out to the left (the Dock at the right edge). */
+static bool _wlmdock_launcher_drawer_left = true;
 /** How long a launcher shows as launching, at most. */
 static const int _wlmdock_launcher_launching_msec = 10000;
 
@@ -132,6 +139,8 @@ static bool _wlmdock_launcher_pointer_button(
 static void _wlmdock_launcher_start(wlmdock_launcher_t *launcher_ptr);
 static int _wlmdock_launcher_handle_launching_timer(void *data_ptr);
 static void _wlmdock_launcher_draw_dots(cairo_t *cairo_ptr, int size);
+static bool _wlmdock_launcher_is_drawer(wlmdock_launcher_t *launcher_ptr);
+static void _wlmdock_launcher_draw_drawer_arrow(cairo_t *cairo_ptr, int size);
 
 static void _wlmdock_launcher_handle_terminated(
     void *userdata_ptr,
@@ -309,6 +318,10 @@ void wlmdock_launcher_destroy(wlmdock_launcher_t *launcher_ptr)
         free(launcher_ptr->autolaunch_ptr);
         launcher_ptr->autolaunch_ptr = NULL;
     }
+    if (NULL != launcher_ptr->drawer_ptr) {
+        free(launcher_ptr->drawer_ptr);
+        launcher_ptr->drawer_ptr = NULL;
+    }
     if (NULL != launcher_ptr->app_id_ptr) {
         free(launcher_ptr->app_id_ptr);
         launcher_ptr->app_id_ptr = NULL;
@@ -381,8 +394,15 @@ void wlmdock_launcher_set_click_mode(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmdock_launcher_set_drawer_side(bool left)
+{
+    _wlmdock_launcher_drawer_left = left;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmdock_launcher_autolaunch(wlmdock_launcher_t *launcher_ptr)
 {
+    if (_wlmdock_launcher_is_drawer(launcher_ptr)) return;
     const char *v = launcher_ptr->autolaunch_ptr;
     if (NULL == v || (0 != strcasecmp(v, "Yes") && 0 != strcasecmp(v, "True"))) {
         return;
@@ -480,6 +500,17 @@ struct wlr_buffer *_wlmdock_launcher_create_overlay_buffer(
     struct wlr_buffer *wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(s, s);
     if (NULL == wlr_buffer_ptr) return NULL;
 
+    // A drawer: Window Maker's arrow, pointing to where it opens.
+    if (_wlmdock_launcher_is_drawer(launcher_ptr)) {
+        launcher_ptr->running = false;
+        cairo_t *cairo_ptr = cairo_create_from_wlr_buffer(wlr_buffer_ptr);
+        if (NULL != cairo_ptr) {
+            _wlmdock_launcher_draw_drawer_arrow(cairo_ptr, s);
+            cairo_destroy(cairo_ptr);
+        }
+        return wlr_buffer_ptr;
+    }
+
     bs_dllist_t *toplevel_handles = NULL;
     if (NULL != launcher_ptr->app_id_ptr && '\0' != *launcher_ptr->app_id_ptr) {
         toplevel_handles = wlmdock_toplevel_tracker_app_id_handles(
@@ -514,6 +545,35 @@ struct wlr_buffer *_wlmdock_launcher_create_overlay_buffer(
     }
     cairo_destroy(cairo_ptr);
     return wlr_buffer_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return Whether the launcher is a drawer's tile. */
+bool _wlmdock_launcher_is_drawer(wlmdock_launcher_t *launcher_ptr)
+{
+    const char *v = launcher_ptr->drawer_ptr;
+    return NULL != v &&
+        (0 == strcasecmp(v, "Yes") || 0 == strcasecmp(v, "True"));
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Draws the arrow of Window Maker's drawer tile (wDrawerIconPaint): A small
+ * triangle at the middle of the side the drawer opens to.
+ */
+void _wlmdock_launcher_draw_drawer_arrow(cairo_t *cairo_ptr, int size)
+{
+    double m = size / 2.0;
+    double tip = _wlmdock_launcher_drawer_left ? 5 : size - 1 - 5;
+    double base = _wlmdock_launcher_drawer_left ? 10 : size - 1 - 10;
+    cairo_save(cairo_ptr);
+    cairo_set_source_rgb(cairo_ptr, 0, 0, 0);
+    cairo_move_to(cairo_ptr, base + 0.5, m - 5);
+    cairo_line_to(cairo_ptr, base + 0.5, m + 5);
+    cairo_line_to(cairo_ptr, tip + 0.5, m);
+    cairo_close_path(cairo_ptr);
+    cairo_fill(cairo_ptr);
+    cairo_restore(cairo_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -583,6 +643,8 @@ bool _wlmdock_launcher_pointer_button(
 
     if (BTN_LEFT != button_event_ptr->button) return true;
     if (WLMTK_BUTTON_CLICK != button_event_ptr->type) return true;
+    // A drawer's tile: The compositor opens and closes it.
+    if (_wlmdock_launcher_is_drawer(launcher_ptr)) return true;
 
     // Window Maker launches on a double-click, unless SingleClickLaunch.
     if (!_wlmdock_launcher_single_click) {
@@ -726,11 +788,13 @@ bool _wlmdock_launcher_set_content_size(
 
 static void test_create_from_plist(bs_test_t *test_ptr);
 static void test_create_without_app_id(bs_test_t *test_ptr);
+static void test_drawer(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t wlmdock_launcher_test_cases[] = {
     { true, "create_from_plist", test_create_from_plist },
     { true, "create_without_app_id", test_create_without_app_id },
+    { true, "drawer", test_drawer },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -829,6 +893,40 @@ void test_create_without_app_id(bs_test_t *test_ptr)
     BS_TEST_VERIFY_FALSE(test_ptr, launcher_ptr->running);
     wlmdock_toplevel_handle_set_app_id(h, "id");
     BS_TEST_VERIFY_FALSE(test_ptr, launcher_ptr->running);
+
+    wlmdock_launcher_destroy(launcher_ptr);
+    wlmdock_toplevel_tracker_destroy(trk);
+    wlm_util_files_destroy(files_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** A drawer's tile: The arrow, no dots, never launching. */
+void test_drawer(bs_test_t *test_ptr)
+{
+    static const struct wlmtk_tile_style style = { .size = 64 };
+    bs_test_setenv(test_ptr, "XDG_DATA_DIRS", WLMAKER_SOURCE_DIR "/share");
+    bspl_dict_t *dict_ptr = bspl_dict_from_object(
+        bspl_create_object_from_plist_string(
+            "{Drawer = Yes; CommandLine = \"\"; Icon = \"dock-56x56.png\"; "
+            "Launchers = ();}"));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dict_ptr);
+    struct wlmdock_toplevel_tracker *trk = wlmdock_toplevel_tracker_create();
+    wlm_util_files_t *files_ptr = wlm_util_files_create("wlmaker");
+    wlmdock_launcher_t *launcher_ptr = wlmdock_launcher_create_from_plist(
+        &style, dict_ptr, trk, NULL, files_ptr);
+    bspl_dict_unref(dict_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, launcher_ptr);
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmdock_launcher_is_drawer(launcher_ptr));
+
+    wlmdock_launcher_set_drawer_side(true);
+    struct wlr_buffer *o_ptr = _wlmdock_launcher_create_overlay_buffer(
+        launcher_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, o_ptr);
+    bs_gfxbuf_t *g_ptr = bs_gfxbuf_from_wlr_buffer(o_ptr);
+    // Arrow at the left, in the middle; no dots at the lower left.
+    BS_TEST_VERIFY_EQ(test_ptr, 0xff000000, g_ptr->data_ptr[32 * 64 + 9]);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, g_ptr->data_ptr[58 * 64 + 4]);
+    wlr_buffer_drop(o_ptr);
 
     wlmdock_launcher_destroy(launcher_ptr);
     wlmdock_toplevel_tracker_destroy(trk);

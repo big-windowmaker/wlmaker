@@ -106,6 +106,12 @@ void wlmdock_launcher_set_click_mode(
     uint32_t double_click_msec);
 
 /**
+ * Sets the side Window Maker's drawers open to: Left for a Dock at the right
+ * edge. The drawers' tiles show an arrow pointing there.
+ */
+void wlmdock_launcher_set_drawer_side(bool left);
+
+/**
  * Launches the application if the launcher has `AutoLaunch` set: Window
  * Maker's "Start when Window Maker is started".
  */
