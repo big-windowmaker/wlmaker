@@ -21,6 +21,8 @@
 
 #include "layer_shell.h"
 
+#include <string.h>
+
 #include <libbase/libbase.h>
 #include <stdlib.h>
 #include <wayland-server-core.h>
@@ -129,6 +131,17 @@ void handle_new_surface(
     if (NULL == wlr_layer_surface_v1_ptr->output) {
         wlr_layer_surface_v1_ptr->output = wlmaker_server_get_output_at_cursor(
             layer_shell_ptr->server_ptr);
+    }
+
+    // A dock-app (eg. the system tray): A tile on the docks, as the
+    // dock-apps of the icon protocol.
+    if (NULL != wlr_layer_surface_v1_ptr->namespace &&
+        0 == strcmp(wlr_layer_surface_v1_ptr->namespace, "wlmaker-dockapp") &&
+        NULL != layer_shell_ptr->server_ptr->icon_manager_ptr &&
+        wlmaker_icon_manager_adopt_layer_surface(
+            layer_shell_ptr->server_ptr->icon_manager_ptr,
+            wlr_layer_surface_v1_ptr)) {
+        return;
     }
 
     wlmaker_layer_panel_t *layer_panel_ptr =
