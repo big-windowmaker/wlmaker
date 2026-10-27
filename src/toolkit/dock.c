@@ -480,6 +480,11 @@ bool _wlmtk_dock_positioning(
     }
 
     panel_positioning_ptr->exclusive_edge = dock_ptr->dock_positioning.edge;
+    // Overlay: Relative to the full output, without an exclusive zone. As
+    // the layer shell's exclusive zone of -1.
+    if (dock_ptr->dock_positioning.overlay) {
+        panel_positioning_ptr->exclusive_zone = -1;
+    }
     return true;
 }
 
