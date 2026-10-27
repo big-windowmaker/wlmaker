@@ -36,6 +36,7 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #undef WLR_USE_UNSTABLE
 
+#include "clip.h"
 #include "context_menu.h"
 #include "dockapps.h"
 #include "i18n.h"
@@ -781,6 +782,9 @@ void _wlmaker_toplevel_icon_open_menu(
             toplevel_icon_ptr);
         ++items;
     }
+    // Moves the Clip, which the dock-app is part of.
+    rv = rv && wlmaker_clip_add_move_items(server_ptr, cm_ptr);
+    if (NULL != server_ptr->clip_dock_ptr) items += 2;
     if (0 != _wlmaker_toplevel_icon_pid(toplevel_icon_ptr)) {
         rv = rv && wlmaker_context_menu_add_item(
             cm_ptr, wlmaker_i18n("Kill"), _wlmaker_toplevel_icon_menu_kill,
@@ -841,17 +845,14 @@ bool _wlmaker_toplevel_icon_element_pointer_button(
 
     uint32_t modifier = wlmim_cursor_options(
         server_ptr->input_manager_ptr)->move_window_modifier;
-    // Right button with the move modifier, or on the tile's border (not on
-    // the dock-app, which may use the button itself): The tile's menu.
+    // The right button opens the tile's menu, like on Window Maker. Also on
+    // the dock-app itself: It does not get the right button. Dock-apps
+    // offer their own actions through the menu instead.
     if (NULL != server_ptr->dockapps_ptr &&
-        BTN_RIGHT == button_event_ptr->button &&
-        WLMTK_BUTTON_DOWN == button_event_ptr->type &&
-        ((0 != modifier &&
-          modifier == button_event_ptr->keyboard_modifiers) ||
-         NULL == toplevel_icon_ptr->content_surface_ptr ||
-         !wlmtk_surface_element(
-             toplevel_icon_ptr->content_surface_ptr)->pointer_inside)) {
-        _wlmaker_toplevel_icon_open_menu(toplevel_icon_ptr);
+        BTN_RIGHT == button_event_ptr->button) {
+        if (WLMTK_BUTTON_DOWN == button_event_ptr->type) {
+            _wlmaker_toplevel_icon_open_menu(toplevel_icon_ptr);
+        }
         return true;
     }
 

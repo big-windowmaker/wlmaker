@@ -808,15 +808,16 @@ static void _wlmaker_clip_menu_restore(void *ud_ptr)
 }
 
 /** Moves the Clip to the corner `corner` XOR `flip`. */
-static void _wlmaker_clip_flip(wlmaker_clip_t *clip_ptr, uint32_t flip)
+static void _wlmaker_clip_flip(wlmaker_server_t *server_ptr, uint32_t flip)
 {
+    if (NULL == server_ptr->clip_dock_ptr) return;
     const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
-        clip_ptr->wlmtk_dock_ptr);
+        server_ptr->clip_dock_ptr);
     wlmaker_dock_place_t place = { pos_ptr->edge, pos_ptr->anchor };
     place = wlmaker_dock_place_from_corner(
         wlmaker_dock_place_corner(place) ^ flip,
         wlmaker_dock_place_vertical(place));
-    wlmaker_clip_move_dock(clip_ptr->server_ptr, "Clip", place);
+    wlmaker_clip_move_dock(server_ptr, "Clip", place);
 }
 
 /** Context menu callback: Moves the Clip to the other side. */
@@ -829,6 +830,27 @@ static void _wlmaker_clip_menu_flip_side(void *ud_ptr)
 static void _wlmaker_clip_menu_flip_end(void *ud_ptr)
 {
     _wlmaker_clip_flip(ud_ptr, WLR_EDGE_TOP | WLR_EDGE_BOTTOM);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_clip_add_move_items(
+    wlmaker_server_t *server_ptr,
+    wlmaker_context_menu_t *context_menu_ptr)
+{
+    if (NULL == server_ptr->clip_dock_ptr) return true;
+    const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
+        server_ptr->clip_dock_ptr);
+    uint32_t corner = pos_ptr->edge | pos_ptr->anchor;
+    return wlmaker_context_menu_add_item(
+        context_menu_ptr,
+        wlmaker_i18n((corner & WLR_EDGE_LEFT) ?
+                     "Move to Right Side" : "Move to Left Side"),
+        _wlmaker_clip_menu_flip_side, server_ptr) &&
+        wlmaker_context_menu_add_item(
+            context_menu_ptr,
+            wlmaker_i18n((corner & WLR_EDGE_TOP) ?
+                         "Move to Bottom" : "Move to Top"),
+            _wlmaker_clip_menu_flip_end, server_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -870,18 +892,7 @@ void _wlmaker_clip_open_menu(wlmaker_clip_t *clip_ptr)
             server_ptr);
     }
     // Moving the Clip to another corner. Like dragging it.
-    const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
-        clip_ptr->wlmtk_dock_ptr);
-    uint32_t corner = pos_ptr->edge | pos_ptr->anchor;
-    rv = rv && wlmaker_context_menu_add_item(
-        cm_ptr,
-        wlmaker_i18n((corner & WLR_EDGE_LEFT) ?
-                     "Move to Right Side" : "Move to Left Side"),
-        _wlmaker_clip_menu_flip_side, clip_ptr);
-    rv = rv && wlmaker_context_menu_add_item(
-        cm_ptr,
-        wlmaker_i18n((corner & WLR_EDGE_TOP) ? "Move to Bottom" : "Move to Top"),
-        _wlmaker_clip_menu_flip_end, clip_ptr);
+    rv = rv && wlmaker_clip_add_move_items(server_ptr, cm_ptr);
     bspl_array_t *defaults_ptr = _wlmaker_clip_default_launchers(server_ptr);
     if (NULL != defaults_ptr) {
         rv = rv && wlmaker_context_menu_add_item(
