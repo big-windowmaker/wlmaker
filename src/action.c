@@ -25,6 +25,7 @@
 #include <libbase/plist.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wayland-server-core.h>
@@ -38,6 +39,7 @@
 #include "backend/backend.h"
 #include "config.h"
 #include "default_configuration.h"
+#include "i18n.h"
 #include "idle.h"
 #include "input/keyboard.h"
 #include "input/manager.h"
@@ -162,6 +164,15 @@ const bspl_enum_desc_t wlmaker_action_desc[] = {
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
+/** Counts workspaces, for @ref wlmtk_desktop_for_each_workspace. */
+static void _wlmaker_action_count_workspace(
+    __UNUSED__ bs_dllist_node_t *dlnode_ptr,
+    void *ud_ptr)
+{
+    ++*(size_t*)ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 wlmaker_action_handle_t *wlmaker_action_bind_keys(
     wlmaker_server_t *server_ptr,
     bspl_dict_t *keybindings_dict_ptr,
@@ -210,6 +221,8 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
     wlmtk_workspace_t *workspace_ptr, *next_workspace_ptr;
     wlmtk_window_t *window_ptr;
     const char **argv;
+    size_t workspaces;
+    char name[64];
 
     switch (action) {
     case WLMAKER_ACTION_NONE:
@@ -262,9 +275,16 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         break;
 
     case WLMAKER_ACTION_WORKSPACE_ADD:
+        // Named like on Window Maker: By its number.
+        workspaces = 0;
+        wlmtk_desktop_for_each_workspace(
+            server_ptr->desktop_ptr, _wlmaker_action_count_workspace,
+            &workspaces);
+        snprintf(name, sizeof(name), "%s %zu",
+                 wlmaker_i18n("Workspace"), workspaces + 1);
         workspace_ptr = wlmtk_workspace_create(
             server_ptr->wlr_output_layout_ptr,
-            "New",
+            name,
             &server_ptr->style_ptr->tile);
         if (NULL != workspace_ptr) {
             wlmtk_desktop_add_workspace(server_ptr->desktop_ptr, workspace_ptr);

@@ -53,6 +53,7 @@ static const wlmaker_i18n_entry_t _wlmaker_i18n_pt_br[] = {
     { "Remove", "Remover" },
     { "Restore Default Launchers", "Restaurar lançadores padrão" },
     { "Dock-app", "Dockapp" },
+    { "Workspace", "Área" },
     { NULL, NULL }
 };
 
