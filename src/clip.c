@@ -49,6 +49,7 @@
 #include "context_menu.h"
 #include "dockapps.h"
 #include "dock_position.h"
+#include "i18n.h"
 #include "input/manager.h"
 #include "toolkit/toolkit.h"
 #include "util/files.h"
@@ -522,6 +523,31 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+/** Tells `wlmdock` processes (the Dock, the Clip's launchers) to re-read
+ * the state file: Sends SIGUSR1. */
+static void _wlmaker_clip_signal_wlmdock(wlmaker_server_t *server_ptr)
+{
+    // wlmdock (the Dock, and the Clip's launchers) re-reads the state file
+    // on SIGUSR1.
+    struct wl_list *clients_ptr = wl_display_get_client_list(
+        server_ptr->wl_display_ptr);
+    struct wl_client *wl_client_ptr;
+    wl_client_for_each(wl_client_ptr, clients_ptr) {
+        char *name_ptr = wlmaker_dockapps_client_name(wl_client_ptr);
+        if (NULL == name_ptr) continue;
+        if (0 == strcmp(name_ptr, "wlmdock")) {
+            pid_t pid = 0;
+            wl_client_get_credentials(wl_client_ptr, &pid, NULL, NULL);
+            if (1 < pid && 0 != kill(pid, SIGUSR1)) {
+                bs_log(BS_WARNING | BS_ERRNO, "Failed kill(%"PRIdMAX
+                       ", SIGUSR1)", (intmax_t)pid);
+            }
+        }
+        free(name_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_clip_move_dock(
     wlmaker_server_t *server_ptr,
     const char *section_ptr,
@@ -577,24 +603,7 @@ void wlmaker_clip_move_dock(
         }
     }
 
-    // wlmdock (the Dock, and the Clip's launchers) re-reads the state file
-    // on SIGUSR1.
-    struct wl_list *clients_ptr = wl_display_get_client_list(
-        server_ptr->wl_display_ptr);
-    struct wl_client *wl_client_ptr;
-    wl_client_for_each(wl_client_ptr, clients_ptr) {
-        char *name_ptr = wlmaker_dockapps_client_name(wl_client_ptr);
-        if (NULL == name_ptr) continue;
-        if (0 == strcmp(name_ptr, "wlmdock")) {
-            pid_t pid = 0;
-            wl_client_get_credentials(wl_client_ptr, &pid, NULL, NULL);
-            if (1 < pid && 0 != kill(pid, SIGUSR1)) {
-                bs_log(BS_WARNING | BS_ERRNO, "Failed kill(%"PRIdMAX
-                       ", SIGUSR1)", (intmax_t)pid);
-            }
-        }
-        free(name_ptr);
-    }
+    _wlmaker_clip_signal_wlmdock(server_ptr);
 }
 
 /* == Local (static) methods =============================================== */
@@ -762,6 +771,43 @@ static void _wlmaker_clip_menu_destroy_last(void *ud_ptr)
         ud_ptr, WLMAKER_ACTION_WORKSPACE_DESTROY_LAST, NULL);
 }
 
+/** @return The default `Launchers` of the Clip, or NULL if there are none. */
+static bspl_array_t *_wlmaker_clip_default_launchers(
+    wlmaker_server_t *server_ptr)
+{
+    bspl_dict_t *d = wlmaker_state_load_defaults(server_ptr->files_ptr, NULL);
+    bspl_array_t *a = bspl_dict_get_array(
+        bspl_dict_get_dict(d, "Clip"), "Launchers");
+    if (NULL != a) a = bspl_array_ref(a);
+    if (NULL != d) bspl_dict_unref(d);
+    if (NULL != a && 0 == bspl_array_size(a)) {
+        bspl_array_unref(a);
+        a = NULL;
+    }
+    return a;
+}
+
+/** Context menu callback: Restores the Clip's default launchers. */
+static void _wlmaker_clip_menu_restore(void *ud_ptr)
+{
+    wlmaker_clip_t *clip_ptr = ud_ptr;
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    bspl_array_t *a = _wlmaker_clip_default_launchers(server_ptr);
+    if (NULL == a) return;
+    bspl_dict_t *d = bspl_dict_create();
+    if (NULL != d &&
+        bspl_dict_add(d, "Launchers", bspl_object_from_array(a)) &&
+        wlmaker_state_store_section(server_ptr->files_ptr,
+                                    server_ptr->state_fname_ptr, "Clip", d)) {
+        _wlmaker_clip_set_spacers(clip_ptr, bspl_array_size(a),
+                                  &server_ptr->style_ptr->tile);
+        // `wlmdock --clip` shows them.
+        _wlmaker_clip_signal_wlmdock(server_ptr);
+    }
+    if (NULL != d) bspl_dict_unref(d);
+    bspl_array_unref(a);
+}
+
 /** Moves the Clip to the corner `corner` XOR `flip`. */
 static void _wlmaker_clip_flip(wlmaker_clip_t *clip_ptr, uint32_t flip)
 {
@@ -811,16 +857,17 @@ void _wlmaker_clip_open_menu(wlmaker_clip_t *clip_ptr)
     bool rv = true;
     if (1 < workspaces) {
         rv = rv && wlmaker_context_menu_add_item(
-            cm_ptr, "Next Workspace", _wlmaker_clip_menu_next, server_ptr);
+            cm_ptr, wlmaker_i18n("Next Workspace"), _wlmaker_clip_menu_next,
+            server_ptr);
         rv = rv && wlmaker_context_menu_add_item(
-            cm_ptr, "Previous Workspace", _wlmaker_clip_menu_previous,
+            cm_ptr, wlmaker_i18n("Previous Workspace"), _wlmaker_clip_menu_previous,
             server_ptr);
     }
     rv = rv && wlmaker_context_menu_add_item(
-        cm_ptr, "New Workspace", _wlmaker_clip_menu_add, server_ptr);
+        cm_ptr, wlmaker_i18n("New Workspace"), _wlmaker_clip_menu_add, server_ptr);
     if (1 < workspaces) {
         rv = rv && wlmaker_context_menu_add_item(
-            cm_ptr, "Destroy Last Workspace", _wlmaker_clip_menu_destroy_last,
+            cm_ptr, wlmaker_i18n("Destroy Last Workspace"), _wlmaker_clip_menu_destroy_last,
             server_ptr);
     }
     // Moving the Clip to another corner. Like dragging it.
@@ -829,12 +876,20 @@ void _wlmaker_clip_open_menu(wlmaker_clip_t *clip_ptr)
     uint32_t corner = pos_ptr->edge | pos_ptr->anchor;
     rv = rv && wlmaker_context_menu_add_item(
         cm_ptr,
-        (corner & WLR_EDGE_LEFT) ? "Move to Right Side" : "Move to Left Side",
+        wlmaker_i18n((corner & WLR_EDGE_LEFT) ?
+                     "Move to Right Side" : "Move to Left Side"),
         _wlmaker_clip_menu_flip_side, clip_ptr);
     rv = rv && wlmaker_context_menu_add_item(
         cm_ptr,
-        (corner & WLR_EDGE_TOP) ? "Move to Bottom" : "Move to Top",
+        wlmaker_i18n((corner & WLR_EDGE_TOP) ? "Move to Bottom" : "Move to Top"),
         _wlmaker_clip_menu_flip_end, clip_ptr);
+    bspl_array_t *defaults_ptr = _wlmaker_clip_default_launchers(server_ptr);
+    if (NULL != defaults_ptr) {
+        rv = rv && wlmaker_context_menu_add_item(
+            cm_ptr, wlmaker_i18n("Restore Default Launchers"),
+            _wlmaker_clip_menu_restore, clip_ptr);
+        bspl_array_unref(defaults_ptr);
+    }
     if (!rv) {
         wlmaker_context_menu_destroy(cm_ptr);
         return;

@@ -250,9 +250,22 @@ Read by `wlmdock` (without `--clip`).
 
 * *Optional* `Margin`: Distance from the anchor, in pixels. Defaults to 0.
 
+* *Optional* `Icon`: Icon of the Dock's main tile: A path, or a name in
+  `${XDG_DATA_DIRS}/wlmaker/icons`. Defaults to the icon configured at build
+  time (CMake `WLMDOCK_DEFAULT_ICON`), else `dock-56x56.png`.
+
+Like on Window Maker, the Dock has a main tile nearest its anchor, which can't
+be removed: Removing all launchers can't make the Dock unreachable. Its menu
+(right button) moves the Dock to the other side or end, and restores the
+default launchers: Those of the defaults' `Launchers` (`wlmdock
+--default_state_file`, else the file configured at build time with CMake
+`WLMAKER_DEFAULT_STATE_FILE`, else `${XDG_CONFIG_DIRS}/wlmaker/State.plist`,
+else the built-in default). The Clip's menu restores the Clip's `Launchers`
+the same way. Menu items are translated for Portuguese (`pt`, `pt_BR`)
+locales, from `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` or `LANG`.
+
 The Dock can be dragged to another corner with the left mouse button: Moving
 the pointer by more than a few pixels with the button held drags it, a click
 launches. Its launchers' menu (right button) offers *Launch*, *Kill* (for
-processes it launched), *Remove* (stored in the state file) and moving it to
-the other side or end. Changes are stored in the state file; `wlmdock` re-reads
+processes it launched) and *Remove* (stored in the state file). Changes are stored in the state file; `wlmdock` re-reads
 its position on `SIGUSR1`, which wlmaker sends after moving it.

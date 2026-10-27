@@ -30,10 +30,16 @@ waylandprotocol_add(
 
 target_compile_definitions(
   wlmdock_lib PRIVATE "WLMAKER_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
+# Icon of the Dock's main tile, when the state has no `Icon`.
+set(WLMDOCK_DEFAULT_ICON "" CACHE STRING
+  "Icon of the Dock's main tile: A path, or a name in wlmaker/icons.")
+target_compile_definitions(
+  wlmdock_lib PRIVATE "WLMDOCK_DEFAULT_ICON=\"${WLMDOCK_DEFAULT_ICON}\"")
 target_sources(
   wlmdock_lib
   PRIVATE
   launcher.c
+  maintile.c
   container_surface.c
   subcompositor.c
   tilebox.c
