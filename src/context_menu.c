@@ -70,6 +70,8 @@ typedef struct {
     wlmaker_context_menu_callback_t callback;
     /** Argument to @ref wlmaker_context_menu_item_t::callback. */
     void                      *ud_ptr;
+    /** Releases @ref wlmaker_context_menu_item_t::ud_ptr. Or NULL. */
+    wlmaker_context_menu_free_t free_fn;
 
     /** Listener for @ref wlmtk_menu_item_events_t::triggered. */
     struct wl_listener        triggered_listener;
@@ -79,6 +81,15 @@ typedef struct {
 
 static void _wlmaker_context_menu_close(
     wlmaker_context_menu_t *context_menu_ptr);
+static wlmaker_context_menu_item_t *_wlmaker_context_menu_add(
+    wlmaker_context_menu_t *context_menu_ptr,
+    wlmtk_menu_t *parent_ptr,
+    const char *text_ptr,
+    wlmtk_menu_item_indicator_t indicator,
+    bool checked,
+    wlmaker_context_menu_callback_t callback,
+    void *ud_ptr,
+    wlmaker_context_menu_free_t free_fn);
 static void _wlmaker_context_menu_handle_open_changed(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -201,36 +212,45 @@ bool wlmaker_context_menu_add_item(
     wlmaker_context_menu_callback_t callback,
     void *ud_ptr)
 {
-    wlmaker_context_menu_item_t *item_ptr = logged_calloc(
-        1, sizeof(*item_ptr));
-    if (NULL == item_ptr) return false;
-    item_ptr->context_menu_ptr = context_menu_ptr;
-    item_ptr->callback = callback;
-    item_ptr->ud_ptr = ud_ptr;
+    return NULL != _wlmaker_context_menu_add(
+        context_menu_ptr, NULL, text_ptr, WLMTK_MENU_ITEM_INDICATOR_NONE,
+        false, callback, ud_ptr, NULL);
+}
 
-    item_ptr->menu_item_ptr = wlmtk_menu_item_create(
+/* ------------------------------------------------------------------------- */
+wlmtk_menu_t *wlmaker_context_menu_add_submenu(
+    wlmaker_context_menu_t *context_menu_ptr,
+    wlmtk_menu_t *parent_ptr,
+    const char *text_ptr)
+{
+    wlmaker_context_menu_item_t *item_ptr = _wlmaker_context_menu_add(
+        context_menu_ptr, parent_ptr, text_ptr,
+        WLMTK_MENU_ITEM_INDICATOR_NONE, false, NULL, NULL, NULL);
+    if (NULL == item_ptr) return NULL;
+
+    wlmtk_menu_t *submenu_ptr = wlmtk_menu_create(
         wlmtk_menu_style_to_ref(
             context_menu_ptr->server_ptr->style_ptr->menu_style_ptr));
-    if (NULL == item_ptr->menu_item_ptr) {
-        free(item_ptr);
-        return false;
-    }
-    if (!wlmtk_menu_item_set_text(item_ptr->menu_item_ptr, text_ptr)) {
-        wlmtk_menu_item_destroy(item_ptr->menu_item_ptr);
-        free(item_ptr);
-        return false;
-    }
-    wlmtk_util_connect_listener_signal(
-        &wlmtk_menu_item_events(item_ptr->menu_item_ptr)->triggered,
-        &item_ptr->triggered_listener,
-        _wlmaker_context_menu_item_handle_triggered);
-    wlmtk_util_connect_listener_signal(
-        &wlmtk_menu_item_events(item_ptr->menu_item_ptr)->destroy,
-        &item_ptr->destroy_listener,
-        _wlmaker_context_menu_item_handle_destroy);
+    if (NULL == submenu_ptr) return NULL;
+    // The item owns the submenu, and destroys it along.
+    wlmtk_menu_item_set_submenu(item_ptr->menu_item_ptr, submenu_ptr);
+    return submenu_ptr;
+}
 
-    wlmtk_menu_add_item(context_menu_ptr->menu_ptr, item_ptr->menu_item_ptr);
-    return true;
+/* ------------------------------------------------------------------------- */
+bool wlmaker_context_menu_add_option(
+    wlmaker_context_menu_t *context_menu_ptr,
+    wlmtk_menu_t *parent_ptr,
+    const char *text_ptr,
+    wlmtk_menu_item_indicator_t indicator,
+    bool checked,
+    wlmaker_context_menu_callback_t callback,
+    void *ud_ptr,
+    wlmaker_context_menu_free_t free_fn)
+{
+    return NULL != _wlmaker_context_menu_add(
+        context_menu_ptr, parent_ptr, text_ptr, indicator, checked,
+        callback, ud_ptr, free_fn);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -311,6 +331,63 @@ struct wlr_box wlmaker_context_menu_confine(
 }
 
 /* == Local (static) methods =============================================== */
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Adds an item to `parent_ptr`, or to the context menu's menu.
+ *
+ * @return The item, or NULL on error. `free_fn` is then called already.
+ */
+wlmaker_context_menu_item_t *_wlmaker_context_menu_add(
+    wlmaker_context_menu_t *context_menu_ptr,
+    wlmtk_menu_t *parent_ptr,
+    const char *text_ptr,
+    wlmtk_menu_item_indicator_t indicator,
+    bool checked,
+    wlmaker_context_menu_callback_t callback,
+    void *ud_ptr,
+    wlmaker_context_menu_free_t free_fn)
+{
+    if (NULL == parent_ptr) parent_ptr = context_menu_ptr->menu_ptr;
+    wlmaker_context_menu_item_t *item_ptr = logged_calloc(
+        1, sizeof(*item_ptr));
+    if (NULL == item_ptr) {
+        if (NULL != free_fn) free_fn(ud_ptr);
+        return NULL;
+    }
+    item_ptr->context_menu_ptr = context_menu_ptr;
+    item_ptr->callback = callback;
+    item_ptr->ud_ptr = ud_ptr;
+    item_ptr->free_fn = free_fn;
+
+    item_ptr->menu_item_ptr = wlmtk_menu_item_create(
+        wlmtk_menu_style_to_ref(
+            context_menu_ptr->server_ptr->style_ptr->menu_style_ptr));
+    if (NULL == item_ptr->menu_item_ptr) {
+        if (NULL != free_fn) free_fn(ud_ptr);
+        free(item_ptr);
+        return NULL;
+    }
+    if (!wlmtk_menu_item_set_text(item_ptr->menu_item_ptr, text_ptr) ||
+        !wlmtk_menu_item_set_indicator(
+            item_ptr->menu_item_ptr, indicator, checked)) {
+        wlmtk_menu_item_destroy(item_ptr->menu_item_ptr);
+        if (NULL != free_fn) free_fn(ud_ptr);
+        free(item_ptr);
+        return NULL;
+    }
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_menu_item_events(item_ptr->menu_item_ptr)->triggered,
+        &item_ptr->triggered_listener,
+        _wlmaker_context_menu_item_handle_triggered);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_menu_item_events(item_ptr->menu_item_ptr)->destroy,
+        &item_ptr->destroy_listener,
+        _wlmaker_context_menu_item_handle_destroy);
+
+    wlmtk_menu_add_item(parent_ptr, item_ptr->menu_item_ptr);
+    return item_ptr;
+}
 
 /* ------------------------------------------------------------------------- */
 /** Closes the menu. If it was opened: Destroys it, once back in the loop. */
@@ -415,6 +492,7 @@ void _wlmaker_context_menu_item_handle_destroy(
         listener_ptr, wlmaker_context_menu_item_t, destroy_listener);
     wlmtk_util_disconnect_listener(&item_ptr->triggered_listener);
     wlmtk_util_disconnect_listener(&item_ptr->destroy_listener);
+    if (NULL != item_ptr->free_fn) item_ptr->free_fn(item_ptr->ud_ptr);
     free(item_ptr);
 }
 
@@ -465,6 +543,25 @@ void test_items(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 1, b);
     // Triggering closes the menu.
     BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_is_open(menu_ptr));
+
+    // Submenu with options. The item's data is released along with the menu.
+    int *c_ptr = calloc(1, sizeof(int));
+    wlmtk_menu_t *sub_ptr = wlmaker_context_menu_add_submenu(
+        cm_ptr, NULL, "Sub");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, sub_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, 3, wlmtk_menu_items_size(menu_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, sub_ptr, wlmtk_menu_item_get_submenu(
+                          wlmtk_menu_item_at(menu_ptr, 2)));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_context_menu_add_option(
+                            cm_ptr, sub_ptr, "C",
+                            WLMTK_MENU_ITEM_INDICATOR_CHECK, true,
+                            _test_callback, c_ptr, free));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, wlmtk_menu_items_size(sub_ptr));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_item_checked(
+                            wlmtk_menu_item_at(sub_ptr, 0)));
+    wlmtk_menu_set_open(menu_ptr, true);
+    wlmtk_menu_item_trigger(wlmtk_menu_item_at(sub_ptr, 0));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, *c_ptr);
 
     // As if it were opened: The server holds it. Other owners don't close it.
     server.context_menu_ptr = cm_ptr;

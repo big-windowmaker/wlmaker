@@ -38,6 +38,9 @@ extern "C" {
 /** Callback for a triggered item of a context menu. */
 typedef void (*wlmaker_context_menu_callback_t)(void *ud_ptr);
 
+/** Releases the `ud_ptr` of an item, once the menu is destroyed. */
+typedef void (*wlmaker_context_menu_free_t)(void *ud_ptr);
+
 /**
  * Creates a context menu: A right-click menu, drawn like the root menu, for
  * an element like the Clip or a dock-app's tile. It is opened by @ref
@@ -74,6 +77,52 @@ bool wlmaker_context_menu_add_item(
     const char *text_ptr,
     wlmaker_context_menu_callback_t callback,
     void *ud_ptr);
+
+/**
+ * Adds an item opening a submenu, to the context menu or one of its
+ * submenus.
+ *
+ * @param context_menu_ptr
+ * @param parent_ptr          The menu to add it to: The context menu's own
+ *                            (see @ref wlmaker_context_menu_menu), a submenu
+ *                            returned earlier, or NULL for the context menu's.
+ * @param text_ptr
+ *
+ * @return The submenu, for adding items. It is owned by the context menu.
+ *     NULL on error.
+ */
+wlmtk_menu_t *wlmaker_context_menu_add_submenu(
+    wlmaker_context_menu_t *context_menu_ptr,
+    wlmtk_menu_t *parent_ptr,
+    const char *text_ptr);
+
+/**
+ * Adds an item, with an indicator, to the context menu or one of its
+ * submenus. Eg. a check box for an option, or a radio button for a choice.
+ *
+ * @param context_menu_ptr
+ * @param parent_ptr          As for @ref wlmaker_context_menu_add_submenu.
+ * @param text_ptr
+ * @param indicator
+ * @param checked
+ * @param callback            Called with `ud_ptr` when the item is triggered.
+ *                            The menu is closed before.
+ * @param ud_ptr
+ * @param free_fn             Called with `ud_ptr` when the menu gets
+ *                            destroyed, or NULL. Also called if adding
+ *                            fails.
+ *
+ * @return true on success.
+ */
+bool wlmaker_context_menu_add_option(
+    wlmaker_context_menu_t *context_menu_ptr,
+    wlmtk_menu_t *parent_ptr,
+    const char *text_ptr,
+    wlmtk_menu_item_indicator_t indicator,
+    bool checked,
+    wlmaker_context_menu_callback_t callback,
+    void *ud_ptr,
+    wlmaker_context_menu_free_t free_fn);
 
 /**
  * Opens the context menu in right-click mode, at the pointer's position and
