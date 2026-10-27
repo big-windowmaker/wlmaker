@@ -165,6 +165,30 @@ void wlmtk_desktop_switch_to_next_workspace(wlmtk_desktop_t *desktop_ptr);
 void wlmtk_desktop_switch_to_previous_workspace(wlmtk_desktop_t *desktop_ptr);
 
 /**
+ * Returns the workspace at position `index` (counting from 0).
+ *
+ * @param desktop_ptr
+ * @param index
+ *
+ * @return The workspace, or NULL if there are not that many workspaces.
+ */
+wlmtk_workspace_t *wlmtk_desktop_get_workspace_at(
+    wlmtk_desktop_t *desktop_ptr,
+    size_t index);
+
+/**
+ * Switches to the workspace at position `index` (counting from 0).
+ *
+ * @param desktop_ptr
+ * @param index
+ *
+ * @return false if there is no workspace at `index`.
+ */
+bool wlmtk_desktop_switch_to_workspace_at(
+    wlmtk_desktop_t *desktop_ptr,
+    size_t index);
+
+/**
  * Runs |func()| for each workspace.
  *
  * @param desktop_ptr

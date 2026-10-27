@@ -93,6 +93,10 @@ static bool _wlmaker_action_theme_load_from_file(
     wlmaker_server_t *server_ptr,
     const char *fname_ptr);
 
+static bool _wlmaker_action_workspace_index(
+    const char *arg_ptr,
+    size_t *index_ptr);
+
 /* == Data ================================================================= */
 
 /** Key to lookup the dict from the config dictionary. */
@@ -113,6 +117,7 @@ const bspl_enum_desc_t wlmaker_action_desc[] = {
     BSPL_ENUM("WorkspaceNext", WLMAKER_ACTION_WORKSPACE_TO_NEXT),
     BSPL_ENUM("WorkspaceAdd", WLMAKER_ACTION_WORKSPACE_ADD),
     BSPL_ENUM("WorkspaceDestroyLast", WLMAKER_ACTION_WORKSPACE_DESTROY_LAST),
+    BSPL_ENUM("WorkspaceSwitchTo", WLMAKER_ACTION_WORKSPACE_SWITCH_TO),
 
     BSPL_ENUM("TaskPrevious", WLMAKER_ACTION_TASK_TO_PREVIOUS),
     BSPL_ENUM("TaskNext", WLMAKER_ACTION_TASK_TO_NEXT),
@@ -127,10 +132,12 @@ const bspl_enum_desc_t wlmaker_action_desc[] = {
     BSPL_ENUM("WindowFullscreen", WLMAKER_ACTION_WINDOW_FULLSCREEN),
     BSPL_ENUM("WindowShade", WLMAKER_ACTION_WINDOW_SHADE),
     BSPL_ENUM("WindowUnshade", WLMAKER_ACTION_WINDOW_UNSHADE),
+    BSPL_ENUM("WindowToggleShaded", WLMAKER_ACTION_WINDOW_TOGGLE_SHADED),
     BSPL_ENUM("WindowMinimize", WLMAKER_ACTION_WINDOW_MINIMIZE),
     BSPL_ENUM("WindowClose", WLMAKER_ACTION_WINDOW_CLOSE),
     BSPL_ENUM("WindowToNextWorkspace", WLMAKER_ACTION_WINDOW_TO_NEXT_WORKSPACE),
     BSPL_ENUM("WindowToPreviousWorkspace", WLMAKER_ACTION_WINDOW_TO_PREVIOUS_WORKSPACE),
+    BSPL_ENUM("WindowToWorkspace", WLMAKER_ACTION_WINDOW_TO_WORKSPACE),
 
     BSPL_ENUM("RootMenu", WLMAKER_ACTION_ROOT_MENU),
 
@@ -298,6 +305,13 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         wlmtk_desktop_destroy_last_workspace(server_ptr->desktop_ptr);
         break;
 
+    case WLMAKER_ACTION_WORKSPACE_SWITCH_TO:
+        if (_wlmaker_action_workspace_index(arg_ptr, &workspaces)) {
+            wlmtk_desktop_switch_to_workspace_at(
+                server_ptr->desktop_ptr, workspaces);
+        }
+        break;
+
     case WLMAKER_ACTION_TASK_TO_PREVIOUS:
         wlmtk_workspace_activate_previous_window(
             wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr));
@@ -385,6 +399,16 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         }
         break;
 
+    case WLMAKER_ACTION_WINDOW_TOGGLE_SHADED:
+        workspace_ptr = wlmtk_desktop_get_current_workspace(
+            server_ptr->desktop_ptr);
+        window_ptr = wlmtk_workspace_get_activated_window(workspace_ptr);
+        if (NULL != window_ptr) {
+            wlmtk_window_request_shaded(
+                window_ptr, !wlmtk_window_is_shaded(window_ptr));
+        }
+        break;
+
     case WLMAKER_ACTION_WINDOW_MINIMIZE:
         workspace_ptr = wlmtk_desktop_get_current_workspace(
             server_ptr->desktop_ptr);
@@ -415,6 +439,23 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
             wlmtk_dlnode_from_workspace(workspace_ptr)->prev_ptr);
         if (NULL != window_ptr &&
             NULL != next_workspace_ptr) {
+            wlmtk_workspace_unmap_window(workspace_ptr, window_ptr);
+            wlmtk_workspace_map_window(next_workspace_ptr, window_ptr);
+        }
+        break;
+
+    case WLMAKER_ACTION_WINDOW_TO_WORKSPACE:
+        workspace_ptr = wlmtk_desktop_get_current_workspace(
+            server_ptr->desktop_ptr);
+        window_ptr = wlmtk_workspace_get_activated_window(workspace_ptr);
+        next_workspace_ptr = NULL;
+        if (_wlmaker_action_workspace_index(arg_ptr, &workspaces)) {
+            next_workspace_ptr = wlmtk_desktop_get_workspace_at(
+                server_ptr->desktop_ptr, workspaces);
+        }
+        if (NULL != window_ptr &&
+            NULL != next_workspace_ptr &&
+            workspace_ptr != next_workspace_ptr) {
             wlmtk_workspace_unmap_window(workspace_ptr, window_ptr);
             wlmtk_workspace_map_window(next_workspace_ptr, window_ptr);
         }
@@ -658,6 +699,31 @@ bool _wlmaker_action_bound_callback(
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Parses the workspace number of WorkspaceSwitchTo and WindowToWorkspace.
+ *
+ * @param arg_ptr             The workspace's number, counting from 1.
+ * @param index_ptr           Set to the workspace's index, counting from 0.
+ *
+ * @return true if `arg_ptr` holds a valid number.
+ */
+bool _wlmaker_action_workspace_index(const char *arg_ptr, size_t *index_ptr)
+{
+    if (NULL == arg_ptr) {
+        bs_log(BS_WARNING, "Missing workspace number.");
+        return false;
+    }
+    char *end_ptr = NULL;
+    unsigned long number = strtoul(arg_ptr, &end_ptr, 10);
+    if (end_ptr == arg_ptr || '\0' != *end_ptr || 0 == number) {
+        bs_log(BS_WARNING, "Invalid workspace number \"%s\"", arg_ptr);
+        return false;
+    }
+    *index_ptr = number - 1;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 /** Loads a theme file and applies it. */
 bool _wlmaker_action_theme_load_from_file(
     wlmaker_server_t *server_ptr,
@@ -705,12 +771,14 @@ bool _wlmaker_action_theme_load_from_file(
 static void test_keybindings_parse(bs_test_t *test_ptr);
 static void test_default_keybindings(bs_test_t *test_ptr);
 static void test_keybindings_formats(bs_test_t *test_ptr);
+static void test_workspace_index(bs_test_t *test_ptr);
 
 /** Test cases for key bindings. */
 static const bs_test_case_t   wlmaker_action_test_cases[] = {
     { true, "parse", test_keybindings_parse },
     { true, "default_keybindings", test_default_keybindings },
     { true, "formats", test_keybindings_formats },
+    { true, "workspace_index", test_workspace_index },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -868,6 +936,41 @@ void test_keybindings_formats(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, NULL, handle_ptr);
     bspl_object_unref(obj_ptr);
 
+    wlmim_input_manager_destroy(server.input_manager_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests @ref _wlmaker_action_workspace_index. */
+void test_workspace_index(bs_test_t *test_ptr)
+{
+    size_t i = 42;
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_action_workspace_index("1", &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, i);
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_action_workspace_index("10", &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 9, i);
+
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_action_workspace_index(NULL, &i));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_action_workspace_index("", &i));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_action_workspace_index("0", &i));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_action_workspace_index("2x", &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 9, i);
+
+    // Both actions take the workspace's number as argument.
+    wlmaker_server_t server = {
+        .input_manager_ptr = wlmim_input_manager_create(
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+    };
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.input_manager_ptr);
+    const char *s = "{ \"Alt+1\" = (WorkspaceSwitchTo, \"1\"); "
+        "\"Shift+Alt+1\" = (WindowToWorkspace, \"1\"); }";
+    bspl_object_t *obj_ptr = bspl_create_object_from_plist_data(
+        (const uint8_t*)s, strlen(s));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, obj_ptr);
+    wlmaker_action_handle_t *handle_ptr = wlmaker_action_bind_keys(
+        &server, bspl_dict_from_object(obj_ptr), false);
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, handle_ptr);
+    if (NULL != handle_ptr) wlmaker_action_unbind_keys(handle_ptr);
+    bspl_object_unref(obj_ptr);
     wlmim_input_manager_destroy(server.input_manager_ptr);
 }
 
