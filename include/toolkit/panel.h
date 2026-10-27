@@ -199,6 +199,19 @@ void wlmtk_panel_commit(
     const wlmtk_panel_positioning_t *positioning_ptr);
 
 /**
+ * Whether the panel spans a full edge of the output, and reserves an
+ * exclusive zone there: Anchored to both ends of an edge (eg. BOTTOM, LEFT
+ * and RIGHT, for a shelf at the bottom), with a positive exclusive zone.
+ * Like on Window Maker, such panels are arranged first, across the whole
+ * edge; the other panels (eg. the Clip and Dock) get what remains.
+ *
+ * @param panel_ptr
+ *
+ * @return true if the panel spans a full edge, exclusively.
+ */
+bool wlmtk_panel_spans_full_edge(const wlmtk_panel_t *panel_ptr);
+
+/**
  * Computes the requested dimension for the panel.
  *
  * @param panel_ptr

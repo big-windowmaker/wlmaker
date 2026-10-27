@@ -170,27 +170,37 @@ void wlmtk_layer_output_reconfigure(
 {
     struct wlr_box usable_area = layer_output_ptr->extents;
 
-    for (bs_dllist_node_t *dlnode_ptr = layer_output_ptr->panels.head_ptr;
-         dlnode_ptr != NULL;
-         dlnode_ptr = dlnode_ptr->next_ptr) {
-        wlmtk_panel_t *panel_ptr = wlmtk_panel_from_dlnode(dlnode_ptr);
+    // Two passes, like Window Maker: First the panels spanning a full edge
+    // of the output with an exclusive zone (eg. a shelf across the bottom),
+    // then the others (eg. the Clip and Dock), within what remains. In the
+    // order they were added, within each pass. So the result does not depend
+    // on which client mapped first.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (bs_dllist_node_t *dlnode_ptr = layer_output_ptr->panels.head_ptr;
+             dlnode_ptr != NULL;
+             dlnode_ptr = dlnode_ptr->next_ptr) {
+            wlmtk_panel_t *panel_ptr = wlmtk_panel_from_dlnode(dlnode_ptr);
+            if (wlmtk_panel_spans_full_edge(panel_ptr) != (0 == pass)) {
+                continue;
+            }
 
-        struct wlr_box new_usable_area = usable_area;
-        struct wlr_box panel_dimensions = wlmtk_panel_compute_dimensions(
-            panel_ptr, &layer_output_ptr->extents, &new_usable_area);
+            struct wlr_box new_usable_area = usable_area;
+            struct wlr_box panel_dimensions = wlmtk_panel_compute_dimensions(
+                panel_ptr, &layer_output_ptr->extents, &new_usable_area);
 
-        if (wlmtk_panel_element(panel_ptr)->visible) {
-            usable_area = new_usable_area;
+            if (wlmtk_panel_element(panel_ptr)->visible) {
+                usable_area = new_usable_area;
+            }
+
+            wlmtk_panel_request_size(
+                panel_ptr,
+                panel_dimensions.width,
+                panel_dimensions.height);
+            wlmtk_element_set_position(
+                wlmtk_panel_element(panel_ptr),
+                panel_dimensions.x,
+                panel_dimensions.y);
         }
-
-        wlmtk_panel_request_size(
-            panel_ptr,
-            panel_dimensions.width,
-            panel_dimensions.height);
-        wlmtk_element_set_position(
-            wlmtk_panel_element(panel_ptr),
-            panel_dimensions.x,
-            panel_dimensions.y);
     }
     layer_output_ptr->usable_area = usable_area;
 }
@@ -311,11 +321,13 @@ void _wlmtk_layer_output_destroy(
 
 static void test_multi_output(bs_test_t *test_ptr);
 static void test_layout(bs_test_t *test_ptr);
+static void test_full_edge(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_layer_test_cases[] = {
     { 1, "multi_output", test_multi_output },
     { 1, "layout", test_layout },
+    { 1, "full_edge", test_full_edge },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -433,28 +445,31 @@ void test_layout(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 100, fp1_ptr->requested_width);
     BS_TEST_VERIFY_EQ(test_ptr, 50, fp1_ptr->requested_height);
 
-    // Next panel is to respect the exclusive zone. It is invisible => later
-    // panels won't shift, but it still will be positioned.
+    // Next panel spans the full left edge, with an exclusive zone: It is
+    // arranged first, at the edge. It is invisible => later panels won't
+    // shift, but it still will be positioned.
     pos.anchor = WLR_EDGE_LEFT | WLR_EDGE_TOP | WLR_EDGE_BOTTOM;
     pos.desired_height = 0;
     wlmtk_fake_panel_t *fp2_ptr = wlmtk_fake_panel_create(&pos);
     wlmtk_element_set_visible(wlmtk_panel_element(&fp2_ptr->panel), false);
     BS_ASSERT_NOTNULL(fp2_ptr);
     wlmtk_layer_add_panel(layer_ptr, &fp2_ptr->panel, &output);
-    BS_TEST_VERIFY_EQ(test_ptr, 40, wlmtk_panel_element(&fp2_ptr->panel)->x);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&fp2_ptr->panel)->x);
     BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&fp2_ptr->panel)->y);
     BS_TEST_VERIFY_EQ(test_ptr, 100, fp2_ptr->requested_width);
     BS_TEST_VERIFY_EQ(test_ptr, 768, fp2_ptr->requested_height);
 
     // Next panel: Same size and position, since the former is invisible.
+    // Visible, it takes the edge: The first panel moves out of its zone.
     wlmtk_fake_panel_t *fp3_ptr = wlmtk_fake_panel_create(&pos);
     wlmtk_element_set_visible(wlmtk_panel_element(&fp3_ptr->panel), true);
     BS_ASSERT_NOTNULL(fp3_ptr);
     wlmtk_layer_add_panel(layer_ptr, &fp3_ptr->panel, &output);
-    BS_TEST_VERIFY_EQ(test_ptr, 40, wlmtk_panel_element(&fp3_ptr->panel)->x);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&fp3_ptr->panel)->x);
     BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&fp3_ptr->panel)->y);
     BS_TEST_VERIFY_EQ(test_ptr, 100, fp3_ptr->requested_width);
     BS_TEST_VERIFY_EQ(test_ptr, 768, fp3_ptr->requested_height);
+    BS_TEST_VERIFY_EQ(test_ptr, 40, wlmtk_panel_element(&fp1_ptr->panel)->x);
 
     wlmtk_layer_remove_panel(layer_ptr, &fp3_ptr->panel);
     wlmtk_fake_panel_destroy(fp3_ptr);
@@ -467,6 +482,88 @@ void test_layout(bs_test_t *test_ptr)
 
     wlmtk_layer_destroy(layer_ptr);
 
+    wlr_output_layout_remove(wlr_output_layout_ptr, &output);
+    wlr_output_layout_destroy(wlr_output_layout_ptr);
+    wl_display_destroy(display_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * A Clip-like panel on the left, then a shelf across the full bottom edge:
+ * The shelf spans the whole width, and its zone is taken first.
+ */
+void test_full_edge(bs_test_t *test_ptr)
+{
+    struct wl_display *display_ptr = wl_display_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, display_ptr);
+    struct wlr_output_layout *wlr_output_layout_ptr =
+        wlr_output_layout_create(display_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wlr_output_layout_ptr);
+    struct wlr_output output = { .width = 1280, .height = 800, .scale = 1 };
+    wlmtk_test_wlr_output_init(&output);
+    wlr_output_layout_add(wlr_output_layout_ptr, &output, 0, 0);
+    wlmtk_layer_t *layer_ptr = wlmtk_layer_create(wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, layer_ptr);
+
+    // The Clip: Top-left, 64 wide and tall, exclusive on the left.
+    wlmtk_panel_positioning_t clip_pos = {
+        .desired_width = 64, .desired_height = 64, .exclusive_zone = 64,
+        .anchor = WLR_EDGE_LEFT | WLR_EDGE_TOP,
+        .exclusive_edge = WLR_EDGE_LEFT };
+    wlmtk_fake_panel_t *clip_ptr = wlmtk_fake_panel_create(&clip_pos);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, clip_ptr);
+    wlmtk_element_set_visible(wlmtk_panel_element(&clip_ptr->panel), true);
+    wlmtk_layer_add_panel(layer_ptr, &clip_ptr->panel, &output);
+    // A Dock: Top-right, exclusive on the right.
+    wlmtk_panel_positioning_t dock_pos = clip_pos;
+    dock_pos.anchor = WLR_EDGE_RIGHT | WLR_EDGE_TOP;
+    dock_pos.exclusive_edge = WLR_EDGE_RIGHT;
+    wlmtk_fake_panel_t *dock_ptr = wlmtk_fake_panel_create(&dock_pos);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dock_ptr);
+    wlmtk_element_set_visible(wlmtk_panel_element(&dock_ptr->panel), true);
+    wlmtk_layer_add_panel(layer_ptr, &dock_ptr->panel, &output);
+
+    // The shelf: Full width at the bottom, 48 tall.
+    wlmtk_panel_positioning_t shelf_pos = {
+        .desired_width = 0, .desired_height = 48, .exclusive_zone = 48,
+        .anchor = WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT };
+    wlmtk_fake_panel_t *shelf_ptr = wlmtk_fake_panel_create(&shelf_pos);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, shelf_ptr);
+    wlmtk_element_set_visible(wlmtk_panel_element(&shelf_ptr->panel), true);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_panel_spans_full_edge(&shelf_ptr->panel));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_panel_spans_full_edge(&clip_ptr->panel));
+    wlmtk_layer_add_panel(layer_ptr, &shelf_ptr->panel, &output);
+
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&shelf_ptr->panel)->x);
+    BS_TEST_VERIFY_EQ(test_ptr, 752, wlmtk_panel_element(&shelf_ptr->panel)->y);
+    BS_TEST_VERIFY_EQ(test_ptr, 1280, shelf_ptr->requested_width);
+    BS_TEST_VERIFY_EQ(test_ptr, 48, shelf_ptr->requested_height);
+    // Clip and Dock stay at the top corners, above the shelf's zone.
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&clip_ptr->panel)->x);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&clip_ptr->panel)->y);
+    BS_TEST_VERIFY_EQ(test_ptr, 1216, wlmtk_panel_element(&dock_ptr->panel)->x);
+    struct wlr_box area;
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_layer_get_usable_area(
+                            layer_ptr, &output, &area));
+    BS_TEST_VERIFY_EQ(test_ptr, 64, area.x);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, area.y);
+    BS_TEST_VERIFY_EQ(test_ptr, 1280 - 128, area.width);
+    BS_TEST_VERIFY_EQ(test_ptr, 800 - 48, area.height);
+
+    // A full-height panel on the left, with zone 0: Not a full-edge panel.
+    shelf_pos.exclusive_zone = 0;
+    wlmtk_fake_panel_t *p_ptr = wlmtk_fake_panel_create(&shelf_pos);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, p_ptr);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_panel_spans_full_edge(&p_ptr->panel));
+    wlmtk_fake_panel_destroy(p_ptr);
+
+    wlmtk_layer_remove_panel(layer_ptr, &shelf_ptr->panel);
+    wlmtk_fake_panel_destroy(shelf_ptr);
+    wlmtk_layer_remove_panel(layer_ptr, &dock_ptr->panel);
+    wlmtk_fake_panel_destroy(dock_ptr);
+    wlmtk_layer_remove_panel(layer_ptr, &clip_ptr->panel);
+    wlmtk_fake_panel_destroy(clip_ptr);
+    wlmtk_layer_destroy(layer_ptr);
     wlr_output_layout_remove(wlr_output_layout_ptr, &output);
     wlr_output_layout_destroy(wlr_output_layout_ptr);
     wl_display_destroy(display_ptr);

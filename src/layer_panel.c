@@ -185,6 +185,28 @@ wlmaker_layer_panel_t *wlmaker_layer_panel_create(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Checks size and anchor, as the protocol requires: A width of 0 needs the
+ * surface anchored to both the left and the right edge, a height of 0 to
+ * both the top and the bottom edge.
+ *
+ * @param width
+ * @param height
+ * @param anchor
+ *
+ * @return true if valid.
+ */
+static bool _wlmaker_layer_panel_size_valid(
+    int width, int height, uint32_t anchor)
+{
+    const uint32_t h = WLR_EDGE_LEFT | WLR_EDGE_RIGHT;
+    const uint32_t v = WLR_EDGE_TOP | WLR_EDGE_BOTTOM;
+    if (0 == width && h != (anchor & h)) return false;
+    if (0 == height && v != (anchor & v)) return false;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Constructor for the layer panel, with already-created surface.
  *
  * @param wlr_layer_surface_v1_ptr
@@ -628,10 +650,11 @@ void _wlmaker_layer_panel_handle_surface_commit(
     }
 
     // Sanity check position and anchor values.
-    if ((0 == pos.desired_width &&
-         0 == (pos.anchor & (WLR_EDGE_LEFT | WLR_EDGE_RIGHT))) ||
-        (0 == pos.desired_height &&
-         0 == (pos.anchor & (WLR_EDGE_TOP | WLR_EDGE_BOTTOM)))) {
+    if (!_wlmaker_layer_panel_size_valid(
+            pos.desired_width, pos.desired_height, pos.anchor)) {
+        bs_log(BS_WARNING, "Layer panel %p: Invalid size %d x %d for anchor "
+               "0x%"PRIx32, layer_panel_ptr, pos.desired_width,
+               pos.desired_height, pos.anchor);
         wl_resource_post_error(
             layer_panel_ptr->wlr_layer_surface_v1_ptr->resource,
             ZWLR_LAYER_SURFACE_V1_ERROR_INVALID_SIZE,
@@ -759,10 +782,12 @@ void _wlmaker_layer_panel_handle_new_popup(
 /* == Unit tests =========================================================== */
 
 static void test_create_destroy(bs_test_t *test_ptr);
+static void test_size_valid(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t wlmaker_layer_panel_test_cases[] = {
     { false, "create_destroy", test_create_destroy },
+    { true, "size_valid", test_size_valid },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -790,6 +815,26 @@ void test_create_destroy(bs_test_t *test_ptr)
     BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, layer_panel_ptr);
 
     wl_signal_emit(&wlr_layer_surface_v1.events.destroy, NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Size 0 needs anchors on both sides. */
+void test_size_valid(bs_test_t *test_ptr)
+{
+    const uint32_t l = WLR_EDGE_LEFT, r = WLR_EDGE_RIGHT;
+    const uint32_t t = WLR_EDGE_TOP, b = WLR_EDGE_BOTTOM;
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_layer_panel_size_valid(10, 10, 0));
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_layer_panel_size_valid(
+                            0, 48, b | l | r));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_layer_panel_size_valid(
+                             0, 48, b | l));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_layer_panel_size_valid(0, 48, b));
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_layer_panel_size_valid(
+                            64, 0, l | t | b));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_layer_panel_size_valid(
+                             64, 0, l | t));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_layer_panel_size_valid(
+                             0, 0, l | r | t));
 }
 
 /* == End of layer_panel.c ================================================== */

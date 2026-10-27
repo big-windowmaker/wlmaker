@@ -156,6 +156,21 @@ void wlmtk_panel_commit(
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmtk_panel_spans_full_edge(const wlmtk_panel_t *panel_ptr)
+{
+    if (0 >= panel_ptr->positioning.exclusive_zone) return false;
+    const uint32_t a = panel_ptr->positioning.anchor;
+    const uint32_t h = WLR_EDGE_LEFT | WLR_EDGE_RIGHT;
+    const uint32_t v = WLR_EDGE_TOP | WLR_EDGE_BOTTOM;
+    // Across the whole width, at the top or the bottom. Or along the whole
+    // height, at the left or the right.
+    return (h == (a & h) && (WLR_EDGE_TOP == (a & v) ||
+                             WLR_EDGE_BOTTOM == (a & v))) ||
+        (v == (a & v) && (WLR_EDGE_LEFT == (a & h) ||
+                          WLR_EDGE_RIGHT == (a & h)));
+}
+
+/* ------------------------------------------------------------------------- */
 struct wlr_box wlmtk_panel_compute_dimensions(
     const wlmtk_panel_t *panel_ptr,
     const struct wlr_box *full_area_ptr,
