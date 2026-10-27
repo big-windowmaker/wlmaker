@@ -51,7 +51,7 @@ endif()
 add_library(wlm_calendar STATIC wlm_calendar.c wlm_calendar.h)
 target_link_libraries(wlm_calendar libbase)
 add_library(wlm_volume STATIC wlm_volume.c wlm_volume.h)
-target_link_libraries(wlm_volume libbase)
+target_link_libraries(wlm_volume libbase m)
 if(iwyu_path_and_options)
   set_target_properties(
     wlm_calendar wlm_volume PROPERTIES
