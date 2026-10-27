@@ -650,6 +650,31 @@ bool _wlmaker_layer_panel_element_pointer_button(
         return true;
     }
 
+    // Window Maker: The middle button runs the launcher's PasteCommand.
+    if (docklike && BTN_MIDDLE == button_event_ptr->button) {
+        int index;
+        if (_wlmaker_layer_panel_tile_at(
+                layer_panel_ptr,
+                element_ptr->last_pointer_motion_event.x,
+                element_ptr->last_pointer_motion_event.y,
+                &index, NULL, NULL)) {
+            int launcher = layer_panel_ptr->is_dock ? index - 1 : index;
+            bspl_array_t *a = 0 <= launcher ? wlmaker_dock_launchers_load(
+                server_ptr, layer_panel_ptr->is_dock ? "Dock" : "Clip") : NULL;
+            bspl_dict_t *d = NULL;
+            if (NULL != a && (size_t)launcher < bspl_array_size(a)) {
+                d = bspl_dict_from_object(bspl_array_at(a, launcher));
+            }
+            const char *c = wlmaker_dock_launcher_value(d, "PasteCommand");
+            bool has_paste = NULL != c && '\0' != *c;
+            if (has_paste && WLMTK_BUTTON_DOWN == button_event_ptr->type) {
+                wlmaker_dock_launchers_paste_command(server_ptr, d);
+            }
+            if (NULL != a) bspl_array_unref(a);
+            if (has_paste) return true;
+        }
+    }
+
     // The right button opens the tile's menu. Not passed to the client.
     if (docklike && BTN_RIGHT == button_event_ptr->button) {
         if (WLMTK_BUTTON_DOWN == button_event_ptr->type) {

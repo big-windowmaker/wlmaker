@@ -21,6 +21,8 @@
 #include "dock_launchers.h"
 
 #include <cairo.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -32,6 +34,9 @@
 #define WLR_USE_UNSTABLE
 #include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/types/wlr_buffer.h>
+#include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_primary_selection.h>
+#include <wlr/types/wlr_seat.h>
 #include <wlr/util/edges.h>
 #undef WLR_USE_UNSTABLE
 
@@ -388,6 +393,278 @@ bool wlmaker_dock_launchers_set_drawer_flag(
 }
 
 /* ------------------------------------------------------------------------- */
+char *wlmaker_dock_launcher_command_script(
+    const char *template_ptr,
+    char placeholder)
+{
+    bs_dynbuf_t d = {};
+    if (NULL == template_ptr || !bs_dynbuf_init(&d, 256, SIZE_MAX)) return NULL;
+    bool rv = true;
+    for (const char *c = template_ptr; rv && '\0' != *c; ++c) {
+        if ('%' == c[0] && '%' == c[1]) {
+            rv = bs_dynbuf_append_char(&d, '%');
+            ++c;
+        } else if ('%' == c[0] && placeholder == c[1]) {
+            rv = bs_dynbuf_append(&d, "\"$@\"", 4);
+            ++c;
+        } else {
+            rv = bs_dynbuf_append_char(&d, *c);
+        }
+    }
+    char *script_ptr = NULL;
+    if (rv && bs_dynbuf_append_char(&d, '\0')) {
+        script_ptr = logged_strdup(d.data_ptr);
+    }
+    bs_dynbuf_fini(&d);
+    return script_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launcher_run_command(
+    wlmaker_server_t *server_ptr,
+    const char *template_ptr,
+    char placeholder,
+    const char **args_ptr,
+    size_t args)
+{
+    if (NULL == template_ptr || '\0' == *template_ptr) return false;
+    char *script_ptr = wlmaker_dock_launcher_command_script(
+        template_ptr, placeholder);
+    const char **argv = logged_calloc(args + 5, sizeof(char*));
+    if (NULL == script_ptr || NULL == argv) {
+        if (NULL != argv) free(argv);
+        if (NULL != script_ptr) free(script_ptr);
+        return false;
+    }
+    argv[0] = "/bin/sh";
+    argv[1] = "-c";
+    argv[2] = script_ptr;
+    argv[3] = "sh";
+    for (size_t i = 0; i < args; ++i) argv[4 + i] = args_ptr[i];
+    bs_log(BS_INFO, "Running \"%s\" with %zu argument(s).", script_ptr, args);
+    bs_subprocess_t *sp_ptr = bs_subprocess_create(argv[0], argv, NULL);
+    bool rv = NULL != sp_ptr;
+    if (rv) {
+        wlm_util_subprocess_monitor_run(server_ptr->monitor_ptr, sp_ptr);
+    }
+    free(argv);
+    free(script_ptr);
+    return rv;
+}
+
+/** State of reading a file descriptor. */
+typedef struct {
+    /** File descriptor read from. */
+    int                       fd;
+    /** Event source of the file descriptor. */
+    struct wl_event_source    *fd_source_ptr;
+    /** Time-out. */
+    struct wl_event_source    *timer_ptr;
+    /** Data read so far. */
+    bs_dynbuf_t               dynbuf;
+    /** Called once done. */
+    wlmaker_dock_launchers_text_callback_t callback;
+    /** Argument to the callback. */
+    void                      *ud_ptr;
+} _wlmaker_dock_launchers_read_t;
+
+/* ------------------------------------------------------------------------- */
+/** Ends reading: Calls back with the text (or NULL), frees all. */
+static void _wlmaker_dock_launchers_read_done(
+    _wlmaker_dock_launchers_read_t *r_ptr,
+    bool success)
+{
+    const char *text_ptr = NULL;
+    if (success && bs_dynbuf_append_char(&r_ptr->dynbuf, '\0')) {
+        text_ptr = r_ptr->dynbuf.data_ptr;
+    }
+    r_ptr->callback(r_ptr->ud_ptr, text_ptr);
+    if (NULL != r_ptr->fd_source_ptr) wl_event_source_remove(r_ptr->fd_source_ptr);
+    if (NULL != r_ptr->timer_ptr) wl_event_source_remove(r_ptr->timer_ptr);
+    close(r_ptr->fd);
+    bs_dynbuf_fini(&r_ptr->dynbuf);
+    free(r_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Reads what is there. */
+static int _wlmaker_dock_launchers_handle_readable(
+    int fd,
+    __UNUSED__ uint32_t mask,
+    void *data_ptr)
+{
+    _wlmaker_dock_launchers_read_t *r_ptr = data_ptr;
+    char buf[4096];
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (0 < n) {
+            if (!bs_dynbuf_append(&r_ptr->dynbuf, buf, n)) {
+                _wlmaker_dock_launchers_read_done(r_ptr, false);
+                return 0;
+            }
+            continue;
+        }
+        if (0 == n) {
+            _wlmaker_dock_launchers_read_done(r_ptr, true);
+        } else if (EAGAIN != errno && EINTR != errno) {
+            _wlmaker_dock_launchers_read_done(r_ptr, false);
+        }
+        return 0;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Gives up reading. */
+static int _wlmaker_dock_launchers_handle_read_timer(void *data_ptr)
+{
+    bs_log(BS_WARNING, "Timed out reading data from a client.");
+    _wlmaker_dock_launchers_read_done(data_ptr, false);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launchers_read_fd(
+    wlmaker_server_t *server_ptr,
+    int fd,
+    wlmaker_dock_launchers_text_callback_t callback,
+    void *ud_ptr)
+{
+    _wlmaker_dock_launchers_read_t *r_ptr = logged_calloc(1, sizeof(*r_ptr));
+    if (NULL == r_ptr) {
+        close(fd);
+        return false;
+    }
+    r_ptr->fd = fd;
+    r_ptr->callback = callback;
+    r_ptr->ud_ptr = ud_ptr;
+    struct wl_event_loop *loop_ptr = wl_display_get_event_loop(
+        server_ptr->wl_display_ptr);
+    int flags = fcntl(fd, F_GETFL);
+    if (0 > flags || 0 > fcntl(fd, F_SETFL, flags | O_NONBLOCK) ||
+        !bs_dynbuf_init(&r_ptr->dynbuf, 4096, 1 << 20)) {
+        close(fd);
+        free(r_ptr);
+        return false;
+    }
+    r_ptr->fd_source_ptr = wl_event_loop_add_fd(
+        loop_ptr, fd, WL_EVENT_READABLE,
+        _wlmaker_dock_launchers_handle_readable, r_ptr);
+    r_ptr->timer_ptr = wl_event_loop_add_timer(
+        loop_ptr, _wlmaker_dock_launchers_handle_read_timer, r_ptr);
+    if (NULL == r_ptr->fd_source_ptr || NULL == r_ptr->timer_ptr) {
+        if (NULL != r_ptr->fd_source_ptr) {
+            wl_event_source_remove(r_ptr->fd_source_ptr);
+        }
+        if (NULL != r_ptr->timer_ptr) wl_event_source_remove(r_ptr->timer_ptr);
+        close(fd);
+        bs_dynbuf_fini(&r_ptr->dynbuf);
+        free(r_ptr);
+        return false;
+    }
+    wl_event_source_timer_update(r_ptr->timer_ptr, 5000);
+    return true;
+}
+
+/** Argument for @ref _wlmaker_dock_launchers_pasted. */
+typedef struct {
+    /** Back-link. */
+    wlmaker_server_t          *server_ptr;
+    /** The `PasteCommand`. */
+    char                      *command_ptr;
+} _wlmaker_dock_launchers_paste_t;
+
+/* ------------------------------------------------------------------------- */
+/** The selection was read: Runs the `PasteCommand` with it. */
+static void _wlmaker_dock_launchers_pasted(void *ud_ptr, const char *text_ptr)
+{
+    _wlmaker_dock_launchers_paste_t *p_ptr = ud_ptr;
+    if (NULL != text_ptr && '\0' != *text_ptr) {
+        const char *args[1] = { text_ptr };
+        wlmaker_dock_launcher_run_command(
+            p_ptr->server_ptr, p_ptr->command_ptr, 's', args, 1);
+    }
+    free(p_ptr->command_ptr);
+    free(p_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The text MIME type offered in `mime_types_ptr`, or NULL. */
+static const char *_wlmaker_dock_launchers_text_mime(
+    struct wl_array *mime_types_ptr)
+{
+    static const char *preferred[] = {
+        "text/plain;charset=utf-8", "UTF8_STRING", "text/plain", "TEXT",
+        "STRING", NULL };
+    for (const char **p = preferred; NULL != *p; ++p) {
+        char **t_ptr;
+        wl_array_for_each(t_ptr, mime_types_ptr) {
+            if (0 == strcmp(*t_ptr, *p)) return *t_ptr;
+        }
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launchers_paste_command(
+    wlmaker_server_t *server_ptr,
+    bspl_dict_t *dict_ptr)
+{
+    const char *cmd_ptr = wlmaker_dock_launcher_value(dict_ptr, "PasteCommand");
+    if (NULL == cmd_ptr || '\0' == *cmd_ptr) return false;
+    struct wlr_seat *seat_ptr = server_ptr->wlr_seat_ptr;
+    if (NULL == seat_ptr) return true;
+
+    // Window Maker reads the PRIMARY selection. Else, the clipboard.
+    struct wlr_primary_selection_source *p_ptr =
+        seat_ptr->primary_selection_source;
+    struct wlr_data_source *c_ptr = seat_ptr->selection_source;
+    const char *mime_ptr = NULL;
+    if (NULL != p_ptr) mime_ptr = _wlmaker_dock_launchers_text_mime(
+        &p_ptr->mime_types);
+    if (NULL == mime_ptr) {
+        p_ptr = NULL;
+        if (NULL != c_ptr) mime_ptr = _wlmaker_dock_launchers_text_mime(
+            &c_ptr->mime_types);
+    }
+    if (NULL == mime_ptr) {
+        bs_log(BS_INFO, "PasteCommand: No text selected.");
+        return true;
+    }
+
+    int fds[2];
+    if (0 != pipe(fds)) {
+        bs_log(BS_WARNING | BS_ERRNO, "Failed pipe()");
+        return true;
+    }
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    _wlmaker_dock_launchers_paste_t *arg_ptr = logged_calloc(1, sizeof(*arg_ptr));
+    if (NULL != arg_ptr) {
+        arg_ptr->server_ptr = server_ptr;
+        arg_ptr->command_ptr = logged_strdup(cmd_ptr);
+    }
+    if (NULL == arg_ptr || NULL == arg_ptr->command_ptr) {
+        if (NULL != arg_ptr) free(arg_ptr);
+        close(fds[0]);
+        close(fds[1]);
+        return true;
+    }
+    if (NULL != p_ptr) {
+        wlr_primary_selection_source_send(p_ptr, mime_ptr, fds[1]);
+    } else {
+        wlr_data_source_send(c_ptr, mime_ptr, fds[1]);
+    }
+    // The source closes its copy; ours goes now.
+    if (!wlmaker_dock_launchers_read_fd(server_ptr, fds[0],
+                                        _wlmaker_dock_launchers_pasted,
+                                        arg_ptr)) {
+        free(arg_ptr->command_ptr);
+        free(arg_ptr);
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 const char *wlmaker_dock_launcher_value(
     bspl_dict_t *dict_ptr,
     const char *key_ptr)
@@ -721,6 +998,7 @@ static void test_balloon_text(bs_test_t *test_ptr);
 static void test_index_at(bs_test_t *test_ptr);
 static void test_tile_buffer(bs_test_t *test_ptr);
 static void test_edited(bs_test_t *test_ptr);
+static void test_command_script(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t _wlmaker_dock_launchers_test_cases[] = {
@@ -728,6 +1006,7 @@ static const bs_test_case_t _wlmaker_dock_launchers_test_cases[] = {
     { true, "index_at", test_index_at },
     { true, "tile_buffer", test_tile_buffer },
     { true, "edited", test_edited },
+    { true, "command_script", test_command_script },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -835,6 +1114,22 @@ void test_edited(bs_test_t *test_ptr)
 
     bspl_object_unref(x);
     bspl_object_unref(o);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests the scripts for Window Maker's PasteCommand and DropCommand. */
+void test_command_script(bs_test_t *test_ptr)
+{
+    char *s = wlmaker_dock_launcher_command_script("firefox %s", 's');
+    BS_TEST_VERIFY_STREQ(test_ptr, "firefox \"$@\"", s);
+    free(s);
+    s = wlmaker_dock_launcher_command_script("gimp %d --x=100%%", 'd');
+    BS_TEST_VERIFY_STREQ(test_ptr, "gimp \"$@\" --x=100%", s);
+    free(s);
+    // The other placeholder stays.
+    s = wlmaker_dock_launcher_command_script("echo %d %s", 's');
+    BS_TEST_VERIFY_STREQ(test_ptr, "echo %d \"$@\"", s);
+    free(s);
 }
 
 /* == End of dock_launchers.c ============================================== */

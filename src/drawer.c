@@ -940,6 +940,12 @@ bool _wlmaker_drawer_launcher_pointer_button(
         }
         return true;
     }
+    if (BTN_MIDDLE == button_event_ptr->button) {
+        if (WLMTK_BUTTON_DOWN == button_event_ptr->type) {
+            wlmaker_dock_launchers_paste_command(server_ptr, l_ptr->dict_ptr);
+        }
+        return true;
+    }
     if (BTN_LEFT != button_event_ptr->button) return true;
 
     struct wlr_cursor *c = wlmim_wlr_cursor(server_ptr->input_manager_ptr);
