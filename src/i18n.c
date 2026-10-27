@@ -62,6 +62,13 @@ static const wlmaker_i18n_entry_t _wlmaker_i18n_pt_br[] = {
     { "Keep on Top", "Manter sobre outros" },
     { "Clip Options", "Opções do Clip" },
     { "Remove Icon", "Remover Ícone" },
+    { "Kill Application", "Terminar Aplicação" },
+    { " will be forcibly closed.\nAny unsaved changes will be lost.\n"
+      "Please confirm.",
+      " será fechado à força.\nQualquer mudança não salva será perdida.\n"
+      "Confirme, por favor." },
+    { "Yes", "Sim" },
+    { "No", "Não" },
     { "Restore Default Launchers", "Restaurar lançadores padrão" },
     { "Dock-app", "Dockapp" },
     { "Workspace", "Área" },

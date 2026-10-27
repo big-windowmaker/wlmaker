@@ -86,6 +86,12 @@ bool wlmaker_dock_menu_add_icon_items(
     wlmaker_context_menu_t *context_menu_ptr,
     const wlmaker_dock_menu_icon_t *icon_ptr);
 
+/**
+ * @return Path of the logo for dialogs: The icon of the Dock's main tile,
+ *     as Window Maker's panels show its logo. To be free()-ed, or NULL.
+ */
+char *wlmaker_dock_menu_logo_path(wlmaker_server_t *server_ptr);
+
 /** Unit test cases. */
 extern const bs_test_set_t wlmaker_dock_menu_test_set;
 
