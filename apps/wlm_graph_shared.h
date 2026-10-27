@@ -23,7 +23,10 @@
 #ifndef WLM_GRAPH_SHARED_H
 #define WLM_GRAPH_SHARED_H
 
+#include <stdbool.h>
 #include <stdint.h>
+
+#include "wlm_settings.h"
 
 /* == Definitions ========================================================== */
 
@@ -152,6 +155,24 @@ typedef struct {
      * @return Label string (caller retains ownership), or NULL.
      */
     const char *(*label_fn)(void *app_state);
+
+    /**
+     * Whether the label is hidden unless the preference `ShowLabel` is set.
+     */
+    bool label_hidden_by_default;
+
+    /**
+     * Optional callback to apply the app's own preferences.
+     *
+     * Called at start, and whenever the preferences file changes. The graph's
+     * history is cleared after a change, so the number of values may change.
+     * The common preferences are applied by the graph: `Theme`, `Interval`
+     * (seconds), `GraphStyle` (Filled, Line), `ShowLabel`, `ClickCommand`.
+     *
+     * @param app_state     The app_state pointer from this config.
+     * @param settings_ptr  The preferences.
+     */
+    void (*settings_fn)(void *app_state, wlm_settings_t *settings_ptr);
 } wlm_graph_app_config_t;
 
 /* == Public API =========================================================== */
@@ -159,8 +180,10 @@ typedef struct {
 /**
  * Runs a graph application.
  *
- * Handles argument parsing, wlclient setup, icon creation, callback
- * registration, main loop, and cleanup. Apps just need to initialize their
+ * Handles argument parsing, preferences (from
+ * `${XDG_CONFIG_HOME}/wlmaker/<app_name>.plist`, watched for changes),
+ * wlclient setup, icon creation, callback registration, main loop, and
+ * cleanup. Apps just need to initialize their
  * state and provide a configuration.
  *
  * Graph state is managed internally by this function.

@@ -31,7 +31,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <linux/input-event-codes.h>
 #include <wayland-client-core.h>
+#include <wayland-util.h>
 #include <wlclient/wlclient.h>
 
 #include "wlclient/icon.h"
@@ -84,6 +86,10 @@ typedef struct {
     uint32_t pixel_lut[256];
     /** Pixel color for the line (top of usage). */
     uint32_t pixel_line;
+    /** Pixel color of the background. */
+    uint32_t pixel_background;
+    /** Whether to draw only the line, without filling below it. */
+    bool line_only;
     /**
      * Scratch buffer for per-row counts during rendering.
      *
@@ -153,6 +159,8 @@ typedef struct {
     wlm_graph_font_spec_t font;
     /** Whether to show label. True implies label_fn is set. */
     bool show_label;
+    /** Command to run on a left click. Empty for none. */
+    const char *click_command_ptr;
 } wlm_graph_prefs_t;
 
 /**
@@ -163,8 +171,16 @@ typedef struct {
 typedef struct {
     /** Pointer to the common graph state. */
     wlm_graph_state_t *graph_state;
-    /** User preferences (immutable). */
-    const wlm_graph_prefs_t *prefs;
+    /** User preferences: From the commandline, and the preferences file. */
+    wlm_graph_prefs_t *prefs;
+    /** The preferences from the commandline. */
+    const wlm_graph_prefs_t *arg_prefs;
+    /** Preferences file. */
+    wlm_settings_t *settings_ptr;
+    /** Counts preference changes: A timer of an earlier generation expires. */
+    uintptr_t timer_generation;
+    /** Listener for @ref wlmcl_client_events::pointer_button. */
+    struct wl_listener pointer_button_listener;
     /** Icon handle. */
     wlmcl_icon_t *icon_ptr;
     /** Application configuration. */
@@ -206,7 +222,8 @@ static void _wlm_graph_peak_connector_draw_between(
 static void _wlm_graph_fill_columns_black(
     uint32_t *graph_pixels,
     const uint32_t graph_size[2],
-    const uint32_t column_end);
+    const uint32_t column_end,
+    const uint32_t color);
 static void _wlm_graph_scroll_left(
     uint32_t *graph_pixels,
     const uint32_t graph_size[2],
@@ -581,12 +598,12 @@ static void _wlm_graph_rebuild_from_samples(
     const uint32_t *graph_size = graph_state->graph_size;
 
     if (NULL == graph_state->sample_current || 0 == graph_state->sample_current->values.num) {
-        // No samples captured yet, fill with black.
+        // No samples captured yet, fill with the background.
         graph_state->y_min = graph_size[1];
         graph_state->y_min_prev = graph_size[1];
         graph_state->sample_peak = NULL;
         for (uint32_t i = 0; i < graph_size[0] * graph_size[1]; i++) {
-            graph_state->graph_pixels[i] = WLM_GRAPH_PIXEL_BLACK;
+            graph_state->graph_pixels[i] = graph_state->pixel_background;
         }
         return;
     }
@@ -614,9 +631,10 @@ static void _wlm_graph_rebuild_from_samples(
         }
     } while (0 < column && sample != graph_state->sample_current);
 
-    // Fill remaining columns with black.
+    // Fill remaining columns with the background.
     if (0 < column) {
-        _wlm_graph_fill_columns_black(graph_state->graph_pixels, graph_size, column);
+        _wlm_graph_fill_columns_black(graph_state->graph_pixels, graph_size,
+                                      column, graph_state->pixel_background);
     }
 
     // Compute y_min/sample_peak via rescan rather than tracking inline above.
@@ -704,24 +722,28 @@ static uint32_t _wlm_graph_column_render(
     // Cache LUT pointer for inner loop.
     const uint32_t * const pixel_lut = graph_state->pixel_lut;
 
-    // Clear stale pixels above peak, scanning up until we hit black.
-    // Works because non-black pixels are contiguous from y_min downward.
+    // Clear stale pixels above peak, scanning up until we hit background.
+    // Works because non-background pixels are contiguous from y_min downward.
+    // Not so for just the line: All of the column is cleared then.
+    const uint32_t bg = graph_state->pixel_background;
     uint32_t *pixel = &pixels[(y_line * graph_size[0]) + column];
     for (uint32_t y = y_line; y > 0; ) {
         y--;
         pixel -= graph_size[0];
-        if (WLM_GRAPH_PIXEL_BLACK == *pixel) break;
-        *pixel = WLM_GRAPH_PIXEL_BLACK;
+        if (bg == *pixel && !graph_state->line_only) break;
+        *pixel = bg;
     }
 
     // Rows from peak onwards: render intensity based on count at each row.
     pixel = &pixels[(y_line * graph_size[0]) + column];
     const uint32_t *row_count = &row_counts[y_line];
     if (1 >= values_num) {
-        // Single value: all non-zero counts use max LUT index.
-        const uint32_t pixel_max = pixel_lut[255];
+        // Single value: Colored by height, from the LUT's low to its high
+        // end. Like a level meter.
+        const uint32_t h = BS_MAX(graph_size[1] - 1, 1U);
         for (uint32_t y = y_line; y < graph_size[1]; y++) {
-            *pixel = (0 < *row_count++) ? pixel_max : WLM_GRAPH_PIXEL_BLACK;
+            *pixel = (0 < *row_count++ && !graph_state->line_only) ?
+                pixel_lut[((graph_size[1] - 1 - y) * 255) / h] : bg;
             pixel += graph_size[0];
         }
     } else {
@@ -729,8 +751,8 @@ static uint32_t _wlm_graph_column_render(
         const uint32_t divisor = values_num - 1;
         for (uint32_t y = y_line; y < graph_size[1]; y++) {
             const uint32_t count = *row_count++;
-            *pixel = (0 == count) ?
-                WLM_GRAPH_PIXEL_BLACK : pixel_lut[((count - 1) * 255) / divisor];
+            *pixel = (0 == count || graph_state->line_only) ?
+                bg : pixel_lut[((count - 1) * 255) / divisor];
             pixel += graph_size[0];
         }
     }
@@ -937,22 +959,29 @@ static void _wlm_graph_label_draw(
         prefs->font.weight);
     cairo_set_font_size(cairo_ptr, font_size);
 
-    // Position: top-left corner, inside margin.
-    const double x = margin_px + padding;
-    const double y = margin_px + padding + font_size;
+    // Position: top-left corner, inside margin. One line per '\n'.
+    char line[64];
+    double y = margin_px + padding + font_size;
+    for (const char *p = label; '\0' != *p; y += font_size + padding) {
+        size_t len = strcspn(p, "\n");
+        snprintf(line, sizeof(line), "%.*s", (int)BS_MIN(len, sizeof(line) - 1), p);
+        p += len;
+        if ('\n' == *p) p++;
+        const double x = margin_px + padding;
 
-    // Draw text with black outline for readability.
-    cairo_move_to(cairo_ptr, x, y);
-    cairo_text_path(cairo_ptr, label);
+        // Draw text with black outline for readability.
+        cairo_move_to(cairo_ptr, x, y);
+        cairo_text_path(cairo_ptr, line);
 
-    // Stroke outline (black).
-    cairo_set_source_argb8888(cairo_ptr, WLM_GRAPH_PIXEL_BLACK);
-    cairo_set_line_width(cairo_ptr, (2.0 * scale) / scale_base);
-    cairo_stroke_preserve(cairo_ptr);
+        // Stroke outline (black).
+        cairo_set_source_argb8888(cairo_ptr, WLM_GRAPH_PIXEL_BLACK);
+        cairo_set_line_width(cairo_ptr, (2.0 * scale) / scale_base);
+        cairo_stroke_preserve(cairo_ptr);
 
-    // Fill text (white).
-    cairo_set_source_argb8888(cairo_ptr, WLM_GRAPH_LABEL_COLOR);
-    cairo_fill(cairo_ptr);
+        // Fill text (white).
+        cairo_set_source_argb8888(cairo_ptr, WLM_GRAPH_LABEL_COLOR);
+        cairo_fill(cairo_ptr);
+    }
 
     cairo_destroy(cairo_ptr);
 }
@@ -986,17 +1015,19 @@ static void _wlm_graph_scroll_left(
  * @param graph_pixels      Pixel buffer to fill.
  * @param graph_size        Graph dimensions [width, height].
  * @param column_end        Number of columns to fill (0 to column_end-1).
+ * @param color             The background's color.
  */
 static void _wlm_graph_fill_columns_black(
     uint32_t *graph_pixels,
     const uint32_t graph_size[2],
-    const uint32_t column_end)
+    const uint32_t column_end,
+    const uint32_t color)
 {
     const uint32_t width = graph_size[0];
     uint32_t *row = graph_pixels;
     for (uint32_t y = 0; y < graph_size[1]; y++) {
         for (uint32_t x = 0; x < column_end; x++) {
-            row[x] = WLM_GRAPH_PIXEL_BLACK;
+            row[x] = color;
         }
         row += width;
     }
@@ -1160,6 +1191,7 @@ static int _wlm_graph_args_parse(
     prefs->font.weight = CAIRO_FONT_WEIGHT_NORMAL;
     prefs->font.slant = CAIRO_FONT_SLANT_NORMAL;
     prefs->show_label = has_label;
+    prefs->click_command_ptr = "";
 
     for (int i = 1; i < argc; i++) {
         if (0 == strcmp(argv[i], "--interval") && i + 1 < argc) {
@@ -1402,6 +1434,101 @@ static void _wlm_graph_timer_callback(wlmcl_client_t *client_ptr, void *ud_ptr)
         _wlm_graph_timer_callback, handle);
 }
 
+/* == Preferences ========================================================== */
+
+/** Graph styles, for the `GraphStyle` preference. */
+static const char *const _wlm_graph_styles[] = { "Filled", "Line", NULL };
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Applies the preferences: The common ones, then the app's own.
+ *
+ * @param handle            Graph handle.
+ */
+static void _wlm_graph_apply_settings(wlm_graph_handle_t *handle)
+{
+    wlm_graph_state_t * const gs = handle->graph_state;
+    const wlm_graph_app_config_t * const config = handle->config;
+    wlm_settings_t * const s = handle->settings_ptr;
+
+    *handle->prefs = *handle->arg_prefs;
+    handle->prefs->interval_usec = (uint64_t)(1e6 * wlm_settings_number(
+        s, "Interval", handle->arg_prefs->interval_usec / 1e6, 0.01, 3600.0));
+    if (NULL != config->label_fn) {
+        handle->prefs->show_label = wlm_settings_bool(
+            s, "ShowLabel", handle->arg_prefs->show_label);
+    }
+    handle->prefs->click_command_ptr = wlm_settings_string(
+        s, "ClickCommand", "");
+    gs->line_only = 1 == wlm_settings_choice(
+        s, "GraphStyle", _wlm_graph_styles, 0);
+
+    // Colors: Of the theme, or the graph's own.
+    static const wlm_theme_t own = { .name_ptr = "Default" };
+    const wlm_theme_t *t = wlm_settings_theme(s, &own);
+    if (0 != t->graph_low) {
+        for (uint32_t i = 0; i < 256; i++) {
+            gs->pixel_lut[i] = WLM_GRAPH_PIXEL_BLACK |
+                wlm_theme_blend(t->graph_low, t->graph_high, i);
+        }
+        gs->pixel_line = WLM_GRAPH_PIXEL_BLACK | t->graph_line;
+        gs->pixel_background = WLM_GRAPH_PIXEL_BLACK | t->background;
+    } else {
+        if (NULL != config->pixel_lut) {
+            memcpy(gs->pixel_lut, config->pixel_lut, sizeof(gs->pixel_lut));
+            gs->pixel_line = WLM_GRAPH_PIXEL_LINE_DEFAULT;
+        } else {
+            _wlm_graph_pixel_lut_init(gs->pixel_lut, &gs->pixel_line,
+                                      handle->prefs->color_mode);
+        }
+        gs->pixel_background = WLM_GRAPH_PIXEL_BLACK;
+    }
+
+    if (NULL != config->settings_fn) config->settings_fn(config->app_state, s);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Clears the graph's history, and redraws it empty. */
+static void _wlm_graph_clear_history(wlm_graph_handle_t *handle)
+{
+    wlm_graph_state_t * const gs = handle->graph_state;
+    if (NULL == gs->samples_alloc || 0 == gs->graph_size[0]) return;
+    _wlm_graph_sample_values_free(gs->samples_alloc, gs->graph_size[0]);
+    _wlm_graph_samples_init(gs->samples_alloc, gs->graph_size[0]);
+    gs->sample_current = &gs->samples_alloc[0];
+    _wlm_graph_rebuild_from_samples(gs, handle->config->accumulate_mode);
+}
+
+/* ------------------------------------------------------------------------- */
+/** The preferences file changed: Applies it, and redraws. */
+static void _wlm_graph_handle_settings_fd(
+    __UNUSED__ wlmcl_client_t *client_ptr,
+    void *ud_ptr)
+{
+    wlm_graph_handle_t * const handle = ud_ptr;
+    if (!wlm_settings_handle_fd(handle->settings_ptr)) return;
+    _wlm_graph_apply_settings(handle);
+    _wlm_graph_clear_history(handle);
+    if (NULL != handle->dblbuf_ptr) {
+        wlmcl_dblbuf_register_ready_callback(
+            handle->dblbuf_ptr, _wlm_graph_icon_render_callback, handle);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles pointer buttons: A left click runs the configured command. */
+static void _wlm_graph_handle_pointer_button(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlm_graph_handle_t * const handle = BS_CONTAINER_OF(
+        listener_ptr, wlm_graph_handle_t, pointer_button_listener);
+    struct wlmcl_client_pointer_button_event *event_ptr = data_ptr;
+    if (event_ptr->wl_surface_ptr != wlmcl_icon_wl_surface(handle->icon_ptr) ||
+        BTN_LEFT != event_ptr->button || !event_ptr->pressed) return;
+    wlm_settings_spawn(handle->prefs->click_command_ptr);
+}
+
 /* == Internal state management ============================================ */
 
 /* ------------------------------------------------------------------------- */
@@ -1432,36 +1559,45 @@ int wlm_graph_app_run(
     bs_log_settings.severity = BS_INFO;
 
     // Parse command line arguments and initialize preferences.
-    wlm_graph_prefs_t prefs;
+    wlm_graph_prefs_t arg_prefs, prefs;
     const bool has_custom_lut = (NULL != config->pixel_lut);
     const bool has_label = (NULL != config->label_fn);
     const int parse_result = _wlm_graph_args_parse(
         argc, argv, config->app_name, config->app_help,
-        has_custom_lut, has_label, &prefs);
+        has_custom_lut, has_label, &arg_prefs);
     if (0 != parse_result) {
         return (1 == parse_result) ? EXIT_SUCCESS : EXIT_FAILURE;
     }
+    if (config->label_hidden_by_default) arg_prefs.show_label = false;
+    prefs = arg_prefs;
+
+    wlm_settings_t *settings_ptr = wlm_settings_create(config->app_name, NULL);
+    if (NULL == settings_ptr) return EXIT_FAILURE;
 
     // Allocate graph state.
     wlm_graph_state_t *graph_state = calloc(1, sizeof(wlm_graph_state_t));
     if (NULL == graph_state) {
         bs_log(BS_ERROR, "%s: Failed to allocate graph state", config->app_name);
+        wlm_settings_destroy(settings_ptr);
         return EXIT_FAILURE;
     }
 
-    // Initialize pixel lookup table.
-    if (NULL != config->pixel_lut) {
-        memcpy(graph_state->pixel_lut, config->pixel_lut, sizeof(graph_state->pixel_lut));
-        graph_state->pixel_line = WLM_GRAPH_PIXEL_LINE_DEFAULT;
-    } else {
-        _wlm_graph_pixel_lut_init(graph_state->pixel_lut, &graph_state->pixel_line, prefs.color_mode);
-    }
+    // Colors and options: From the preferences.
+    wlm_graph_handle_t handle = {
+        .graph_state = graph_state,
+        .prefs = &prefs,
+        .arg_prefs = &arg_prefs,
+        .settings_ptr = settings_ptr,
+        .config = config,
+    };
+    _wlm_graph_apply_settings(&handle);
 
     // Initialize graph buffers with default icon size.
     const uint32_t size_default[2] = {WLM_GRAPH_BASE_ICON_SIZE, WLM_GRAPH_BASE_ICON_SIZE};
     if (!_wlm_graph_buffers_resize(graph_state, size_default, prefs.margin_logical_px)) {
         bs_log(BS_ERROR, "Icon dimensions too small for graph");
         _wlm_graph_state_free(graph_state);
+        wlm_settings_destroy(settings_ptr);
         return EXIT_FAILURE;
     }
     // Initialize graph pixels (malloc leaves garbage, need opaque black).
@@ -1475,6 +1611,7 @@ int wlm_graph_app_run(
     if (NULL == wlclient_ptr) {
         _wlm_graph_state_free(graph_state);
         config->state_free_fn(config->app_state);
+        wlm_settings_destroy(settings_ptr);
         return EXIT_FAILURE;
     }
 
@@ -1489,6 +1626,7 @@ int wlm_graph_app_run(
         _wlm_graph_state_free(graph_state);
         config->state_free_fn(config->app_state);
         wlmcl_client_destroy(wlclient_ptr);
+        wlm_settings_destroy(settings_ptr);
         return EXIT_FAILURE;
     }
 
@@ -1498,18 +1636,23 @@ int wlm_graph_app_run(
         _wlm_graph_state_free(graph_state);
         config->state_free_fn(config->app_state);
         wlmcl_client_destroy(wlclient_ptr);
+        wlm_settings_destroy(settings_ptr);
         return EXIT_FAILURE;
     }
 
-    // Create handle for callbacks.
-    wlm_graph_handle_t handle = {
-        .graph_state = graph_state,
-        .prefs = &prefs,
-        .icon_ptr = icon_ptr,
-        .config = config,
-        .wlclient_ptr = wlclient_ptr,
-        .dblbuf_ptr = NULL,
-    };
+    // Complete the handle for callbacks.
+    handle.icon_ptr = icon_ptr;
+    handle.wlclient_ptr = wlclient_ptr;
+    handle.dblbuf_ptr = NULL;
+
+    handle.pointer_button_listener.notify = _wlm_graph_handle_pointer_button;
+    wl_signal_add(&wlmcl_client_events(wlclient_ptr)->pointer_button,
+                  &handle.pointer_button_listener);
+    const int settings_fd = wlm_settings_watch(settings_ptr);
+    if (0 <= settings_fd) {
+        wlmcl_client_register_fd(
+            wlclient_ptr, settings_fd, _wlm_graph_handle_settings_fd, &handle);
+    }
 
     wlmcl_icon_register_configure_callback(
         icon_ptr, _handle_icon_configure, &handle);
@@ -1518,6 +1661,8 @@ int wlm_graph_app_run(
         _wlm_graph_timer_callback, &handle);
 
     wlmcl_client_run(wlclient_ptr);
+    if (0 <= settings_fd) wlmcl_client_unregister_fd(wlclient_ptr, settings_fd);
+    wl_list_remove(&handle.pointer_button_listener.link);
     wlmcl_icon_destroy(icon_ptr);
     if (NULL != handle.dblbuf_ptr) {
         wlmcl_dblbuf_destroy(handle.dblbuf_ptr);
@@ -1527,6 +1672,7 @@ int wlm_graph_app_run(
     _wlm_graph_state_free(graph_state);
     config->state_free_fn(config->app_state);
     wlmcl_client_destroy(wlclient_ptr);
+    wlm_settings_destroy(settings_ptr);
     return EXIT_SUCCESS;
 }
 

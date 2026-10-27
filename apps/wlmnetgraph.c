@@ -41,7 +41,11 @@ static const char _app_help[] =
     "  - Transmit: outgoing traffic (cyan)\n"
     "  - Bidirectional: combined traffic (red)\n"
     "\n"
-    "The label displays current throughput. Scale auto-adjusts to peak rate.";
+    "The label displays current throughput. Scale auto-adjusts to peak rate.\n"
+    "\n"
+    "Preferences, in ~/.config/wlmaker/wlmnetgraph.plist: Theme, Interval,\n"
+    "GraphStyle (Filled, Line), ShowLabel, Interface (All, or eg. eth0),\n"
+    "Label (Scale, Rates), Units (Bytes, Bits), ClickCommand.";
 
 /* == Definitions ========================================================== */
 
@@ -135,9 +139,57 @@ typedef struct {
     uint32_t history_index;
     /** Number of valid entries in history. */
     uint32_t history_num;
+
+    /** Interface to show, or empty for all (but loopback). */
+    char interface[32];
+    /** Whether the label shows the rates, instead of the scale. */
+    bool label_rates;
+    /** Whether to show bits per second, instead of bytes. */
+    bool bits;
+    /** Time of the previous read, in microseconds. 0 if none yet. */
+    uint64_t prev_usec;
+    /** Receive rate, in bytes per second. */
+    unsigned long long rx_per_sec;
+    /** Transmit rate, in bytes per second. */
+    unsigned long long tx_per_sec;
+    /** The label. */
+    char label[48];
 } netgraph_state_t;
 
 /* == Label ================================================================ */
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Formats a rate compactly, eg. "1.2M" or "30K". In bits, with a "b".
+ *
+ * @param buf
+ * @param buf_size
+ * @param bytes             Bytes per second.
+ * @param bits              Whether to show bits.
+ */
+static void _format_rate(char *buf, size_t buf_size,
+                         unsigned long long bytes, bool bits)
+{
+    unsigned long long v = bits ? bytes * 8 : bytes;
+    static const char units[] = " KMGT";
+    int u = 0;
+    // Bytes in units of 1024, like the scale. Bits in units of 1000.
+    const unsigned long long base = bits ? 1000 : 1024;
+    unsigned long long scaled10 = v * 10;
+    while (scaled10 >= base * 10 && u < 4) {
+        scaled10 /= base;
+        ++u;
+    }
+    const char *suffix = bits ? "b" : (0 == u ? "B" : "");
+    if (0 == u) {
+        snprintf(buf, buf_size, "%llu%s", v, suffix);
+    } else if (scaled10 < 100) {
+        snprintf(buf, buf_size, "%llu.%llu%c%s",
+                 scaled10 / 10, scaled10 % 10, units[u], suffix);
+    } else {
+        snprintf(buf, buf_size, "%llu%c%s", scaled10 / 10, units[u], suffix);
+    }
+}
 
 /* ------------------------------------------------------------------------- */
 /**
@@ -162,9 +214,19 @@ static size_t _scale_index_ceil(const unsigned long long val)
 static const char *_label_fn(void *app_state)
 {
     netgraph_state_t *state = app_state;
-    return _scales[state->scale_index].label;
+    char a[16], b[16];
+    if (state->label_rates) {
+        _format_rate(a, sizeof(a), state->rx_per_sec, state->bits);
+        _format_rate(b, sizeof(b), state->tx_per_sec, state->bits);
+        snprintf(state->label, sizeof(state->label),
+                 "\xe2\x86\x93%s\n\xe2\x86\x91%s", a, b);
+        return state->label;
+    }
+    if (!state->bits) return _scales[state->scale_index].label;
+    _format_rate(a, sizeof(a), _scales[state->scale_index].bytes, true);
+    snprintf(state->label, sizeof(state->label), "%s/s", a);
+    return state->label;
 }
-
 /* == Cleanup ============================================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -232,11 +294,12 @@ static wlm_graph_read_result_t _stats_read_fn(void *app_state, wlm_graph_values_
             continue;
         }
 
-        // Extract interface name and skip loopback.
+        // Extract interface name and skip loopback. Or all but the chosen.
         *colon = '\0';
         char *iface = line;
         while (' ' == *iface) iface++;  // Trim leading spaces.
-        if (0 == strcmp(iface, "lo")) {
+        if ('\0' == state->interface[0] ? 0 == strcmp(iface, "lo") :
+            0 != strcmp(iface, state->interface)) {
             continue;
         }
 
@@ -267,6 +330,15 @@ static wlm_graph_read_result_t _stats_read_fn(void *app_state, wlm_graph_values_
 
     state->prev_rx_bytes = total_rx_bytes;
     state->prev_tx_bytes = total_tx_bytes;
+
+    // Rates per second, for the label.
+    const uint64_t now_usec = bs_usec();
+    if (0 != state->prev_usec && now_usec > state->prev_usec) {
+        const uint64_t dt = now_usec - state->prev_usec;
+        state->rx_per_sec = (rx_rate * 1000000ULL) / dt;
+        state->tx_per_sec = (tx_rate * 1000000ULL) / dt;
+    }
+    state->prev_usec = now_usec;
 
     // Store raw rates in history for regeneration.
     state->history[state->history_index].rx_rate = rx_rate;
@@ -343,6 +415,8 @@ static void _regenerate_fn(void *app_state, wlm_graph_values_t *samples, const u
             const uint32_t hist_index =
                 (history_offset - i) % WLM_GRAPH_REGENERATE_HISTORY_MAX;
             const rate_history_t *h = &state->history[hist_index];
+            // Samples cleared by the graph (eg. preferences changed): Empty.
+            if (NET_CATEGORY_COUNT > samples[i].num) continue;
 
             // Regenerate scaled values at current peak.
             samples[i].data[NET_CATEGORY_IN] =
@@ -356,8 +430,44 @@ static void _regenerate_fn(void *app_state, wlm_graph_values_t *samples, const u
 
     // Clear samples without available history.
     for (uint32_t i = samples_num_regenerate; i < samples_num; i++) {
-        memset(samples[i].data, 0, samples[i].num);
+        if (NULL != samples[i].data) memset(samples[i].data, 0, samples[i].num);
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Applies the preferences: `Interface` (All, or a name), `Label` (Scale,
+ * Rates), `Units` (Bytes, Bits).
+ */
+static void _settings_fn(void *app_state, wlm_settings_t *settings_ptr)
+{
+    netgraph_state_t *state = app_state;
+    const char *iface = wlm_settings_string(settings_ptr, "Interface", "All");
+    if (0 == strcmp(iface, "All")) iface = "";
+    if (0 != strcmp(iface, state->interface)) {
+        // Another interface: Its counters start anew.
+        snprintf(state->interface, sizeof(state->interface), "%s", iface);
+        state->prev_rx_bytes = 0;
+        state->prev_tx_bytes = 0;
+        state->prev_usec = 0;
+        state->peak_rate = 0;
+        state->history_index = 0;
+        state->history_num = 0;
+        wlm_graph_values_t values = {};
+        _stats_read_fn(state, &values);
+        free(values.data);
+        state->peak_rate = 0;
+        state->history_index = 0;
+        state->history_num = 0;
+    }
+    // The graph clears its history after a change: So does the regeneration.
+    state->history_index = 0;
+    state->history_num = 0;
+    static const char *const labels[] = { "Scale", "Rates", NULL };
+    state->label_rates = 1 == wlm_settings_choice(
+        settings_ptr, "Label", labels, 0);
+    static const char *const units[] = { "Bytes", "Bits", NULL };
+    state->bits = 1 == wlm_settings_choice(settings_ptr, "Units", units, 0);
 }
 
 /* == Main program ========================================================= */
@@ -393,6 +503,7 @@ int main(const int argc, const char **argv)
         .app_state = &state,
         .state_free_fn = _state_free,
         .label_fn = _label_fn,
+        .settings_fn = _settings_fn,
     };
 
     return wlm_graph_app_run(argc, argv, &config);
