@@ -58,6 +58,8 @@ struct _wlmaker_context_menu_t {
     struct wl_listener        menu_request_close_listener;
     /** Listener for @ref wlmtk_window_events_t::request_close. */
     struct wl_listener        window_request_close_listener;
+    /** Listener for @ref wlmtk_window_events_t::set_activated. */
+    struct wl_listener        window_set_activated_listener;
 };
 
 /** An item of the context menu. */
@@ -97,6 +99,9 @@ static void _wlmaker_context_menu_handle_request_close(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmaker_context_menu_handle_window_request_close(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_context_menu_handle_window_set_activated(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmaker_context_menu_idle_destroy(void *data_ptr);
@@ -149,6 +154,10 @@ wlmaker_context_menu_t *wlmaker_context_menu_create(
         &wlmtk_window_events(context_menu_ptr->window_ptr)->request_close,
         &context_menu_ptr->window_request_close_listener,
         _wlmaker_context_menu_handle_window_request_close);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_window_events(context_menu_ptr->window_ptr)->set_activated,
+        &context_menu_ptr->window_set_activated_listener,
+        _wlmaker_context_menu_handle_window_set_activated);
     wlmtk_window_set_title(context_menu_ptr->window_ptr, title_ptr);
     // The window shows its content: Closed, until opened as right-click menu.
     wlmtk_menu_set_open(context_menu_ptr->menu_ptr, false);
@@ -190,6 +199,8 @@ void wlmaker_context_menu_destroy(wlmaker_context_menu_t *context_menu_ptr)
         }
         wlmtk_util_disconnect_listener(
             &context_menu_ptr->window_request_close_listener);
+        wlmtk_util_disconnect_listener(
+            &context_menu_ptr->window_set_activated_listener);
         wlmtk_window_destroy(context_menu_ptr->window_ptr);
         context_menu_ptr->window_ptr = NULL;
     }
@@ -292,6 +303,8 @@ void wlmaker_context_menu_open(wlmaker_context_menu_t *context_menu_ptr)
     wlmtk_menu_set_mode(context_menu_ptr->menu_ptr,
                         WLMTK_MENU_MODE_RIGHTCLICK);
     wlmtk_menu_set_open(context_menu_ptr->menu_ptr, true);
+    // Keyboard focus: The menu's keys work, and Escape closes it.
+    wlmtk_workspace_activate_window(workspace_ptr, context_menu_ptr->window_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -454,6 +467,22 @@ void _wlmaker_context_menu_handle_window_request_close(
     wlmaker_context_menu_t *context_menu_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_context_menu_t, window_request_close_listener);
     _wlmaker_context_menu_close(context_menu_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles activation of the menu's window: Keyboard focus to the menu. */
+void _wlmaker_context_menu_handle_window_set_activated(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_context_menu_t *context_menu_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_context_menu_t, window_set_activated_listener);
+    wlmtk_element_t *e = wlmtk_menu_element(context_menu_ptr->menu_ptr);
+    if (NULL != e->parent_container_ptr) {
+        wlmtk_container_set_keyboard_focus_element(
+            e->parent_container_ptr, e,
+            wlmtk_window_is_activated(context_menu_ptr->window_ptr));
+    }
 }
 
 /* ------------------------------------------------------------------------- */
