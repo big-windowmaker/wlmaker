@@ -26,6 +26,7 @@
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <linux/input-event-codes.h>
+#include <math.h>
 #include <stdlib.h>
 
 #include "base.h"
@@ -79,6 +80,10 @@ struct _wlmtk_menu_item_t {
 
     /** Whether the item is enabled. */
     bool                      enabled;
+    /** Indicator drawn at the right of the item. */
+    wlmtk_menu_item_indicator_t indicator;
+    /** Whether the indicator is checked. */
+    bool                      checked;
 
     /** State of the menu item. */
     wlmtk_menu_item_state_t   state;
@@ -105,6 +110,12 @@ static void _wlmtk_menu_item_draw_submenu_hint(
     const struct wlmtk_menu_item_style *style_ptr,
     double x,
     double y);
+static void _wlmtk_menu_item_draw_indicator(
+    cairo_t *cairo_ptr,
+    const struct wlmtk_menu_item_style *style_ptr,
+    wlmtk_menu_item_indicator_t indicator,
+    bool checked,
+    uint32_t color);
 
 static bool _wlmtk_menu_item_element_pointer_button(
     wlmtk_element_t *element_ptr,
@@ -411,6 +422,27 @@ bool wlmtk_menu_item_set_text(
         &menu_item_ptr->style_ptr->item);
 }
 
+/* ------------------------------------------------------------------------- */
+bool wlmtk_menu_item_set_indicator(
+    wlmtk_menu_item_t *menu_item_ptr,
+    wlmtk_menu_item_indicator_t indicator,
+    bool checked)
+{
+    if (menu_item_ptr->indicator == indicator &&
+        menu_item_ptr->checked == checked) return true;
+    menu_item_ptr->indicator = indicator;
+    menu_item_ptr->checked = checked;
+    return _wlmtk_menu_item_redraw(
+        menu_item_ptr,
+        &menu_item_ptr->style_ptr->item);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_menu_item_checked(wlmtk_menu_item_t *menu_item_ptr)
+{
+    return menu_item_ptr->checked;
+}
+
 /* -------------------------------------------------------------------------*/
 void wlmtk_menu_item_set_enabled(
     wlmtk_menu_item_t *menu_item_ptr,
@@ -636,6 +668,10 @@ struct wlr_buffer *_wlmtk_menu_item_create_buffer(
             style_ptr,
             style_ptr->width - style_ptr->height * 0.6,
             style_ptr->height * 0.3);
+    } else if (WLMTK_MENU_ITEM_INDICATOR_NONE != menu_item_ptr->indicator) {
+        _wlmtk_menu_item_draw_indicator(
+            cairo_ptr, style_ptr, menu_item_ptr->indicator,
+            menu_item_ptr->checked, color);
     }
 
     wlmaker_primitives_draw_text(
@@ -684,6 +720,73 @@ void _wlmtk_menu_item_draw_submenu_hint(
     cairo_line_to(cairo_ptr, x, y);
     cairo_stroke(cairo_ptr);
 
+    cairo_restore(cairo_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Draws the indicator at the right end of the item, like Window Maker does
+ * for its menu options: A sunken check box, with a check mark if checked. Or
+ * a sunken round radio button, with a dot if checked.
+ *
+ * @param cairo_ptr
+ * @param style_ptr
+ * @param indicator
+ * @param checked
+ * @param color               Color of the check mark or the dot: The text's.
+ */
+void _wlmtk_menu_item_draw_indicator(
+    cairo_t *cairo_ptr,
+    const struct wlmtk_menu_item_style *style_ptr,
+    wlmtk_menu_item_indicator_t indicator,
+    bool checked,
+    uint32_t color)
+{
+    double h = style_ptr->height;
+    double size = h * 0.5;
+    double x = style_ptr->width - h * 0.35 - size;
+    double y = (h - size) / 2.0;
+    double lw = BS_MAX(1.0, (double)style_ptr->bezel_width);
+
+    cairo_save(cairo_ptr);
+    cairo_set_line_width(cairo_ptr, lw);
+    if (WLMTK_MENU_ITEM_INDICATOR_RADIO == indicator) {
+        double cx = x + size / 2.0, cy = y + size / 2.0, r = size / 2.0;
+        // Sunken: Dark on the upper left, light on the lower right.
+        cairo_set_source_rgba(cairo_ptr, 0.0, 0.0, 0.0, 0.5);
+        cairo_arc(cairo_ptr, cx, cy, r, 0.75 * M_PI, 1.75 * M_PI);
+        cairo_stroke(cairo_ptr);
+        cairo_set_source_rgba(cairo_ptr, 1.0, 1.0, 1.0, 0.8);
+        cairo_arc(cairo_ptr, cx, cy, r, -0.25 * M_PI, 0.75 * M_PI);
+        cairo_stroke(cairo_ptr);
+        if (checked) {
+            cairo_set_source_argb8888(cairo_ptr, color);
+            cairo_arc(cairo_ptr, cx, cy, r * 0.5, 0, 2 * M_PI);
+            cairo_fill(cairo_ptr);
+        }
+    } else {
+        cairo_set_line_cap(cairo_ptr, CAIRO_LINE_CAP_SQUARE);
+        cairo_set_source_rgba(cairo_ptr, 0.0, 0.0, 0.0, 0.5);
+        cairo_move_to(cairo_ptr, x, y + size);
+        cairo_line_to(cairo_ptr, x, y);
+        cairo_line_to(cairo_ptr, x + size, y);
+        cairo_stroke(cairo_ptr);
+        cairo_set_source_rgba(cairo_ptr, 1.0, 1.0, 1.0, 0.8);
+        cairo_move_to(cairo_ptr, x + size, y);
+        cairo_line_to(cairo_ptr, x + size, y + size);
+        cairo_line_to(cairo_ptr, x, y + size);
+        cairo_stroke(cairo_ptr);
+        if (checked) {
+            cairo_set_line_cap(cairo_ptr, CAIRO_LINE_CAP_ROUND);
+            cairo_set_line_join(cairo_ptr, CAIRO_LINE_JOIN_ROUND);
+            cairo_set_line_width(cairo_ptr, lw * 1.6);
+            cairo_set_source_argb8888(cairo_ptr, color);
+            cairo_move_to(cairo_ptr, x + size * 0.2, y + size * 0.5);
+            cairo_line_to(cairo_ptr, x + size * 0.45, y + size * 0.78);
+            cairo_line_to(cairo_ptr, x + size * 0.85, y + size * 0.2);
+            cairo_stroke(cairo_ptr);
+        }
+    }
     cairo_restore(cairo_ptr);
 }
 
@@ -819,6 +922,7 @@ static void test_pointer(bs_test_t *test_ptr);
 static void test_triggered(bs_test_t *test_ptr);
 static void test_right_click(bs_test_t *test_ptr);
 static void test_submenu_highlight(bs_test_t *test_ptr);
+static void test_indicator(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_menu_item_test_cases[] = {
@@ -830,6 +934,7 @@ static const bs_test_case_t _wlmtk_menu_item_test_cases[] = {
     { 1, "triggered", test_triggered },
     { 1, "right_click", test_right_click },
     { 1, "submenu_highlight", test_submenu_highlight },
+    { 1, "indicator", test_indicator },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -1234,6 +1339,68 @@ void test_submenu_highlight(bs_test_t *test_ptr)
     // Deliberately: Do not detach submenu, must be cleaned up.
     wlmtk_util_disconnect_test_listener(&tl);
     wlmtk_menu_destroy(menu_ptr);
+    wlmtk_menu_style_ref_release(wlmtk_menu_style_to_ref(s));
+}
+
+/* ------------------------------------------------------------------------- */
+/** Counts the pixels close to `color` in the right quarter of the buffer. */
+static size_t _test_count_right(struct wlr_buffer *wlr_buffer_ptr,
+                                uint32_t color)
+{
+    bs_gfxbuf_t *g = bs_gfxbuf_from_wlr_buffer(wlr_buffer_ptr);
+    size_t n = 0;
+    for (unsigned y = 0; y < g->height; ++y) {
+        for (unsigned x = g->width * 3 / 4; x < g->width; ++x) {
+            uint32_t p = g->data_ptr[y * g->pixels_per_line + x];
+            bool close = true;
+            for (int shift = 0; shift < 24; shift += 8) {
+                int d = (int)((p >> shift) & 0xff) -
+                    (int)((color >> shift) & 0xff);
+                if (d < -0x30 || d > 0x30) close = false;
+            }
+            if (close) ++n;
+        }
+    }
+    return n;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Draws the check box and radio button indicators. */
+void test_indicator(bs_test_t *test_ptr)
+{
+    struct wlmtk_menu_style *s = wlmtk_menu_style_create();
+    *s = _test_style;
+    s->item.width = 80;
+    s->item.enabled_text_color = 0xff102030;
+    wlmtk_menu_item_t *item_ptr = wlmtk_menu_item_create(
+        wlmtk_menu_style_to_ref(s));
+    BS_TEST_VERIFY_TRUE_OR_RETURN(test_ptr, item_ptr);
+    wlmtk_menu_item_set_text(item_ptr, "Option");
+    const uint32_t c = s->item.enabled_text_color;
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 0, _test_count_right(item_ptr->enabled_wlr_buffer_ptr, c));
+
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_item_set_indicator(
+                            item_ptr, WLMTK_MENU_ITEM_INDICATOR_CHECK, false));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_item_checked(item_ptr));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 0, _test_count_right(item_ptr->enabled_wlr_buffer_ptr, c));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_item_set_indicator(
+                            item_ptr, WLMTK_MENU_ITEM_INDICATOR_CHECK, true));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_item_checked(item_ptr));
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, 0 < _test_count_right(item_ptr->enabled_wlr_buffer_ptr, c));
+
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_item_set_indicator(
+                            item_ptr, WLMTK_MENU_ITEM_INDICATOR_RADIO, true));
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, 0 < _test_count_right(item_ptr->enabled_wlr_buffer_ptr, c));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_item_set_indicator(
+                            item_ptr, WLMTK_MENU_ITEM_INDICATOR_RADIO, false));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 0, _test_count_right(item_ptr->enabled_wlr_buffer_ptr, c));
+
+    wlmtk_menu_item_destroy(item_ptr);
     wlmtk_menu_style_ref_release(wlmtk_menu_style_to_ref(s));
 }
 
