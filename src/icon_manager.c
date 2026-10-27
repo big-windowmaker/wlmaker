@@ -38,6 +38,7 @@
 
 #include "clip.h"
 #include "context_menu.h"
+#include "dockapp_prefs.h"
 #include "dockapps.h"
 #include "i18n.h"
 #include "input/cursor.h"
@@ -737,8 +738,10 @@ static void _wlmaker_toplevel_icon_menu_kill(void *ud_ptr)
 
 /* ------------------------------------------------------------------------- */
 /**
- * Opens the dock-app tile's right-click menu: Moving it within the dock (the
- * order is stored, as when dragging it), and terminating the dock-app.
+ * Opens the dock-app tile's right-click menu: The dock-app's own actions and
+ * its preferences (see @ref wlmaker_dockapp_prefs_t), moving it within the
+ * dock (the order is stored, as when dragging it), moving the Clip, and
+ * terminating the dock-app.
  *
  * @param toplevel_icon_ptr
  */
@@ -768,10 +771,26 @@ void _wlmaker_toplevel_icon_open_menu(
     wlmaker_context_menu_t *cm_ptr = wlmaker_context_menu_create(
         server_ptr, toplevel_icon_ptr,
         NULL != name_ptr ? name_ptr : wlmaker_i18n("Dock-app"));
-    if (NULL != name_ptr) free(name_ptr);
-    if (NULL == cm_ptr) return;
+    wlmaker_dockapp_prefs_t *prefs_ptr = NULL;
+    if (NULL != name_ptr) {
+        prefs_ptr = wlmaker_dockapp_prefs_load(
+            server_ptr->files_ptr, NULL, NULL, name_ptr);
+        free(name_ptr);
+    }
+    if (NULL == cm_ptr) {
+        if (NULL != prefs_ptr) wlmaker_dockapp_prefs_destroy(prefs_ptr);
+        return;
+    }
     bool rv = true;
     size_t items = 0;
+    // The dock-app's own actions, and its preferences, come first.
+    if (NULL != prefs_ptr) {
+        size_t n = wlmtk_menu_items_size(wlmaker_context_menu_menu(cm_ptr));
+        rv = wlmaker_dockapp_prefs_add_actions(prefs_ptr, server_ptr, cm_ptr) &&
+            wlmaker_dockapp_prefs_add_preferences(prefs_ptr, cm_ptr);
+        items += wlmtk_menu_items_size(wlmaker_context_menu_menu(cm_ptr)) - n;
+        wlmaker_dockapp_prefs_destroy(prefs_ptr);
+    }
     for (size_t i = 0; i < sizeof(moves) / sizeof(moves[0]); ++i) {
         if (0 == wlmaker_dockapps_delta_towards(
                 server_ptr->dockapps_ptr, tile_ptr, moves[i].direction)) {
