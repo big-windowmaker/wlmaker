@@ -101,6 +101,13 @@ typedef enum {
     WLMTK_FONT_WEIGHT_BOLD,
 } wlmtk_style_font_weight_t;
 
+/** Horizontal alignment of a text, eg. of the window title. */
+typedef enum {
+    WLMTK_STYLE_JUSTIFY_LEFT,
+    WLMTK_STYLE_JUSTIFY_CENTER,
+    WLMTK_STYLE_JUSTIFY_RIGHT,
+} wlmtk_style_justify_t;
+
 /** Style of font. */
 typedef struct {
     /** Font face family name. */
@@ -138,6 +145,8 @@ struct wlmtk_titlebar_style {
     struct wlmtk_margin_style margin;
     /** Font style for the titlebar's title. */
     wlmtk_style_font_t       font;
+    /** Alignment of the title. Optional, left by default. */
+    wlmtk_style_justify_t    justify;
 };
 
 /** Translates the font weight from toolkit into cairo enum. */

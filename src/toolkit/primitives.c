@@ -24,6 +24,39 @@
 #include <libbase/libbase.h>
 #include <stddef.h>
 
+/** Space between the title and the ends of the title bar, in pixels. */
+static const int _wlmaker_primitives_title_margin = 6;
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Computes where a title starts, for the alignment.
+ *
+ * @param text_width          Width of the title's text.
+ * @param width               Width of the title's area.
+ * @param justify
+ *
+ * @return The X position. Never left of the margin.
+ */
+static int _wlmaker_primitives_title_x(
+    double text_width,
+    unsigned width,
+    wlmtk_style_justify_t justify)
+{
+    int x = _wlmaker_primitives_title_margin;
+    switch (justify) {
+    case WLMTK_STYLE_JUSTIFY_CENTER:
+        x = ((int)width - (int)(text_width + 0.5)) / 2;
+        break;
+    case WLMTK_STYLE_JUSTIFY_RIGHT:
+        x = (int)width - (int)(text_width + 0.5) -
+            _wlmaker_primitives_title_margin;
+        break;
+    default:
+        break;
+    }
+    return BS_MAX(x, _wlmaker_primitives_title_margin);
+}
+
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -241,10 +274,41 @@ void wlmaker_primitives_draw_window_title(
 {
     wlmaker_primitives_draw_text(
         cairo_ptr,
-        6, 2 + font_style_ptr->size,
+        _wlmaker_primitives_title_margin, 2 + font_style_ptr->size,
         font_style_ptr,
         color,
         title_ptr ? title_ptr : "Unnamed");
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_primitives_draw_justified_window_title(
+    cairo_t *cairo_ptr,
+    const wlmtk_style_font_t *font_style_ptr,
+    const char *title_ptr,
+    uint32_t color,
+    unsigned width,
+    wlmtk_style_justify_t justify)
+{
+    if (NULL == title_ptr) title_ptr = "Unnamed";
+
+    cairo_text_extents_t extents = {};
+    cairo_save(cairo_ptr);
+    cairo_select_font_face(
+        cairo_ptr,
+        font_style_ptr->face,
+        CAIRO_FONT_SLANT_NORMAL,
+        wlmtk_style_font_weight_cairo_from_wlmtk(font_style_ptr->weight));
+    cairo_set_font_size(cairo_ptr, font_style_ptr->size);
+    cairo_text_extents(cairo_ptr, title_ptr, &extents);
+    cairo_restore(cairo_ptr);
+
+    wlmaker_primitives_draw_text(
+        cairo_ptr,
+        _wlmaker_primitives_title_x(extents.x_advance, width, justify),
+        2 + font_style_ptr->size,
+        font_style_ptr,
+        color,
+        title_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -280,6 +344,7 @@ static void test_minimize(bs_test_t *test_ptr);
 static void test_minimize_large(bs_test_t *test_ptr);
 static void test_text(bs_test_t *test_ptr);
 static void test_window_title(bs_test_t *test_ptr);
+static void test_title_x(bs_test_t *test_ptr);
 
 /** Unit tests. */
 /** Test cases */
@@ -293,6 +358,7 @@ static const bs_test_case_t _wlmaker_primitives_test_cases[] = {
     { 0, "minimize_large", test_minimize_large },
     { 0, "text", test_text },
     { 0, "window_title", test_window_title },
+    { 1, "title_x", test_title_x },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -457,6 +523,23 @@ void test_window_title(bs_test_t *test_ptr)
 
     cairo_destroy(cairo_ptr);
     bs_gfxbuf_destroy(gfxbuf_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests @ref _wlmaker_primitives_title_x. */
+void test_title_x(bs_test_t *test_ptr)
+{
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 6, _wlmaker_primitives_title_x(40, 100, WLMTK_STYLE_JUSTIFY_LEFT));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 30, _wlmaker_primitives_title_x(40, 100, WLMTK_STYLE_JUSTIFY_CENTER));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 54, _wlmaker_primitives_title_x(40, 100, WLMTK_STYLE_JUSTIFY_RIGHT));
+    // Too wide: Starts at the margin, like left-aligned.
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 6, _wlmaker_primitives_title_x(120, 100, WLMTK_STYLE_JUSTIFY_CENTER));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, 6, _wlmaker_primitives_title_x(120, 100, WLMTK_STYLE_JUSTIFY_RIGHT));
 }
 
 /* == End of primitives.c ================================================== */

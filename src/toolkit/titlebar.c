@@ -89,6 +89,14 @@ static bool _wlmtk_titlebar_redraw(
 
 /* == Data ================================================================= */
 
+/** Values for the title's alignment ('Justify'), like Window Maker's. */
+static const bspl_enum_desc_t _wlmtk_titlebar_justify_desc[] = {
+    BSPL_ENUM("Left", WLMTK_STYLE_JUSTIFY_LEFT),
+    BSPL_ENUM("Center", WLMTK_STYLE_JUSTIFY_CENTER),
+    BSPL_ENUM("Right", WLMTK_STYLE_JUSTIFY_RIGHT),
+    BSPL_ENUM_SENTINEL()
+};
+
 const bspl_desc_t wlmtk_titlebar_style_desc[] = {
     BSPL_DESC_CUSTOM(
         "FocussedFill", true, struct wlmtk_titlebar_style, focussed_fill,
@@ -113,6 +121,9 @@ const bspl_desc_t wlmtk_titlebar_style_desc[] = {
     BSPL_DESC_DICT(
         "Font", true, struct wlmtk_titlebar_style, font, font,
         wlmtk_style_font_desc),
+    BSPL_DESC_ENUM(
+        "Justify", false, struct wlmtk_titlebar_style, justify, justify,
+        WLMTK_STYLE_JUSTIFY_LEFT, _wlmtk_titlebar_justify_desc),
     BSPL_DESC_SENTINEL()
 };
 

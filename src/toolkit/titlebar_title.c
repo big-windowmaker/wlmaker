@@ -336,8 +336,9 @@ struct wlr_buffer *title_create_buffer(
     wlmaker_primitives_draw_bezel_at(
         cairo_ptr, 0, 0, width,
         style_ptr->height, style_ptr->bezel_width, true);
-    wlmaker_primitives_draw_window_title(
-        cairo_ptr, &style_ptr->font, title_ptr, text_color);
+    wlmaker_primitives_draw_justified_window_title(
+        cairo_ptr, &style_ptr->font, title_ptr, text_color,
+        width, style_ptr->justify);
     cairo_destroy(cairo_ptr);
 
     return wlr_buffer_ptr;
