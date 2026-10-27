@@ -199,6 +199,14 @@ struct _wlmaker_server_t {
     wlmtk_dock_t              *clip_dock_ptr;
     /** Placement of dock-apps in the clip. Set by the clip, may be NULL. */
     struct _wlmaker_dockapps_t *dockapps_ptr;
+    /** The Clip, also managing the dock-apps of the Dock. */
+    struct _wlmaker_clip_t    *clip_ptr;
+    /** Layer panel of the Dock (`wlmdock`). NULL if none. */
+    struct _wlmaker_layer_panel_t *dock_layer_panel_ptr;
+    /** Layer panel of the Clip's launchers (`wlmdock --clip`), or NULL. */
+    struct _wlmaker_layer_panel_t *clip_layer_panel_ptr;
+    /** The tile being dragged on or off the Dock or Clip, if any. */
+    struct _wlmaker_tile_drag_t *tile_drag_ptr;
     /** Visual effects of Dock and Clip: Dragged icon, ghost, balloons. */
     wlmaker_dock_fx_t         *dock_fx_ptr;
     /** Listener for @ref wlmaker_server_t::theme_changed_event. */

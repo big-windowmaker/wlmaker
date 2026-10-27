@@ -42,7 +42,11 @@
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "xdg_popup.h"
 #include "clip.h"
+#include "dock_fx.h"
+#include "dock_launchers.h"
+#include "dock_menu.h"
 #include "dock_position.h"
+#include "tile_drag.h"
 #include "input/manager.h"
 #include "server.h"
 
@@ -77,6 +81,8 @@ struct _wlmaker_layer_panel_t {
     wlmtk_element_vmt_t       orig_element_vmt;
     /** Whether this is the Dock (namespace "wlmdock"): It can be dragged. */
     bool                      is_dock;
+    /** Whether these are the Clip's launchers (namespace "wlmdock-clip"). */
+    bool                      is_clip_launchers;
     /** Whether the left button is held on the Dock: May become a drag. */
     bool                      drag_pending;
     /** Whether the Dock is being dragged to another corner. */
@@ -85,6 +91,16 @@ struct _wlmaker_layer_panel_t {
     double                    drag_start_x;
     /** Pointer position where the button was pressed, in layout coords. */
     double                    drag_start_y;
+    /** Tile under the pointer when the button was pressed. -1 for none. */
+    int                       press_index;
+    /** Where the pointer was on that tile, in tile coordinates. */
+    int                       press_tile_x;
+    /** Where the pointer was on that tile, in tile coordinates. */
+    int                       press_tile_y;
+    /** A launcher being dragged on or off the docks, or NULL. */
+    wlmaker_tile_drag_t       *tile_drag_ptr;
+    /** Listener for @ref wlmtk_element_events_t::pointer_leave. */
+    struct wl_listener        pointer_leave_listener;
 };
 
 wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
@@ -106,6 +122,24 @@ static void _wlmaker_layer_panel_element_pointer_grab_cancel(
     wlmtk_element_t *element_ptr);
 static void _wlmaker_layer_panel_end_drag(
     wlmaker_layer_panel_t *layer_panel_ptr);
+static bool _wlmaker_layer_panel_tile_at(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y,
+    int *index_ptr,
+    int *tile_x_ptr,
+    int *tile_y_ptr);
+static void _wlmaker_layer_panel_start_tile_drag(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y);
+static void _wlmaker_layer_panel_balloon(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y);
+static void _wlmaker_layer_panel_handle_pointer_leave(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 
 static bool _wlmaker_layer_panel_apply_keyboard(
     wlmaker_layer_panel_t *layer_panel_ptr,
@@ -155,6 +189,8 @@ static const wlmtk_element_vmt_t _wlmaker_layer_panel_element_vmt = {
 static const double _wlmaker_layer_panel_drag_threshold = 8;
 /** Namespace of the Dock's layer surface, as used by `wlmdock`. */
 static const char *_wlmaker_layer_panel_dock_namespace = "wlmdock";
+/** Namespace of the Clip's launchers, as used by `wlmdock --clip`. */
+static const char *_wlmaker_layer_panel_clip_namespace = "wlmdock-clip";
 
 /* == Exported methods ===================================================== */
 
@@ -179,6 +215,30 @@ wlmaker_layer_panel_t *wlmaker_layer_panel_create(
     }
 
     return panel_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_layer_panel_get_box(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    struct wlr_box *box_ptr)
+{
+    wlmtk_element_t *e = wlmtk_panel_element(&layer_panel_ptr->super_panel);
+    if (!e->visible || NULL == e->parent_container_ptr) return false;
+    *box_ptr = wlmtk_element_get_dimensions_box(e);
+    int x, y;
+    wlmtk_element_get_absolute_position(e, &x, &y);
+    box_ptr->x += x;
+    box_ptr->y += y;
+    return 0 < box_ptr->width && 0 < box_ptr->height;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_layer_panel_update_layer(wlmaker_layer_panel_t *layer_panel_ptr)
+{
+    if (NULL == layer_panel_ptr->wlr_layer_surface_v1_ptr) return;
+    _wlmaker_layer_panel_apply_layer(
+        layer_panel_ptr,
+        layer_panel_ptr->wlr_layer_surface_v1_ptr->current.layer);
 }
 
 /* == Local (static) methods =============================================== */
@@ -242,6 +302,21 @@ wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
         NULL != wlr_layer_surface_v1_ptr->namespace &&
         0 == strcmp(wlr_layer_surface_v1_ptr->namespace,
                     _wlmaker_layer_panel_dock_namespace);
+    layer_panel_ptr->is_clip_launchers =
+        NULL != wlr_layer_surface_v1_ptr->namespace &&
+        0 == strcmp(wlr_layer_surface_v1_ptr->namespace,
+                    _wlmaker_layer_panel_clip_namespace);
+    if (layer_panel_ptr->is_dock) {
+        server_ptr->dock_layer_panel_ptr = layer_panel_ptr;
+    }
+    if (layer_panel_ptr->is_clip_launchers) {
+        server_ptr->clip_layer_panel_ptr = layer_panel_ptr;
+    }
+    layer_panel_ptr->press_index = -1;
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_panel_element(&layer_panel_ptr->super_panel)->events.pointer_leave,
+        &layer_panel_ptr->pointer_leave_listener,
+        _wlmaker_layer_panel_handle_pointer_leave);
 
     wlmtk_container_add_element_atop(
         &layer_panel_ptr->super_panel.super_container,
@@ -288,6 +363,23 @@ void _wlmaker_layer_panel_destroy(wlmaker_layer_panel_t *layer_panel_ptr)
 {
     bs_log(BS_INFO, "Destroying layer panel %p with wlmtk surface %p",
            layer_panel_ptr, layer_panel_ptr->wlmtk_surface_ptr);
+    if (layer_panel_ptr->server_ptr->dock_layer_panel_ptr == layer_panel_ptr) {
+        layer_panel_ptr->server_ptr->dock_layer_panel_ptr = NULL;
+    }
+    if (layer_panel_ptr->server_ptr->clip_layer_panel_ptr == layer_panel_ptr) {
+        layer_panel_ptr->server_ptr->clip_layer_panel_ptr = NULL;
+    }
+    if (NULL != layer_panel_ptr->tile_drag_ptr &&
+        layer_panel_ptr->tile_drag_ptr ==
+        layer_panel_ptr->server_ptr->tile_drag_ptr) {
+        wlmaker_tile_drag_cancel(layer_panel_ptr->tile_drag_ptr);
+    }
+    layer_panel_ptr->tile_drag_ptr = NULL;
+    if (NULL != layer_panel_ptr->server_ptr->dock_fx_ptr) {
+        wlmaker_dock_fx_balloon_leave(
+            layer_panel_ptr->server_ptr->dock_fx_ptr, layer_panel_ptr);
+    }
+    wlmtk_util_disconnect_listener(&layer_panel_ptr->pointer_leave_listener);
 
     wlmtk_layer_t *layer_ptr = wlmtk_panel_get_layer(
         &layer_panel_ptr->super_panel);
@@ -441,6 +533,11 @@ bool _wlmaker_layer_panel_apply_layer(
         return false;
     }
 
+    // The Dock and the Clip's launchers: Their level, as set in their menu.
+    if (layer_panel_ptr->is_dock || layer_panel_ptr->is_clip_launchers) {
+        layer = wlmaker_clip_layer(layer_panel_ptr->server_ptr,
+                                   layer_panel_ptr->is_dock);
+    }
     wlmtk_layer_t *layer_ptr = wlmtk_desktop_get_layer(
         layer_panel_ptr->server_ptr->desktop_ptr, layer);
 
@@ -465,9 +562,14 @@ bool _wlmaker_layer_panel_apply_layer(
 
 /* ------------------------------------------------------------------------- */
 /**
- * Implements @ref wlmtk_element_vmt_t::pointer_button. For the Dock: Moving
- * the pointer with the left button held drags it to another corner, like on
- * Window Maker. A click (without moving) goes to the Dock, eg. to launch.
+ * Implements @ref wlmtk_element_vmt_t::pointer_button. For the Dock and the
+ * Clip's launchers (`wlmdock`), like on Window Maker:
+ *
+ * * Moving the pointer with the left button held on the Dock's main tile
+ *   drags the Dock to another corner. On a launcher, it drags the launcher
+ *   on or off the docks.
+ * * The right button opens the menu of the tile.
+ * * A click (without moving) goes to the Dock, eg. to launch.
  */
 bool _wlmaker_layer_panel_element_pointer_button(
     wlmtk_element_t *element_ptr,
@@ -477,6 +579,30 @@ bool _wlmaker_layer_panel_element_pointer_button(
         element_ptr, wlmaker_layer_panel_t,
         super_panel.super_container.super_element);
     wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+    bool docklike = layer_panel_ptr->is_dock ||
+        layer_panel_ptr->is_clip_launchers;
+
+    if (docklike && NULL != server_ptr->dock_fx_ptr) {
+        wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, NULL);
+    }
+
+    // A launcher being dragged: Dropped, when the button is released.
+    if (NULL != layer_panel_ptr->tile_drag_ptr) {
+        if (BTN_LEFT != button_event_ptr->button ||
+            WLMTK_BUTTON_UP != button_event_ptr->type) return true;
+        wlr_seat_pointer_notify_button(
+            server_ptr->wlr_seat_ptr, button_event_ptr->time_msec,
+            BTN_LEFT, WL_POINTER_BUTTON_STATE_RELEASED);
+        wlmaker_tile_drag_t *tile_drag_ptr = layer_panel_ptr->tile_drag_ptr;
+        layer_panel_ptr->tile_drag_ptr = NULL;
+        _wlmaker_layer_panel_end_drag(layer_panel_ptr);
+        if (tile_drag_ptr == server_ptr->tile_drag_ptr) {
+            struct wlr_cursor *c = wlmim_wlr_cursor(
+                server_ptr->input_manager_ptr);
+            wlmaker_tile_drag_drop(tile_drag_ptr, c->x, c->y);
+        }
+        return true;
+    }
 
     if (layer_panel_ptr->dragging) {
         if (BTN_LEFT != button_event_ptr->button ||
@@ -506,6 +632,24 @@ bool _wlmaker_layer_panel_element_pointer_button(
         return true;
     }
 
+    // The right button opens the tile's menu. Not passed to the client.
+    if (docklike && BTN_RIGHT == button_event_ptr->button) {
+        if (WLMTK_BUTTON_DOWN == button_event_ptr->type) {
+            int index;
+            if (_wlmaker_layer_panel_tile_at(
+                    layer_panel_ptr,
+                    element_ptr->last_pointer_motion_event.x,
+                    element_ptr->last_pointer_motion_event.y,
+                    &index, NULL, NULL)) {
+                // On the Dock, 0 is the main tile; launchers follow.
+                wlmaker_dock_menu_open_launcher(
+                    server_ptr, layer_panel_ptr->is_dock,
+                    layer_panel_ptr->is_dock ? index - 1 : index);
+            }
+        }
+        return true;
+    }
+
     if (layer_panel_ptr->drag_pending &&
         BTN_LEFT == button_event_ptr->button &&
         WLMTK_BUTTON_UP == button_event_ptr->type) {
@@ -515,7 +659,7 @@ bool _wlmaker_layer_panel_element_pointer_button(
     bool rv = layer_panel_ptr->orig_element_vmt.pointer_button(
         element_ptr, button_event_ptr);
 
-    if (layer_panel_ptr->is_dock &&
+    if (docklike &&
         BTN_LEFT == button_event_ptr->button &&
         WLMTK_BUTTON_DOWN == button_event_ptr->type &&
         NULL != element_ptr->parent_container_ptr &&
@@ -525,6 +669,15 @@ bool _wlmaker_layer_panel_element_pointer_button(
         layer_panel_ptr->dragging = false;
         layer_panel_ptr->drag_start_x = c->x;
         layer_panel_ptr->drag_start_y = c->y;
+        if (!_wlmaker_layer_panel_tile_at(
+                layer_panel_ptr,
+                element_ptr->last_pointer_motion_event.x,
+                element_ptr->last_pointer_motion_event.y,
+                &layer_panel_ptr->press_index,
+                &layer_panel_ptr->press_tile_x,
+                &layer_panel_ptr->press_tile_y)) {
+            layer_panel_ptr->press_index = -1;
+        }
         wlmtk_container_pointer_grab(
             element_ptr->parent_container_ptr, element_ptr);
     }
@@ -534,8 +687,9 @@ bool _wlmaker_layer_panel_element_pointer_button(
 /* ------------------------------------------------------------------------- */
 /**
  * Implements @ref wlmtk_element_vmt_t::pointer_accepts_motion. Beyond the
- * threshold with the button held, the Dock is dragged: The Dock (client)
- * loses the pointer, so the release does not launch anything.
+ * threshold with the button held, the Dock (from its main tile) or the
+ * launcher is dragged: The Dock (client) loses the pointer, so the release
+ * does not launch anything. Shows the balloons of the launchers.
  */
 bool _wlmaker_layer_panel_element_pointer_accepts_motion(
     wlmtk_element_t *element_ptr,
@@ -544,23 +698,59 @@ bool _wlmaker_layer_panel_element_pointer_accepts_motion(
     wlmaker_layer_panel_t *layer_panel_ptr = BS_CONTAINER_OF(
         element_ptr, wlmaker_layer_panel_t,
         super_panel.super_container.super_element);
+    wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+
+    if (NULL != layer_panel_ptr->tile_drag_ptr) {
+        if (layer_panel_ptr->tile_drag_ptr == server_ptr->tile_drag_ptr) {
+            struct wlr_cursor *c = wlmim_wlr_cursor(
+                server_ptr->input_manager_ptr);
+            wlmaker_tile_drag_motion(layer_panel_ptr->tile_drag_ptr,
+                                     c->x, c->y);
+        }
+        return true;
+    }
 
     if (layer_panel_ptr->drag_pending && !layer_panel_ptr->dragging) {
         struct wlr_cursor *c = wlmim_wlr_cursor(
-            layer_panel_ptr->server_ptr->input_manager_ptr);
+            server_ptr->input_manager_ptr);
         double dx = c->x - layer_panel_ptr->drag_start_x;
         double dy = c->y - layer_panel_ptr->drag_start_y;
         if (dx * dx + dy * dy >= _wlmaker_layer_panel_drag_threshold *
             _wlmaker_layer_panel_drag_threshold) {
-            layer_panel_ptr->dragging = true;
-            wlr_seat_pointer_notify_clear_focus(
-                layer_panel_ptr->server_ptr->wlr_seat_ptr);
+            bool launcher = layer_panel_ptr->is_clip_launchers ?
+                0 <= layer_panel_ptr->press_index :
+                0 < layer_panel_ptr->press_index;
+            if (launcher) {
+                _wlmaker_layer_panel_start_tile_drag(
+                    layer_panel_ptr, c->x, c->y);
+                if (NULL == layer_panel_ptr->tile_drag_ptr) {
+                    _wlmaker_layer_panel_end_drag(layer_panel_ptr);
+                }
+            } else if (layer_panel_ptr->is_dock) {
+                layer_panel_ptr->dragging = true;
+            } else {
+                _wlmaker_layer_panel_end_drag(layer_panel_ptr);
+            }
+            if (NULL != layer_panel_ptr->tile_drag_ptr ||
+                layer_panel_ptr->dragging) {
+                wlr_seat_pointer_notify_clear_focus(server_ptr->wlr_seat_ptr);
+            }
         }
     }
-    if (layer_panel_ptr->dragging) return true;
+    if (layer_panel_ptr->dragging ||
+        NULL != layer_panel_ptr->tile_drag_ptr) return true;
 
-    return layer_panel_ptr->orig_element_vmt.pointer_accepts_motion(
+    bool rv = layer_panel_ptr->orig_element_vmt.pointer_accepts_motion(
         element_ptr, motion_event_ptr);
+    if (layer_panel_ptr->is_dock || layer_panel_ptr->is_clip_launchers) {
+        wlmaker_clip_dock_hovered(server_ptr, layer_panel_ptr->is_dock);
+    }
+    if ((layer_panel_ptr->is_dock || layer_panel_ptr->is_clip_launchers) &&
+        !layer_panel_ptr->drag_pending) {
+        _wlmaker_layer_panel_balloon(
+            layer_panel_ptr, motion_event_ptr->x, motion_event_ptr->y);
+    }
+    return rv;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -573,7 +763,170 @@ void _wlmaker_layer_panel_element_pointer_grab_cancel(
         super_panel.super_container.super_element);
     layer_panel_ptr->drag_pending = false;
     layer_panel_ptr->dragging = false;
+    if (NULL != layer_panel_ptr->tile_drag_ptr &&
+        layer_panel_ptr->tile_drag_ptr ==
+        layer_panel_ptr->server_ptr->tile_drag_ptr) {
+        wlmaker_tile_drag_cancel(layer_panel_ptr->tile_drag_ptr);
+    }
+    layer_panel_ptr->tile_drag_ptr = NULL;
     layer_panel_ptr->orig_element_vmt.pointer_grab_cancel(element_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Finds the tile at `x`, `y` (panel coordinates) of the Dock or the Clip's
+ * launchers, counted from the anchor: On the Dock, 0 is its main tile.
+ */
+bool _wlmaker_layer_panel_tile_at(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y,
+    int *index_ptr,
+    int *tile_x_ptr,
+    int *tile_y_ptr)
+{
+    wlmaker_dock_column_t column;
+    if (!wlmaker_clip_column(layer_panel_ptr->server_ptr,
+                             layer_panel_ptr->is_dock, &column)) return false;
+    struct wlr_box b = wlmtk_element_get_dimensions_box(
+        wlmtk_panel_element(&layer_panel_ptr->super_panel));
+    int index = wlmaker_dock_tile_index_at(
+        column.place, b.width, b.height, x - b.x, y - b.y, column.pitch);
+    if (0 > index) return false;
+    *index_ptr = index;
+    // Position within the tile: Its offset from the anchor.
+    int d = index * column.pitch;
+    int tx = x - b.x, ty = y - b.y;
+    switch (column.place.anchor) {
+    case WLR_EDGE_TOP: ty -= d; break;
+    case WLR_EDGE_BOTTOM: ty -= b.height - d - column.size; break;
+    case WLR_EDGE_LEFT: tx -= d; break;
+    case WLR_EDGE_RIGHT: tx -= b.width - d - column.size; break;
+    default: break;
+    }
+    if (NULL != tile_x_ptr) *tile_x_ptr = tx;
+    if (NULL != tile_y_ptr) *tile_y_ptr = ty;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Starts dragging the launcher the button was pressed on. */
+void _wlmaker_layer_panel_start_tile_drag(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y)
+{
+    wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+    bool dock = layer_panel_ptr->is_dock;
+    int index = layer_panel_ptr->press_index - (dock ? 1 : 0);
+    if (0 > index) return;
+    bspl_array_t *a = wlmaker_dock_launchers_load(
+        server_ptr, dock ? "Dock" : "Clip");
+    if (NULL == a) return;
+    bspl_dict_t *dict_ptr = NULL;
+    if ((size_t)index < bspl_array_size(a)) {
+        dict_ptr = bspl_dict_from_object(bspl_array_at(a, index));
+    }
+    if (NULL == dict_ptr) {
+        bspl_array_unref(a);
+        return;
+    }
+    char *icon_ptr = wlmaker_dock_launcher_icon_path(
+        server_ptr->files_ptr, wlmaker_dock_launcher_value(dict_ptr, "Icon"));
+    struct wlr_buffer *image_ptr = wlmaker_dock_tile_buffer(
+        &server_ptr->style_ptr->tile, icon_ptr, NULL);
+    if (NULL != icon_ptr) free(icon_ptr);
+    if (NULL == image_ptr) {
+        bspl_array_unref(a);
+        return;
+    }
+    wlmaker_tile_drag_source_t source = {
+        .kind = WLMAKER_TILE_DRAG_LAUNCHER,
+        .from_dock = dock,
+        .index = index,
+        .image_ptr = image_ptr,
+        .grab_x = layer_panel_ptr->press_tile_x,
+        .grab_y = layer_panel_ptr->press_tile_y,
+        .running = 0 < wlmaker_dock_app_windows(
+            server_ptr, wlmaker_dock_launcher_value(dict_ptr, "AppID"), NULL),
+        .locked = wlmaker_dock_launcher_flag(dict_ptr, "Lock") };
+    layer_panel_ptr->tile_drag_ptr = wlmaker_tile_drag_start(
+        server_ptr, &source, x, y);
+    wlr_buffer_drop(image_ptr);
+    bspl_array_unref(a);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Shows the balloon of the launcher at `x`, `y` (panel coordinates), like
+ * Window Maker's for docked icons. None for the Dock's main tile.
+ */
+void _wlmaker_layer_panel_balloon(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y)
+{
+    wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+    if (NULL == server_ptr->dock_fx_ptr) return;
+    int index, tx, ty;
+    bool dock = layer_panel_ptr->is_dock;
+    if (!_wlmaker_layer_panel_tile_at(layer_panel_ptr, x, y,
+                                      &index, &tx, &ty) ||
+        (dock && 0 == index)) {
+        wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, layer_panel_ptr);
+        return;
+    }
+    if (dock) --index;
+    bspl_array_t *a = wlmaker_dock_launchers_load(
+        server_ptr, dock ? "Dock" : "Clip");
+    char *text_ptr = NULL;
+    if (NULL != a && (size_t)index < bspl_array_size(a)) {
+        text_ptr = wlmaker_dock_launcher_balloon_text(
+            bspl_dict_from_object(bspl_array_at(a, index)));
+    }
+    if (NULL != a) bspl_array_unref(a);
+
+    struct wlr_box box;
+    struct wlr_box area = {};
+    if (NULL != text_ptr &&
+        wlmaker_layer_panel_get_box(layer_panel_ptr, &box)) {
+        int size = server_ptr->style_ptr->tile.size;
+        box = (struct wlr_box){
+            .x = box.x + (int)x - tx - (int)wlmtk_element_get_dimensions_box(
+                wlmtk_panel_element(&layer_panel_ptr->super_panel)).x,
+            .y = box.y + (int)y - ty - (int)wlmtk_element_get_dimensions_box(
+                wlmtk_panel_element(&layer_panel_ptr->super_panel)).y,
+            .width = size, .height = size - 2 };
+        struct wlr_output *wlr_output_ptr = wlr_output_layout_output_at(
+            server_ptr->wlr_output_layout_ptr,
+            box.x + box.width / 2, box.y + box.height / 2);
+        if (NULL != wlr_output_ptr) {
+            wlr_output_layout_get_box(server_ptr->wlr_output_layout_ptr,
+                                      wlr_output_ptr, &area);
+        }
+        wlmaker_dock_fx_balloon_enter(server_ptr->dock_fx_ptr,
+                                      layer_panel_ptr, text_ptr, &box, &area);
+    } else {
+        wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, layer_panel_ptr);
+    }
+    if (NULL != text_ptr) free(text_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles @ref wlmtk_element_events_t::pointer_leave: Hides the balloon. */
+void _wlmaker_layer_panel_handle_pointer_leave(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_layer_panel_t *layer_panel_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_layer_panel_t, pointer_leave_listener);
+    if (layer_panel_ptr->is_dock || layer_panel_ptr->is_clip_launchers) {
+        wlmaker_clip_dock_left(layer_panel_ptr->server_ptr,
+                               layer_panel_ptr->is_dock);
+    }
+    if (NULL == layer_panel_ptr->server_ptr->dock_fx_ptr) return;
+    wlmaker_dock_fx_balloon_leave(
+        layer_panel_ptr->server_ptr->dock_fx_ptr, layer_panel_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -676,6 +1029,11 @@ void _wlmaker_layer_panel_handle_surface_commit(
         layer_panel_ptr,
         state_ptr->keyboard_interactive,
         state_ptr->layer);
+
+    // The Dock's dock-apps follow the Dock.
+    if (layer_panel_ptr->is_dock) {
+        wlmaker_clip_dock_surface_changed(layer_panel_ptr->server_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -700,6 +1058,9 @@ void _wlmaker_layer_panel_handle_surface_map(
         &layer_panel_ptr->super_panel);
     if (NULL != layer_output_ptr) {
         wlmtk_layer_output_reconfigure(layer_output_ptr);
+    }
+    if (layer_panel_ptr->is_dock) {
+        wlmaker_clip_dock_surface_changed(layer_panel_ptr->server_ptr);
     }
 }
 

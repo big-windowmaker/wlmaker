@@ -88,6 +88,21 @@ bool wlmaker_dockapp_prefs_add_preferences(
     wlmaker_context_menu_t *context_menu_ptr);
 
 /**
+ * Adds the dock-app's preferences, as @ref
+ * wlmaker_dockapp_prefs_add_preferences does, as a submenu titled
+ * `title_ptr` (eg. Window Maker's "Settings...").
+ *
+ * @return true on success.
+ */
+bool wlmaker_dockapp_prefs_add_preferences_titled(
+    wlmaker_dockapp_prefs_t *prefs_ptr,
+    wlmaker_context_menu_t *context_menu_ptr,
+    const char *title_ptr);
+
+/** @return Whether the dock-app has preferences. */
+bool wlmaker_dockapp_prefs_has_preferences(wlmaker_dockapp_prefs_t *prefs_ptr);
+
+/**
  * @return The current value of preference `key_ptr`: As stored, or its
  *     default. NULL if unknown.
  */
