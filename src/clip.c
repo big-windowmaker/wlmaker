@@ -2375,7 +2375,14 @@ bool _wlmaker_clip_pointer_on(wlmaker_clip_t *clip_ptr, bool dock)
     case WLR_EDGE_RIGHT: box.x -= length; box.width += length; break;
     default: break;
     }
-    return wlr_box_contains_point(&box, c->x, c->y);
+    if (wlr_box_contains_point(&box, c->x, c->y)) return true;
+    // An open drawer is part of the Dock.
+    for (size_t i = 0; dock && i < clip_ptr->drawers; ++i) {
+        struct wlr_box row;
+        if (wlmaker_drawer_row_box(clip_ptr->drawers_ptr[i], &row) &&
+            wlr_box_contains_point(&row, c->x, c->y)) return true;
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2389,9 +2396,22 @@ static void _wlmaker_clip_level_timer(wlmaker_clip_t *clip_ptr, bool dock)
     }
     if (WLMAKER_DOCK_LEVEL_AUTO_RAISE_LOWER != clip_ptr->level[i]) return;
     bool on = _wlmaker_clip_pointer_on(clip_ptr, dock);
-    if (on == clip_ptr->raised[i]) return;
-    clip_ptr->raised[i] = on;
-    _wlmaker_clip_apply_level(clip_ptr, dock);
+    if (on != clip_ptr->raised[i]) {
+        clip_ptr->raised[i] = on;
+        _wlmaker_clip_apply_level(clip_ptr, dock);
+    }
+    // Raised: Moving the surfaces to the other layer may lose the pointer's
+    // "leave". Checks again, to lower it once the pointer is away.
+    if (clip_ptr->raised[i]) {
+        clip_ptr->level_timer_ptr[i] = wl_event_loop_add_timer(
+            wl_display_get_event_loop(clip_ptr->server_ptr->wl_display_ptr),
+            dock ? _wlmaker_clip_handle_level_timer_dock :
+            _wlmaker_clip_handle_level_timer_clip,
+            clip_ptr);
+        if (NULL != clip_ptr->level_timer_ptr[i]) {
+            wl_event_source_timer_update(clip_ptr->level_timer_ptr[i], 1000);
+        }
+    }
 }
 
 /** Timer callback: Auto-raise or lower the Clip. */
