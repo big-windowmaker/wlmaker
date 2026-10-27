@@ -1,0 +1,185 @@
+// Preferences of the dock-apps, offered in their right-click menus.
+//
+// For each dock-app (by the name of its executable): `Actions`, items at
+// the top of the menu that run a command, and `Preferences`, a submenu with
+// options. wlmaker stores the chosen values in the dock-app's preferences
+// file, ${XDG_CONFIG_HOME}/wlmaker/<dock-app>.plist (eg.
+// ~/.config/wlmaker/wlmcalclock.plist). The dock-app applies them right away.
+// The file can also be edited by hand, eg. for a command of one's own.
+//
+// An action's `Command` runs through `/bin/sh -c`. ${Key} is replaced by the
+// value of the preference `Key`. An action whose command ends up empty is
+// left out.
+//
+// A preference has a `Key`, a `Title`, and a `Default`. With `Type = Bool`
+// it is an item with a check box. Otherwise, it is a submenu offering the
+// `Choices`: A list of (Value, Title) pairs, or the name of a list in the
+// `Choices` dict below. `ChoicesFromDirectory` adds the names of the entries
+// in a directory, except for those listed in `Exclude`.
+//
+// Titles are in English. wlmaker translates them, where it can.
+{
+  Choices = {
+    Theme = (
+      (Default, "Default Colors"),
+      (Green, "Green LCD (Classic)"),
+      (Amber, "Amber"),
+      (Blue, "Blue"),
+      (NeXT, "NeXT Grey"),
+      (HighContrast, "High Contrast")
+    );
+    Interval = (
+      ("0.5", "Every Half Second"),
+      ("1", "Every Second"),
+      ("2", "Every 2 Seconds"),
+      ("5", "Every 5 Seconds")
+    );
+    GraphStyle = (
+      (Filled, "Filled"),
+      (Line, "Line Only")
+    );
+    MonitorCommand = (
+      ("", "Nothing"),
+      ("xfce4-taskmanager", "Task Manager"),
+      ("gnome-system-monitor", "System Monitor"),
+      ("xdg-terminal-exec htop", "htop in a Terminal")
+    );
+  };
+
+  Dockapps = {
+    wlmcalclock = {
+      Actions = (
+        { Title = "Open Calendar"; Command = "${CalendarCommand}"; }
+      );
+      Preferences = (
+        { Key = Theme; Title = "Theme"; Choices = Theme; Default = Default; },
+        { Key = ClockStyle; Title = "Clock Style"; Default = Digital;
+          Choices = ((Digital, "Digital"), (Analog, "Analog")); },
+        { Key = TwelveHour; Title = "12-Hour Clock (AM/PM)"; Type = Bool;
+          Default = No; },
+        { Key = Seconds; Title = "Show Seconds"; Type = Bool; Default = No; },
+        { Key = BlinkColon; Title = "Blinking Colon"; Type = Bool;
+          Default = No; },
+        { Key = CalendarStyle; Title = "Calendar Style"; Default = Paper;
+          Choices = ((Paper, "Paper Sheet"), (LCD, "Digital Display")); },
+        { Key = ShowYear; Title = "Show the Year"; Type = Bool;
+          Default = No; },
+        { Key = TimeZone; Title = "Time Zone"; Default = Local;
+          Choices = (
+            (Local, "Local Time"),
+            ("America/Sao_Paulo", "Brasília"),
+            ("America/Manaus", "Manaus"),
+            ("America/Rio_Branco", "Rio Branco"),
+            ("America/Noronha", "Fernando de Noronha"),
+            (UTC, "UTC"),
+            ("Europe/Lisbon", "Lisbon"),
+            ("Europe/London", "London"),
+            ("America/New_York", "New York"),
+            ("Asia/Tokyo", "Tokyo")
+          ); },
+        { Key = CalendarCommand; Title = "On Click"; Default = "";
+          Choices = (
+            ("", "Nothing"),
+            ("gnome-calendar", "GNOME Calendar"),
+            ("thunderbird -calendar", "Thunderbird Calendar"),
+            ("xdg-terminal-exec sh -c 'cal -3; read x'", "Calendar in a Terminal")
+          ); }
+      );
+    };
+
+    wlmcpugraph = {
+      Actions = (
+        { Title = "Open Task Manager"; Command = "${ClickCommand}"; }
+      );
+      Preferences = (
+        { Key = Theme; Title = "Theme"; Choices = Theme; Default = Default; },
+        { Key = Cores; Title = "Show"; Default = PerCore;
+          Choices = ((PerCore, "Each Core"), (Total, "Total Usage")); },
+        { Key = GraphStyle; Title = "Graph Style"; Choices = GraphStyle;
+          Default = Filled; },
+        { Key = ShowLabel; Title = "Show Percentage"; Type = Bool;
+          Default = No; },
+        { Key = Interval; Title = "Update"; Choices = Interval; Default = "1"; },
+        { Key = ClickCommand; Title = "On Click"; Choices = MonitorCommand;
+          Default = ""; }
+      );
+    };
+
+    wlmmemgraph = {
+      Actions = (
+        { Title = "Open Task Manager"; Command = "${ClickCommand}"; }
+      );
+      Preferences = (
+        { Key = Theme; Title = "Theme"; Choices = Theme; Default = Default; },
+        { Key = GraphStyle; Title = "Graph Style"; Choices = GraphStyle;
+          Default = Filled; },
+        { Key = ShowLabel; Title = "Show Usage"; Type = Bool; Default = Yes; },
+        { Key = Units; Title = "Units"; Default = Size;
+          Choices = ((Size, "MB / GB"), (Percent, "Percent")); },
+        { Key = ShowSwap; Title = "Show Swap"; Type = Bool; Default = No; },
+        { Key = Interval; Title = "Update"; Choices = Interval; Default = "1"; },
+        { Key = ClickCommand; Title = "On Click"; Choices = MonitorCommand;
+          Default = ""; }
+      );
+    };
+
+    wlmnetgraph = {
+      Actions = (
+        { Title = "Open Network Settings"; Command = "${ClickCommand}"; }
+      );
+      Preferences = (
+        { Key = Theme; Title = "Theme"; Choices = Theme; Default = Default; },
+        { Key = Interface; Title = "Interface"; Default = All;
+          Choices = ((All, "All Interfaces"));
+          ChoicesFromDirectory = "/sys/class/net"; Exclude = (lo); },
+        { Key = GraphStyle; Title = "Graph Style"; Choices = GraphStyle;
+          Default = Filled; },
+        { Key = ShowLabel; Title = "Show Text"; Type = Bool; Default = Yes; },
+        { Key = Label; Title = "Text"; Default = Scale;
+          Choices = ((Scale, "Graph Scale"), (Rates, "Download / Upload")); },
+        { Key = Units; Title = "Units"; Default = Bytes;
+          Choices = ((Bytes, "Bytes per Second"), (Bits, "Bits per Second")); },
+        { Key = Interval; Title = "Update"; Choices = Interval; Default = "1"; },
+        { Key = ClickCommand; Title = "On Click"; Default = "";
+          Choices = (
+            ("", "Nothing"),
+            ("nm-connection-editor", "Network Connections"),
+            ("big-network-info", "Network Information"),
+            ("xdg-terminal-exec nmtui", "nmtui in a Terminal")
+          ); }
+      );
+    };
+
+    wlmmixer = {
+      Actions = (
+        { Title = "Mute / Unmute"; Command = "pactl set-sink-mute @DEFAULT_SINK@ toggle"; },
+        { Title = "Open Volume Control"; Command = "${MixerCommand}"; }
+      );
+      Preferences = (
+        { Key = Theme; Title = "Theme"; Choices = Theme; Default = Default; },
+        { Key = ShowPercent; Title = "Show Percentage"; Type = Bool;
+          Default = Yes; },
+        { Key = ClickMutes; Title = "Click Mutes"; Type = Bool; Default = Yes; },
+        { Key = ScrollVolume; Title = "Wheel Changes Volume"; Type = Bool;
+          Default = Yes; },
+        { Key = Step; Title = "Volume Step"; Default = "5";
+          Choices = (("1", "1 %"), ("2", "2 %"), ("5", "5 %"), ("10", "10 %")); },
+        { Key = MaxVolume; Title = "Maximum Volume"; Default = "100";
+          Choices = (("100", "100 %"), ("125", "125 %"), ("150", "150 %")); },
+        { Key = MixerCommand; Title = "Volume Control"; Default = "pavucontrol";
+          Choices = (
+            ("", "Nothing"),
+            (pavucontrol, "PulseAudio Volume Control"),
+            ("pavucontrol-qt", "PulseAudio Volume Control (Qt)"),
+            (pwvucontrol, "PipeWire Volume Control")
+          ); }
+      );
+    };
+
+    wlmclock = {
+      Preferences = (
+        { Key = Theme; Title = "Theme"; Choices = Theme; Default = Default; }
+      );
+    };
+  };
+}

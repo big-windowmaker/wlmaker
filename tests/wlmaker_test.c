@@ -29,6 +29,7 @@
 #include "context_menu.h"
 #include "corner.h"
 #include "dock_position.h"
+#include "dockapp_prefs.h"
 #include "i18n.h"
 #include "dockapps.h"
 #include "layer_panel.h"
@@ -62,6 +63,7 @@ int main(int argc, const char **argv)
         &wlmaker_context_menu_test_set,
         &wlmaker_corner_test_set,
         &wlmaker_dock_position_test_set,
+        &wlmaker_dockapp_prefs_test_set,
         &wlmaker_i18n_test_set,
         &wlmaker_dockapps_test_set,
         &wlmaker_layer_panel_test_set,
