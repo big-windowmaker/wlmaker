@@ -127,6 +127,8 @@ struct _wlmaker_toplevel_icon_t {
     bool                      lifted;
     /** Listener for @ref wlmtk_element_events_t::pointer_leave. */
     struct wl_listener        pointer_leave_listener;
+    /** Whether the balloon is shown, or pending, for the icon. */
+    bool                      balloon_entered;
 };
 
 static wlmaker_icon_manager_t *icon_manager_from_resource(
@@ -965,6 +967,7 @@ bool _wlmaker_toplevel_icon_element_pointer_button(
     if (NULL != server_ptr->dock_fx_ptr) {
         wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, NULL);
     }
+    toplevel_icon_ptr->balloon_entered = false;
 
     if (toplevel_icon_ptr->dragging) {
         if (BTN_LEFT == button_event_ptr->button &&
@@ -1101,8 +1104,11 @@ void _wlmaker_toplevel_icon_balloon(
         motion_event_ptr->y >= box.y + box.height ||
         NULL != server_ptr->tile_drag_ptr) {
         wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, toplevel_icon_ptr);
+        toplevel_icon_ptr->balloon_entered = false;
         return;
     }
+    if (toplevel_icon_ptr->balloon_entered) return;
+    toplevel_icon_ptr->balloon_entered = true;
     int x, y;
     wlmtk_element_get_absolute_position(element_ptr, &x, &y);
     box.x += x;
@@ -1133,6 +1139,7 @@ void _wlmaker_toplevel_icon_handle_pointer_leave(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_toplevel_icon_t, pointer_leave_listener);
     wlmaker_server_t *server_ptr = toplevel_icon_ptr->server_ptr;
+    toplevel_icon_ptr->balloon_entered = false;
     if (NULL == server_ptr || NULL == server_ptr->dock_fx_ptr) return;
     wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, toplevel_icon_ptr);
     wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(
