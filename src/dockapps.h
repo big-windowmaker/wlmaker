@@ -171,6 +171,11 @@ int wlmaker_dockapps_index(
     wlmaker_dockapps_t *dockapps_ptr,
     wlmtk_tile_t *tile_ptr);
 
+/** @return Tile of the dock-app at `index` from the anchor, or NULL. */
+wlmtk_tile_t *wlmaker_dockapps_tile_at(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t index);
+
 /** @return Name of the dock-app of `tile_ptr`, or NULL. */
 const char *wlmaker_dockapps_name(
     wlmaker_dockapps_t *dockapps_ptr,
