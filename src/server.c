@@ -58,6 +58,9 @@ static const char             *seat_name_ptr = "seat0";
 static void _wlmaker_server_unclaimed_button_event_handler(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static void _wlmaker_server_handle_dock_fx_theme_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 static void _wlmaker_server_handle_input_activity(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -203,6 +206,21 @@ wlmaker_server_t *wlmaker_server_create(
         &wlmtk_root_events(server_ptr->root_ptr)->unclaimed_button_event,
         &server_ptr->unclaimed_button_event_listener,
         _wlmaker_server_unclaimed_button_event_handler);
+
+    // Effects of Dock and Clip: Above the desktop.
+    server_ptr->dock_fx_ptr = wlmaker_dock_fx_create(
+        &server_ptr->wlr_scene_ptr->tree,
+        wl_display_get_event_loop(server_ptr->wl_display_ptr));
+    if (NULL == server_ptr->dock_fx_ptr) {
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
+    wlmaker_dock_fx_set_balloon_style(
+        server_ptr->dock_fx_ptr, &style_ptr->balloon);
+    wlmtk_util_connect_listener_signal(
+        &server_ptr->theme_changed_event,
+        &server_ptr->dock_fx_theme_changed_listener,
+        _wlmaker_server_handle_dock_fx_theme_changed);
 
     server_ptr->input_manager_ptr = wlmim_input_manager_create(
         server_ptr->wl_display_ptr,
@@ -571,6 +589,13 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
         server_ptr->input_manager_ptr = NULL;
     }
 
+    if (NULL != server_ptr->dock_fx_ptr) {
+        wlmtk_util_disconnect_listener(
+            &server_ptr->dock_fx_theme_changed_listener);
+        wlmaker_dock_fx_destroy(server_ptr->dock_fx_ptr);
+        server_ptr->dock_fx_ptr = NULL;
+    }
+
     if (NULL != server_ptr->root_ptr) {
         wlmtk_util_disconnect_listener(
             &server_ptr->unclaimed_button_event_listener);
@@ -644,6 +669,19 @@ void _wlmaker_server_unclaimed_button_event_handler(
         wlmaker_root_menu_open(server_ptr->root_menu_ptr,
                                WLMTK_MENU_MODE_RIGHTCLICK);
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Applies the new theme's balloon colors. */
+void _wlmaker_server_handle_dock_fx_theme_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_server_t *server_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_server_t, dock_fx_theme_changed_listener);
+    wlmaker_config_style_t *style_ptr = data_ptr;
+    wlmaker_dock_fx_set_balloon_style(
+        server_ptr->dock_fx_ptr, &style_ptr->balloon);
 }
 
 /* ------------------------------------------------------------------------- */

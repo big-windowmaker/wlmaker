@@ -43,6 +43,7 @@ typedef struct _wlmaker_server_t wlmaker_server_t;
 #include "backend/backend.h"
 #include "config.h"
 #include "corner.h"  // IWYU pragma: keep
+#include "dock_fx.h"  // IWYU pragma: keep
 #include "cursor.h"  // IWYU pragma: keep
 #include "icon_manager.h"  // IWYU pragma: keep
 #include "idle.h"  // IWYU pragma: keep
@@ -198,6 +199,10 @@ struct _wlmaker_server_t {
     wlmtk_dock_t              *clip_dock_ptr;
     /** Placement of dock-apps in the clip. Set by the clip, may be NULL. */
     struct _wlmaker_dockapps_t *dockapps_ptr;
+    /** Visual effects of Dock and Clip: Dragged icon, ghost, balloons. */
+    wlmaker_dock_fx_t         *dock_fx_ptr;
+    /** Listener for @ref wlmaker_server_t::theme_changed_event. */
+    struct wl_listener        dock_fx_theme_changed_listener;
 
     /** Root menu, when active. NULL when not invoked. */
     wlmaker_root_menu_t       *root_menu_ptr;

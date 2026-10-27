@@ -112,6 +112,9 @@ const bspl_desc_t wlmaker_config_style_desc[] = {
     BSPL_DESC_DICT(
         "Cursor", true, wlmaker_config_style_t, cursor, cursor,
         wlmim_cursor_style_desc),
+    BSPL_DESC_DICT(
+        "Balloon", false, wlmaker_config_style_t, balloon, balloon,
+        wlmaker_dock_fx_balloon_style_desc),
     BSPL_DESC_SENTINEL()
 };
 

@@ -33,6 +33,7 @@ set(public_header_files
   config.h
   context_menu.h
   corner.h
+  dock_fx.h
   dock_position.h
   dockapp_prefs.h
   i18n.h
@@ -63,6 +64,7 @@ target_sources(wlmaker_lib PRIVATE
   config.c
   context_menu.c
   corner.c
+  dock_fx.c
   dock_position.c
   dockapp_prefs.c
   i18n.c
