@@ -134,6 +134,92 @@ int wlmaker_dockapps_delta_towards(
  */
 char *wlmaker_dockapps_client_name(struct wl_client *wl_client_ptr);
 
+/**
+ * Creates the dock-apps placement, as @ref wlmaker_dockapps_create, storing
+ * the order as `key_ptr` of the state file (instead of "Order"). Several
+ * placements can share the state file, each with its own key.
+ *
+ * @param dock_ptr
+ * @param order_array_ptr
+ * @param state_fname_ptr
+ * @param key_ptr
+ *
+ * @return The placement, or NULL on error.
+ */
+wlmaker_dockapps_t *wlmaker_dockapps_create_with_key(
+    wlmtk_dock_t *dock_ptr,
+    bspl_array_t *order_array_ptr,
+    const char *state_fname_ptr,
+    const char *key_ptr);
+
+/** @return The dock holding the dock-apps. */
+wlmtk_dock_t *wlmaker_dockapps_dock(wlmaker_dockapps_t *dockapps_ptr);
+
+/** @return Whether `name_ptr` is in the order of this placement. */
+bool wlmaker_dockapps_has_name(
+    wlmaker_dockapps_t *dockapps_ptr,
+    const char *name_ptr);
+
+/** @return Number of placed dock-apps. */
+size_t wlmaker_dockapps_size(wlmaker_dockapps_t *dockapps_ptr);
+
+/**
+ * @return Index of `tile_ptr` among the placed dock-apps, counted from the
+ *     anchor; or -1 if it is not placed here.
+ */
+int wlmaker_dockapps_index(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr);
+
+/** @return Name of the dock-app of `tile_ptr`, or NULL. */
+const char *wlmaker_dockapps_name(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr);
+
+/**
+ * Places a dock-app at `index` (counted from the anchor, among the placed
+ * dock-apps), and stores it in the order. Eg. when dragged here from
+ * another dock.
+ *
+ * @return true on success.
+ */
+bool wlmaker_dockapps_insert(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    const char *name_ptr,
+    size_t index);
+
+/**
+ * Removes the dock-app of `tile_ptr`, and its name from the stored order:
+ * It is no longer placed here, eg. when dragged to another dock.
+ */
+void wlmaker_dockapps_detach(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr);
+
+/** Moves the dock-app of `tile_ptr` to `index`. Stores the order. */
+void wlmaker_dockapps_move_to(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t index);
+
+/**
+ * Marks dock-app `name_ptr` as removed (or not) in the `Removed` array of
+ * the dock-apps state file `fname_ptr`: Removed from the docks by the user,
+ * it is not to be started with the session again.
+ *
+ * @return true on success.
+ */
+bool wlmaker_dockapps_set_removed(
+    const char *fname_ptr,
+    const char *name_ptr,
+    bool removed);
+
+/** @return Whether `name_ptr` is in the `Removed` array of `fname_ptr`. */
+bool wlmaker_dockapps_is_removed(
+    const char *fname_ptr,
+    const char *name_ptr);
+
 /** Unit test cases. */
 extern const bs_test_set_t wlmaker_dockapps_test_set;
 
