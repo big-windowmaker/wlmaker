@@ -34,6 +34,7 @@ extern "C" {
 
 /** Forward declaration for wlroots layer surface. */
 struct wlr_layer_surface_v1;
+struct wlr_surface;
 
 /**
  * Creates a layer panel for the given layer surface.
@@ -68,6 +69,10 @@ bool wlmaker_layer_panel_get_box(
  * launchers, as their level ("Dock position") says. Else, as requested.
  */
 void wlmaker_layer_panel_update_layer(wlmaker_layer_panel_t *layer_panel_ptr);
+
+/** @return The panel's surface. */
+struct wlr_surface *wlmaker_layer_panel_wlr_surface(
+    wlmaker_layer_panel_t *layer_panel_ptr);
 
 /** Unit test set of layer panel. */
 extern const bs_test_set_t wlmaker_layer_panel_test_set;

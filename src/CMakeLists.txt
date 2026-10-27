@@ -34,6 +34,7 @@ set(public_header_files
   context_menu.h
   corner.h
   dialog.h
+  dnd.h
   drawer.h
   dock_fx.h
   dock_launchers.h
@@ -70,6 +71,7 @@ target_sources(wlmaker_lib PRIVATE
   context_menu.c
   corner.c
   dialog.c
+  dnd.c
   drawer.c
   dock_fx.c
   dock_launchers.c
