@@ -104,6 +104,11 @@ struct wlmcl_client_events {
      * struct wl_surface *.
      */
     struct wl_signal          pointer_leave;
+    /**
+     * The pointer moved over one of the client's surfaces. Provides struct
+     * @ref wlmcl_client_pointer_motion_event *.
+     */
+    struct wl_signal          pointer_motion;
 };
 
 /** Event argument for @ref wlmcl_client_events::pointer_button. */
@@ -114,6 +119,20 @@ struct wlmcl_client_pointer_button_event {
     uint32_t                  button;
     /** Whether the button was pressed (true) or released. */
     bool                      pressed;
+    /** Position of the pointer on the surface, in surface coordinates. */
+    double                    x;
+    /** Position of the pointer on the surface, in surface coordinates. */
+    double                    y;
+};
+
+/** Event argument for @ref wlmcl_client_events::pointer_motion. */
+struct wlmcl_client_pointer_motion_event {
+    /** The surface that has pointer focus. */
+    struct wl_surface         *wl_surface_ptr;
+    /** Position of the pointer on the surface, in surface coordinates. */
+    double                    x;
+    /** Position of the pointer on the surface, in surface coordinates. */
+    double                    y;
 };
 
 /** Event argument for @ref wlmcl_client_events::pointer_axis. */
