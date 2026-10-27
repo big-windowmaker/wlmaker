@@ -33,6 +33,7 @@
 #include "dockapps.h"
 #include "layer_panel.h"
 #include "lock_mgr.h"
+#include "menu_scroll.h"
 #include "root_menu.h"
 #include "toplevel_tracker.h"
 #include "util/backtrace.h"
@@ -65,6 +66,7 @@ int main(int argc, const char **argv)
         &wlmaker_dockapps_test_set,
         &wlmaker_layer_panel_test_set,
         &wlmaker_lock_mgr_test_set,
+        &wlmaker_menu_scroll_test_set,
         &wlmaker_root_menu_test_set,
         &wlmaker_toplevel_tracker_test_set,
         &wlmaker_xdg_decoration_test_set,

@@ -391,6 +391,28 @@ bool wlmtk_menu_opens_left(wlmtk_menu_t *menu_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+struct wlr_box wlmtk_menu_get_extents(wlmtk_menu_t *menu_ptr)
+{
+    wlmtk_element_t *e = wlmtk_menu_element(menu_ptr);
+    int x, y;
+    wlmtk_element_get_absolute_position(e, &x, &y);
+    struct wlr_box box = wlmtk_element_get_dimensions_box(e);
+    box.x += x;
+    box.y += y;
+
+    for (bs_dllist_node_t *dlnode_ptr = menu_ptr->items.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = dlnode_ptr->next_ptr) {
+        wlmtk_menu_t *submenu_ptr = wlmtk_menu_item_get_submenu(
+            wlmtk_menu_item_from_dlnode(dlnode_ptr));
+        if (NULL == submenu_ptr || !wlmtk_menu_is_open(submenu_ptr)) continue;
+        struct wlr_box sub = wlmtk_menu_get_extents(submenu_ptr);
+        box = wlmtk_util_box_union(&box, &sub);
+    }
+    return box;
+}
+
+/* ------------------------------------------------------------------------- */
 bool wlmtk_menu_place_submenu(
     const struct wlr_box *bounds_ptr,
     int item_left,
@@ -1464,6 +1486,9 @@ void test_submenu_bounds(bs_test_t *test_ptr)
     BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m2));
     wlmtk_element_get_absolute_position(wlmtk_menu_element(m2), &x, &y);
     BS_TEST_VERIFY_EQ(test_ptr, ix - 2 * w, x);
+    struct wlr_box ext = wlmtk_menu_get_extents(m0);
+    BS_TEST_VERIFY_EQ(test_ptr, ix - 2 * w, ext.x);
+    BS_TEST_VERIFY_EQ(test_ptr, 300 + w, ext.x + ext.width);
 
     // Bounds end at 60 below: Moves up.
     wlmtk_menu_request_item_highlight(m0, NULL);

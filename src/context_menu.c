@@ -28,6 +28,7 @@
 #undef WLR_USE_UNSTABLE
 
 #include "input/manager.h"
+#include "menu_scroll.h"
 
 /* == Declarations ========================================================= */
 
@@ -42,6 +43,9 @@ struct _wlmaker_context_menu_t {
     wlmtk_menu_t              *menu_ptr;
     /** The window holding the menu, as for the root menu. */
     wlmtk_window_t            *window_ptr;
+
+    /** Scrolls the menu at the edge of the output. */
+    wlmaker_menu_scroll_t     *menu_scroll_ptr;
 
     /** Whether the menu was opened, and is owned by the server. */
     bool                      opened;
@@ -138,6 +142,13 @@ wlmaker_context_menu_t *wlmaker_context_menu_create(
     // The window shows its content: Closed, until opened as right-click menu.
     wlmtk_menu_set_open(context_menu_ptr->menu_ptr, false);
     wlmtk_window_set_server_side_decorated(context_menu_ptr->window_ptr, true);
+
+    context_menu_ptr->menu_scroll_ptr = wlmaker_menu_scroll_create(
+        server_ptr, context_menu_ptr->window_ptr, context_menu_ptr->menu_ptr);
+    if (NULL == context_menu_ptr->menu_scroll_ptr) {
+        wlmaker_context_menu_destroy(context_menu_ptr);
+        return NULL;
+    }
     return context_menu_ptr;
 }
 
@@ -147,6 +158,11 @@ void wlmaker_context_menu_destroy(wlmaker_context_menu_t *context_menu_ptr)
     if (context_menu_ptr->opened &&
         context_menu_ptr->server_ptr->context_menu_ptr == context_menu_ptr) {
         context_menu_ptr->server_ptr->context_menu_ptr = NULL;
+    }
+
+    if (NULL != context_menu_ptr->menu_scroll_ptr) {
+        wlmaker_menu_scroll_destroy(context_menu_ptr->menu_scroll_ptr);
+        context_menu_ptr->menu_scroll_ptr = NULL;
     }
 
     if (NULL != context_menu_ptr->idle_destroy_event_source_ptr) {
