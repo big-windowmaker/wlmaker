@@ -35,6 +35,7 @@ typedef struct _wlmaker_clip_t wlmaker_clip_t;
 
 #include "config.h"
 #include "dock_position.h"
+#include "context_menu.h"
 #include "server.h"
 
 #ifdef __cplusplus
@@ -76,6 +77,20 @@ void wlmaker_clip_move_dock(
     wlmaker_server_t *server_ptr,
     const char *section_ptr,
     wlmaker_dock_place_t place);
+
+/**
+ * Adds the items moving the Clip to the other side, and to the other end, to
+ * a context menu. Like on the Clip's own menu. For the menus of tiles that
+ * are part of the Clip, eg. the dock-apps.
+ *
+ * @param server_ptr
+ * @param context_menu_ptr
+ *
+ * @return true on success, or if there is no Clip.
+ */
+bool wlmaker_clip_add_move_items(
+    wlmaker_server_t *server_ptr,
+    wlmaker_context_menu_t *context_menu_ptr);
 
 /** Unit test set. */
 extern const bs_test_set_t wlmaker_clip_test_set;
