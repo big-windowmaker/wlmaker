@@ -313,6 +313,21 @@ void wlmtk_desktop_set_window_placement(
 wlmtk_window_placement_t wlmtk_desktop_get_window_placement(
     wlmtk_desktop_t *desktop_ptr);
 
+/**
+ * Sets whether windows get activated when the pointer enters them
+ * ("focus follows pointer", Window Maker's 'sloppy' focus). Default: false,
+ * windows get activated by a click.
+ *
+ * @param desktop_ptr
+ * @param follows
+ */
+void wlmtk_desktop_set_focus_follows_pointer(
+    wlmtk_desktop_t *desktop_ptr,
+    bool follows);
+
+/** @return Whether windows get activated when the pointer enters them. */
+bool wlmtk_desktop_get_focus_follows_pointer(wlmtk_desktop_t *desktop_ptr);
+
 /** Unit test cases. */
 extern const bs_test_set_t wlmtk_desktop_test_set;
 

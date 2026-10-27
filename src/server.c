@@ -187,20 +187,7 @@ wlmaker_server_t *wlmaker_server_create(
         wlmaker_server_destroy(server_ptr);
         return NULL;
     }
-    const char *placement_ptr = bspl_dict_get_string_value(
-        server_ptr->config_dict_ptr, "WindowPlacement");
-    if (NULL != placement_ptr) {
-        if (0 == strcasecmp(placement_ptr, "Center")) {
-            wlmtk_desktop_set_window_placement(
-                server_ptr->desktop_ptr, WLMTK_WINDOW_PLACEMENT_CENTER);
-        } else if (0 == strcasecmp(placement_ptr, "Smart")) {
-            wlmtk_desktop_set_window_placement(
-                server_ptr->desktop_ptr, WLMTK_WINDOW_PLACEMENT_SMART);
-        } else {
-            bs_log(BS_WARNING, "Unknown WindowPlacement \"%s\", using Smart.",
-                   placement_ptr);
-        }
-    }
+    wlmaker_server_configure_desktop(server_ptr, server_ptr->config_dict_ptr);
 
     // root element wrapper.
     server_ptr->root_ptr = wlmtk_root_create(
@@ -385,6 +372,48 @@ wlmaker_server_t *wlmaker_server_create(
     }
 
     return server_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_server_configure_desktop(
+    wlmaker_server_t *server_ptr,
+    bspl_dict_t *config_dict_ptr)
+{
+    const char *placement_ptr = bspl_dict_get_string_value(
+        config_dict_ptr, "WindowPlacement");
+    wlmtk_window_placement_t placement = WLMTK_WINDOW_PLACEMENT_SMART;
+    if (NULL != placement_ptr) {
+        if (0 == strcasecmp(placement_ptr, "Center")) {
+            placement = WLMTK_WINDOW_PLACEMENT_CENTER;
+        } else if (0 != strcasecmp(placement_ptr, "Smart")) {
+            bs_log(BS_WARNING, "Unknown WindowPlacement \"%s\", using Smart.",
+                   placement_ptr);
+        }
+    }
+    wlmtk_desktop_set_window_placement(server_ptr->desktop_ptr, placement);
+
+    const char *focus_ptr = bspl_dict_get_string_value(
+        config_dict_ptr, "FocusMode");
+    bool follows = false;
+    if (NULL != focus_ptr) {
+        if (0 == strcasecmp(focus_ptr, "Sloppy")) {
+            follows = true;
+        } else if (0 != strcasecmp(focus_ptr, "Click")) {
+            bs_log(BS_WARNING, "Unknown FocusMode \"%s\", using Click.",
+                   focus_ptr);
+        }
+    }
+    wlmtk_desktop_set_focus_follows_pointer(server_ptr->desktop_ptr, follows);
+
+    uint64_t msec = 0;
+    bspl_dict_t *mouse_dict_ptr = bspl_dict_get_dict(config_dict_ptr, "Mouse");
+    const char *msec_ptr = bspl_dict_get_string_value(
+        mouse_dict_ptr, "DoubleClickTime");
+    if (NULL != msec_ptr && !bs_strconvert_uint64(msec_ptr, &msec, 10)) {
+        bs_log(BS_WARNING, "Invalid Mouse.DoubleClickTime \"%s\"", msec_ptr);
+        msec = 0;
+    }
+    wlmtk_titlebar_set_double_click_msec(msec);
 }
 
 /* ------------------------------------------------------------------------- */
