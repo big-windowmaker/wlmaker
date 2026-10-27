@@ -209,6 +209,9 @@ bool wlmaker_dockapps_add(
             &dockapps_ptr->placed, dlnode_ptr, &dockapp_ptr->dlnode);
     }
 
+    // The dock's box sets the position along it only: Across, the tile
+    // would keep its position from another dock (eg. a vertical one).
+    wlmtk_element_set_position(wlmtk_tile_element(tile_ptr), 0, 0);
     wlmtk_dock_add_tile(dockapps_ptr->dock_ptr, tile_ptr);
     wlmtk_dock_move_tile(dockapps_ptr->dock_ptr, tile_ptr, base + index);
     return true;
@@ -358,6 +361,21 @@ int wlmaker_dockapps_index(
 }
 
 /* ------------------------------------------------------------------------- */
+wlmtk_tile_t *wlmaker_dockapps_tile_at(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t index)
+{
+    for (bs_dllist_node_t *dlnode_ptr = dockapps_ptr->placed.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = dlnode_ptr->next_ptr, --index) {
+        if (0 == index) {
+            return BS_CONTAINER_OF(dlnode_ptr, wlmaker_dockapp_t, dlnode)->tile_ptr;
+        }
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
 const char *wlmaker_dockapps_name(
     wlmaker_dockapps_t *dockapps_ptr,
     wlmtk_tile_t *tile_ptr)
@@ -399,6 +417,9 @@ bool wlmaker_dockapps_insert(
         bs_dllist_insert_node_before(
             &dockapps_ptr->placed, dlnode_ptr, &dockapp_ptr->dlnode);
     }
+    // The dock's box sets the position along it only: Across, the tile
+    // would keep its position from another dock (eg. a vertical one).
+    wlmtk_element_set_position(wlmtk_tile_element(tile_ptr), 0, 0);
     wlmtk_dock_add_tile(dockapps_ptr->dock_ptr, tile_ptr);
     wlmtk_dock_move_tile(dockapps_ptr->dock_ptr, tile_ptr, base + index);
 
