@@ -208,6 +208,12 @@ void wlmtk_menu_set_opens_left(wlmtk_menu_t *menu_ptr, bool opens_left);
 bool wlmtk_menu_opens_left(wlmtk_menu_t *menu_ptr);
 
 /**
+ * @return The box covered by the menu and its open submenus, in the
+ *     coordinates of @ref wlmtk_element_get_absolute_position.
+ */
+struct wlr_box wlmtk_menu_get_extents(wlmtk_menu_t *menu_ptr);
+
+/**
  * Computes where to place a submenu of `width` x `height` for an item: To
  * the right of the item, or to the left if it does not fit there (or if
  * `prefer_left` and it fits on the left). If it fits on neither side, on the
