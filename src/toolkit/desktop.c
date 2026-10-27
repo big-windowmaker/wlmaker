@@ -388,14 +388,28 @@ wlmtk_workspace_t *wlmtk_desktop_get_current_workspace(wlmtk_desktop_t *desktop_
 /* ------------------------------------------------------------------------- */
 void wlmtk_desktop_destroy_last_workspace(wlmtk_desktop_t *desktop_ptr)
 {
+    // Guard clause: Must have further workspaces.
+    if (1 >= bs_dllist_size(&desktop_ptr->workspaces)) return;
+
     wlmtk_workspace_t *ws_ptr = wlmtk_workspace_from_dlnode(
         desktop_ptr->workspaces.tail_ptr);
+    wlmtk_workspace_t *prev_ws_ptr = wlmtk_workspace_from_dlnode(
+        desktop_ptr->workspaces.tail_ptr->prev_ptr);
 
-    // Guard clause: Must have further workspaces, not be current workspace,
-    // and not have windows on that workspace.
-    if (1 >= bs_dllist_size(&desktop_ptr->workspaces) ||
-        ws_ptr == desktop_ptr->current_workspace_ptr ||
-        !bs_dllist_empty(wlmtk_workspace_get_windows_dllist(ws_ptr))) return;
+    // Like Window Maker: On the last workspace, switch to the one before.
+    if (ws_ptr == desktop_ptr->current_workspace_ptr) {
+        _wlmtk_desktop_switch_to_workspace(desktop_ptr, prev_ws_ptr);
+    }
+
+    // Windows still on it go to the workspace before. Rather than refusing
+    // to destroy the workspace, without a way to tell why.
+    bs_dllist_t *windows_ptr = wlmtk_workspace_get_windows_dllist(ws_ptr);
+    while (!bs_dllist_empty(windows_ptr)) {
+        wlmtk_window_t *window_ptr = wlmtk_window_from_dlnode(
+            windows_ptr->head_ptr);
+        wlmtk_workspace_unmap_window(ws_ptr, window_ptr);
+        wlmtk_workspace_map_window(prev_ws_ptr, window_ptr);
+    }
 
     wlmtk_desktop_remove_workspace(desktop_ptr, ws_ptr);
     wlmtk_workspace_destroy(ws_ptr);
@@ -894,6 +908,45 @@ void test_create_destroy(bs_test_t *test_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Destroying the last workspace while it is the current one, with a window:
+ * Switches to the workspace before, and moves the window there.
+ */
+static void test_destroy_current_last(
+    bs_test_t *test_ptr,
+    wlmtk_desktop_t *desktop_ptr,
+    struct wlr_output_layout *wlr_output_layout_ptr)
+{
+    static const struct wlmtk_tile_style tstyle = {};
+    wlmtk_workspace_t *ws1_ptr = wlmtk_workspace_create(
+        wlr_output_layout_ptr, "1", &tstyle);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws1_ptr);
+    wlmtk_desktop_add_workspace(desktop_ptr, ws1_ptr);
+    wlmtk_workspace_t *ws2_ptr = wlmtk_workspace_create(
+        wlr_output_layout_ptr, "2", &tstyle);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws2_ptr);
+    wlmtk_desktop_add_workspace(desktop_ptr, ws2_ptr);
+    wlmtk_desktop_switch_to_next_workspace(desktop_ptr);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws2_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
+
+    wlmtk_window_t *w_ptr = wlmtk_test_window_create(NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w_ptr);
+    wlmtk_workspace_map_window(ws2_ptr, w_ptr);
+
+    wlmtk_desktop_destroy_last_workspace(desktop_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, bs_dllist_size(&desktop_ptr->workspaces));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws1_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, ws1_ptr, wlmtk_window_get_workspace(w_ptr));
+
+    wlmtk_workspace_unmap_window(ws1_ptr, w_ptr);
+    wlmtk_window_destroy(w_ptr);
+    wlmtk_desktop_remove_workspace(desktop_ptr, ws1_ptr);
+    wlmtk_workspace_destroy(ws1_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 /** Exercises workspace adding and removal. */
 void test_workspaces(bs_test_t *test_ptr)
 {
@@ -993,6 +1046,8 @@ void test_workspaces(bs_test_t *test_ptr)
         test_ptr, NULL, wlmtk_desktop_get_current_workspace(desktop_ptr));
     BS_TEST_VERIFY_EQ(test_ptr, NULL, l.last_data_ptr);
     BS_TEST_VERIFY_EQ(test_ptr, 0, l.calls);
+
+    test_destroy_current_last(test_ptr, desktop_ptr, wlr_output_layout_ptr);
 
     wlmtk_util_disconnect_test_listener(&l);
     wlmtk_desktop_destroy(desktop_ptr);

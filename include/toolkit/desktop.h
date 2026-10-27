@@ -142,8 +142,9 @@ void wlmtk_desktop_remove_workspace(
 wlmtk_workspace_t *wlmtk_desktop_get_current_workspace(wlmtk_desktop_t *desktop_ptr);
 
 /**
- * Destroys the last workspace -- if it's not the only remaining workspace, not
- * the current workspace, and if there's no windows contained in it.
+ * Destroys the last workspace -- if it's not the only remaining workspace.
+ * Like Window Maker: If it is the current workspace, switches to the one
+ * before first. Windows on it are moved to the workspace before.
  *
  * @param desktop_ptr
  */

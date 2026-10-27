@@ -382,8 +382,10 @@ void _wlmaker_context_menu_item_handle_triggered(
         listener_ptr, wlmaker_context_menu_item_t, triggered_listener);
     wlmaker_context_menu_t *context_menu_ptr = item_ptr->context_menu_ptr;
 
-    if (NULL != item_ptr->callback) item_ptr->callback(item_ptr->ud_ptr);
+    // Closes first: The menu's window is then off the workspace, which the
+    // callback may switch away from, or destroy.
     _wlmaker_context_menu_close(context_menu_ptr);
+    if (NULL != item_ptr->callback) item_ptr->callback(item_ptr->ud_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
