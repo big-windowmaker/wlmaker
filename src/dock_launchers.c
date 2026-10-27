@@ -334,6 +334,46 @@ void wlmaker_dock_app_bring_here(
 }
 
 /* ------------------------------------------------------------------------- */
+/** Finds a window, preferably on the current workspace. */
+static void _wlmaker_dock_app_pick(wlmtk_window_t *window_ptr, void *ud_ptr)
+{
+    wlmtk_window_t **picked_ptr_ptr = ud_ptr;
+    if (NULL == *picked_ptr_ptr) *picked_ptr_ptr = window_ptr;
+    wlmtk_workspace_t *w_ptr = wlmtk_window_get_workspace(window_ptr);
+    if (NULL != w_ptr && wlmtk_workspace_enabled(w_ptr)) {
+        *picked_ptr_ptr = window_ptr;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_dock_app_activate(
+    wlmaker_server_t *server_ptr,
+    const char *app_id_ptr)
+{
+    wlmaker_dock_app_unhide(server_ptr, app_id_ptr);
+    wlmtk_window_t *window_ptr = NULL;
+    wlmaker_toplevel_tracker_for_each_app_window(
+        server_ptr->toplevel_tracker_ptr, app_id_ptr,
+        _wlmaker_dock_app_pick, &window_ptr);
+    if (NULL == window_ptr) return;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(window_ptr);
+    if (NULL == workspace_ptr) return;
+    if (workspace_ptr != wlmtk_desktop_get_current_workspace(
+            server_ptr->desktop_ptr)) {
+        for (size_t i = 0; ; ++i) {
+            wlmtk_workspace_t *w_ptr = wlmtk_desktop_get_workspace_at(
+                server_ptr->desktop_ptr, i);
+            if (NULL == w_ptr) break;
+            if (w_ptr != workspace_ptr) continue;
+            wlmtk_desktop_switch_to_workspace_at(server_ptr->desktop_ptr, i);
+            break;
+        }
+    }
+    wlmtk_workspace_raise_window(workspace_ptr, window_ptr);
+    wlmtk_workspace_activate_window(workspace_ptr, window_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_dock_app_kill(
     wlmaker_server_t *server_ptr,
     const char *app_id_ptr)

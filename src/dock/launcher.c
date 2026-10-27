@@ -31,6 +31,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <wayland-server-core.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -78,6 +80,14 @@ struct _wlmdock_launcher_t {
 
     /** The plist dict the launcher was created from. */
     bspl_dict_t               *dict_ptr;
+    /** Whether launching: Shown dimmed, until the application runs. */
+    bool                      launching;
+    /** Ends @ref wlmdock_launcher_t::launching, if it takes too long. */
+    struct wl_event_source    *launching_timer_ptr;
+    /** Time of the last click, for telling double-clicks. 0 if none. */
+    uint32_t                  last_click_msec;
+    /** `AutoLaunch` of the plist: Launch when starting. */
+    char                      *autolaunch_ptr;
     /** Handler for a right-click. */
     wlmdock_launcher_menu_handler_t menu_handler;
     /** Argument for @ref wlmdock_launcher_t::menu_handler. */
@@ -95,8 +105,19 @@ static const bspl_desc_t _wlmdock_launcher_plist_desc[] = {
         "CommandLine", true, wlmdock_launcher_t, cmdline_ptr, cmdline_ptr, ""),
     BSPL_DESC_STRING(
         "Icon", true, wlmdock_launcher_t, icon_path_ptr, icon_path_ptr, ""),
+    // Window Maker's "Start when Window Maker is started".
+    BSPL_DESC_STRING(
+        "AutoLaunch", false, wlmdock_launcher_t, autolaunch_ptr,
+        autolaunch_ptr, "No"),
     BSPL_DESC_SENTINEL(),
 };
+
+/** Window Maker's `SingleClickLaunch`: No, launch on a double-click. */
+static bool _wlmdock_launcher_single_click = false;
+/** Maximum time between the clicks of a double-click. */
+static uint32_t _wlmdock_launcher_double_click_msec = 300;
+/** How long a launcher shows as launching, at most. */
+static const int _wlmdock_launcher_launching_msec = 10000;
 
 static void _wlmdock_launcher_update_overlay(wlmdock_launcher_t *launcher_ptr);
 static struct wlr_buffer *_wlmdock_launcher_create_overlay_buffer(
@@ -109,6 +130,8 @@ static bool _wlmdock_launcher_pointer_button(
     const wlmtk_button_event_t *button_event_ptr);
 
 static void _wlmdock_launcher_start(wlmdock_launcher_t *launcher_ptr);
+static int _wlmdock_launcher_handle_launching_timer(void *data_ptr);
+static void _wlmdock_launcher_draw_dots(cairo_t *cairo_ptr, int size);
 
 static void _wlmdock_launcher_handle_terminated(
     void *userdata_ptr,
@@ -278,6 +301,14 @@ void wlmdock_launcher_destroy(wlmdock_launcher_t *launcher_ptr)
         launcher_ptr->subprocesses_ptr = NULL;
     }
 
+    if (NULL != launcher_ptr->launching_timer_ptr) {
+        wl_event_source_remove(launcher_ptr->launching_timer_ptr);
+        launcher_ptr->launching_timer_ptr = NULL;
+    }
+    if (NULL != launcher_ptr->autolaunch_ptr) {
+        free(launcher_ptr->autolaunch_ptr);
+        launcher_ptr->autolaunch_ptr = NULL;
+    }
     if (NULL != launcher_ptr->app_id_ptr) {
         free(launcher_ptr->app_id_ptr);
         launcher_ptr->app_id_ptr = NULL;
@@ -340,10 +371,57 @@ void wlmdock_launcher_set_menu_handler(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmdock_launcher_set_click_mode(
+    bool single_click,
+    uint32_t double_click_msec)
+{
+    _wlmdock_launcher_single_click = single_click;
+    _wlmdock_launcher_double_click_msec =
+        0 < double_click_msec ? double_click_msec : 300;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmdock_launcher_autolaunch(wlmdock_launcher_t *launcher_ptr)
+{
+    const char *v = launcher_ptr->autolaunch_ptr;
+    if (NULL == v || (0 != strcasecmp(v, "Yes") && 0 != strcasecmp(v, "True"))) {
+        return;
+    }
+    if (launcher_ptr->running) return;
+    wlmdock_launcher_launch(launcher_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmdock_launcher_launch(wlmdock_launcher_t *launcher_ptr)
 {
     _wlmdock_launcher_start(launcher_ptr);
+    // Shows as launching (only with an AppID, to tell when it runs).
+    if (NULL != launcher_ptr->app_id_ptr && '\0' != *launcher_ptr->app_id_ptr &&
+        !launcher_ptr->running && NULL != launcher_ptr->monitor_ptr) {
+        launcher_ptr->launching = true;
+        if (NULL == launcher_ptr->launching_timer_ptr) {
+            launcher_ptr->launching_timer_ptr = wl_event_loop_add_timer(
+                wlm_util_subprocess_monitor_event_loop(
+                    launcher_ptr->monitor_ptr),
+                _wlmdock_launcher_handle_launching_timer,
+                launcher_ptr);
+        }
+        if (NULL != launcher_ptr->launching_timer_ptr) {
+            wl_event_source_timer_update(launcher_ptr->launching_timer_ptr,
+                                         _wlmdock_launcher_launching_msec);
+        }
+    }
     _wlmdock_launcher_update_overlay(launcher_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Timer: Launching took too long. Shows the launcher as before. */
+int _wlmdock_launcher_handle_launching_timer(void *data_ptr)
+{
+    wlmdock_launcher_t *launcher_ptr = data_ptr;
+    launcher_ptr->launching = false;
+    _wlmdock_launcher_update_overlay(launcher_ptr);
+    return 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -407,40 +485,59 @@ struct wlr_buffer *_wlmdock_launcher_create_overlay_buffer(
         toplevel_handles = wlmdock_toplevel_tracker_app_id_handles(
             launcher_ptr->tracker_ptr, launcher_ptr->app_id_ptr);
     }
-    if ((NULL == toplevel_handles || bs_dllist_empty(toplevel_handles)) &&
-        bs_ptr_set_empty(launcher_ptr->subprocesses_ptr)) {
-        launcher_ptr->running = false;
-        return wlr_buffer_ptr;
-    }
-    launcher_ptr->running = true;
-
+    launcher_ptr->running =
+        (NULL != toplevel_handles && !bs_dllist_empty(toplevel_handles)) ||
+        // Without an AppID: While the processes it launched are alive.
+        ((NULL == launcher_ptr->app_id_ptr || '\0' == *launcher_ptr->app_id_ptr) &&
+         !bs_ptr_set_empty(launcher_ptr->subprocesses_ptr));
+    // With an AppID, launching lasts until a window shows up.
+    if (launcher_ptr->running) launcher_ptr->launching = false;
+    if (launcher_ptr->running && !launcher_ptr->launching) return wlr_buffer_ptr;
 
     cairo_t *cairo_ptr = cairo_create_from_wlr_buffer(wlr_buffer_ptr);
     if (NULL == cairo_ptr) {
         wlr_buffer_drop(wlr_buffer_ptr);
         return NULL;
     }
-
-    float r, g, b, alpha;
-    bs_gfxbuf_argb8888_to_floats(0xff12905a, &r, &g, &b, &alpha);
-    cairo_pattern_t *cairo_pattern_ptr = cairo_pattern_create_rgba(
-        r, g, b, alpha);
-    cairo_set_source(cairo_ptr, cairo_pattern_ptr);
-    cairo_pattern_destroy(cairo_pattern_ptr);
-    cairo_rectangle(cairo_ptr, 0, s - 12 * s / 64, s, 12 * s / 64);
-    cairo_fill(cairo_ptr);
-    cairo_stroke(cairo_ptr);
-
-    cairo_select_font_face(cairo_ptr, "Helvetica",
-                           CAIRO_FONT_SLANT_NORMAL,
-                           CAIRO_FONT_WEIGHT_NORMAL);
-    cairo_set_font_size(cairo_ptr, 10.0 * s / 64.0);
-    cairo_set_source_argb8888(cairo_ptr, 0xffffffff);
-    cairo_move_to(cairo_ptr, 4 * s / 64, s - 2 * s / 64);
-    cairo_show_text(cairo_ptr, "Running");
-
+    // As Window Maker: Three dots while the application is not running.
+    if (!launcher_ptr->running) _wlmdock_launcher_draw_dots(cairo_ptr, s);
+    // And stippled while launching.
+    if (launcher_ptr->launching) {
+        bs_gfxbuf_t *g_ptr = bs_gfxbuf_from_wlr_buffer(wlr_buffer_ptr);
+        cairo_surface_flush(cairo_get_target(cairo_ptr));
+        for (unsigned y = 0; y < g_ptr->height; ++y) {
+            for (unsigned x = y % 2; x < g_ptr->width; x += 2) {
+                g_ptr->data_ptr[y * g_ptr->width + x] = 0xff000000;
+            }
+        }
+        cairo_surface_mark_dirty(cairo_get_target(cairo_ptr));
+    }
     cairo_destroy(cairo_ptr);
     return wlr_buffer_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Draws Window Maker's three dots (make3Dots) at the lower left of a tile of
+ * `size`: Each 3 by 2 pixels, black and white.
+ */
+void _wlmdock_launcher_draw_dots(cairo_t *cairo_ptr, int size)
+{
+    static const int xs[3] = { 4, 9, 14 };
+    cairo_save(cairo_ptr);
+    cairo_set_antialias(cairo_ptr, CAIRO_ANTIALIAS_NONE);
+    for (int i = 0; i < 3; ++i) {
+        int x = xs[i], y = size - 6;
+        cairo_set_source_rgb(cairo_ptr, 0, 0, 0);
+        cairo_rectangle(cairo_ptr, x, y, 2, 1);
+        cairo_rectangle(cairo_ptr, x, y + 1, 1, 1);
+        cairo_fill(cairo_ptr);
+        cairo_set_source_rgb(cairo_ptr, 1, 1, 1);
+        cairo_rectangle(cairo_ptr, x + 2, y, 1, 2);
+        cairo_rectangle(cairo_ptr, x + 1, y + 1, 1, 1);
+        cairo_fill(cairo_ptr);
+    }
+    cairo_restore(cairo_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -487,8 +584,18 @@ bool _wlmdock_launcher_pointer_button(
     if (BTN_LEFT != button_event_ptr->button) return true;
     if (WLMTK_BUTTON_CLICK != button_event_ptr->type) return true;
 
-    _wlmdock_launcher_start(launcher_ptr);
-    _wlmdock_launcher_update_overlay(launcher_ptr);
+    // Window Maker launches on a double-click, unless SingleClickLaunch.
+    if (!_wlmdock_launcher_single_click) {
+        uint32_t t = button_event_ptr->time_msec;
+        bool double_click = 0 != launcher_ptr->last_click_msec &&
+            t - launcher_ptr->last_click_msec <=
+            _wlmdock_launcher_double_click_msec;
+        launcher_ptr->last_click_msec = double_click ? 0 : (t ? t : 1);
+        if (!double_click) return true;
+        // Running: The compositor shows it (Window Maker: unhides it).
+        if (launcher_ptr->running) return true;
+    }
+    wlmdock_launcher_launch(launcher_ptr);
     return true;
 }
 
@@ -659,12 +766,27 @@ void test_create_from_plist(bs_test_t *test_ptr)
         test_ptr, "chrome-56x56.png", launcher_ptr->icon_path_ptr);
 
     BS_TEST_VERIFY_FALSE(test_ptr, launcher_ptr->running);
+    // Not running: Window Maker's dots, at the lower left.
+    struct wlr_buffer *o_ptr = _wlmdock_launcher_create_overlay_buffer(
+        launcher_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, o_ptr);
+    bs_gfxbuf_t *g_ptr = bs_gfxbuf_from_wlr_buffer(o_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, 0xff000000, g_ptr->data_ptr[90 * 96 + 4]);
+    BS_TEST_VERIFY_EQ(test_ptr, 0xffffffff, g_ptr->data_ptr[90 * 96 + 6]);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, g_ptr->data_ptr[40 * 96 + 40]);
+    wlr_buffer_drop(o_ptr);
 
     // Toplevel with the configured app ID. Must now show running.
     struct wlmdock_toplevel_handle *h = wlmdock_toplevel_handle_create(trk);
     BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, h);
     wlmdock_toplevel_handle_set_app_id(h, "id");
     BS_TEST_VERIFY_TRUE(test_ptr, launcher_ptr->running);
+    // Running: No dots.
+    o_ptr = _wlmdock_launcher_create_overlay_buffer(launcher_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, o_ptr);
+    g_ptr = bs_gfxbuf_from_wlr_buffer(o_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, g_ptr->data_ptr[90 * 96 + 4]);
+    wlr_buffer_drop(o_ptr);
 
     // Toplevel changes app ID. No longer running.
     wlmdock_toplevel_handle_set_app_id(h, "other-id");

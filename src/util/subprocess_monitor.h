@@ -130,6 +130,10 @@ bool wlm_util_subprocess_monitor_run(
     wlm_util_subprocess_monitor_t *monitor_ptr,
     bs_subprocess_t *subprocess_ptr);
 
+/** @return The event loop the monitor runs on. */
+struct wl_event_loop *wlm_util_subprocess_monitor_event_loop(
+    wlm_util_subprocess_monitor_t *monitor_ptr);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

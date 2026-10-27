@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <signal.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
@@ -376,6 +377,20 @@ int main(int argc, const char **argv)
     }
     wlmaker_config_style_t style = {};
     bool theme_loaded = wlmaker_theme_load(files_ptr, theme_file_ptr, &style);
+    // As Window Maker's SingleClickLaunch: Launch on a double-click, unless.
+    const char *single_ptr = bspl_dict_get_string_value(
+        config_dict_ptr, "SingleClickLaunch");
+    uint64_t msec = 0;
+    const char *msec_ptr = bspl_dict_get_string_value(
+        bspl_dict_get_dict(config_dict_ptr, "Mouse"), "DoubleClickTime");
+    if (NULL != msec_ptr && !bs_strconvert_uint64(msec_ptr, &msec, 10)) {
+        msec = 0;
+    }
+    wlmdock_launcher_set_click_mode(
+        NULL != single_ptr &&
+        (0 == strcasecmp(single_ptr, "Yes") ||
+         0 == strcasecmp(single_ptr, "True")),
+        msec);
     bspl_dict_unref(config_dict_ptr);
     if (!theme_loaded) {
         fprintf(stderr, "Failed to load & initialize theme.\n");
@@ -435,6 +450,20 @@ int main(int argc, const char **argv)
 
     _wlmdock_set_launchers(dock_ptr, state.launchers_array_ptr);
     if (state.launchers_array_ptr) bspl_array_unref(state.launchers_array_ptr);
+    // Window Maker's "Start when Window Maker is started": Once, at start.
+    if (0 > wl_display_roundtrip(dock_ptr->remote_display_ptr)) {
+        bs_log(BS_WARNING, "Failed parent wl_display_roundtrip.");
+    }
+    size_t n = wlmdock_tilebox_tiles(dock_ptr->tilebox_ptr, NULL, 0);
+    wlmtk_tile_t **tiles_ptr = 0 < n ? logged_calloc(n, sizeof(*tiles_ptr)) : NULL;
+    if (NULL != tiles_ptr) {
+        wlmdock_tilebox_tiles(dock_ptr->tilebox_ptr, tiles_ptr, n);
+        for (size_t i = 0; i < n; ++i) {
+            wlmdock_launcher_t *l_ptr = wlmdock_launcher_from_tile(tiles_ptr[i]);
+            if (NULL != l_ptr) wlmdock_launcher_autolaunch(l_ptr);
+        }
+        free(tiles_ptr);
+    }
 
     if (0 > wl_display_roundtrip(dock_ptr->remote_display_ptr)) {
         bs_log(BS_ERROR, "Failed parent wl_display_roundtrip.");
