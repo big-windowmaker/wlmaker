@@ -117,6 +117,7 @@ static const wlmaker_i18n_entry_t _wlmaker_i18n_pt_br[] = {
     { "Calendar in a Terminal", "Calendário no terminal" },
     { "Open Task Manager", "Abrir gerenciador de tarefas" },
     { "Show", "Mostrar" },
+    { "Small Icons", "Ícones pequenos" },
     { "Each Core", "Cada núcleo" },
     { "Total Usage", "Uso total" },
     { "Graph Style", "Estilo do gráfico" },

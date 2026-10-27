@@ -181,5 +181,14 @@
         { Key = Theme; Title = "Theme"; Choices = Theme; Default = Default; }
       );
     };
+
+    // The system tray of Big WindowMaker: A layer-shell client adopted as
+    // dock-app (namespace "wlmaker-dockapp"). As wmsystemtray's -s.
+    "big-wm-tray" = {
+      Preferences = (
+        { Key = SmallIcons; Title = "Small Icons"; Type = Bool;
+          Default = No; }
+      );
+    };
   };
 }
