@@ -143,6 +143,12 @@ endif()
 if(XWAYLAND_FOUND)
   target_compile_definitions(wlmaker_lib PUBLIC WLMAKER_HAVE_XWAYLAND)
 endif()
+# Defaults for 'Restore Default Launchers', eg. a distribution's State.plist.
+set(WLMAKER_DEFAULT_STATE_FILE "" CACHE STRING
+  "State file with the defaults, preferred over \${XDG_CONFIG_DIRS}.")
+target_compile_definitions(
+  wlmaker_lib PRIVATE
+  "WLMAKER_DEFAULT_STATE_FILE=\"${WLMAKER_DEFAULT_STATE_FILE}\"")
 
 
 add_executable(

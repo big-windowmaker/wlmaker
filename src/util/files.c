@@ -107,6 +107,27 @@ char *wlm_util_files_xdg_config_find(
 }
 
 /* ------------------------------------------------------------------------- */
+char *wlm_util_files_xdg_config_find_system(
+    wlm_util_files_t *files_ptr,
+    const char *fname_ptr,
+    int mode_type)
+{
+    const char * const *dirs_ptr = xdgConfigDirectories(&files_ptr->xdg_handle);
+    if (NULL == dirs_ptr) return NULL;
+
+    for (; NULL != *dirs_ptr; ++dirs_ptr) {
+        char *candidate_path_ptr = bs_strdupf(
+            "%s/%s/%s", *dirs_ptr, files_ptr->dirname_ptr, fname_ptr);
+        if (NULL == candidate_path_ptr) return NULL;
+        if (bs_file_realpath_is(candidate_path_ptr, mode_type)) {
+            return candidate_path_ptr;
+        }
+        free(candidate_path_ptr);
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
 char *wlm_util_files_xdg_data_find(
     wlm_util_files_t *files_ptr,
     const char *fname_ptr,

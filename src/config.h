@@ -149,6 +149,23 @@ bspl_dict_t *wlmaker_state_load(
 char *wlmaker_state_fname(wlm_util_files_t *files_ptr, const char *fname_ptr);
 
 /**
+ * Loads the default state: What a user starts with, before changing it.
+ *
+ * Takes the first of: `fname_ptr`, if given and existing; the file
+ * configured at build time (`WLMAKER_DEFAULT_STATE_FILE`), if existing;
+ * `State.plist` from the system's configuration directories
+ * (`${XDG_CONFIG_DIRS}/wlmaker`, not the user's); the compiled-in default.
+ *
+ * @param files_ptr
+ * @param fname_ptr           May be NULL.
+ *
+ * @return A dict, or NULL on error. To be unreferenced by the caller.
+ */
+bspl_dict_t *wlmaker_state_load_defaults(
+    wlm_util_files_t *files_ptr,
+    const char *fname_ptr);
+
+/**
  * Stores values into a section of the state: Loads the current state (like
  * @ref wlmaker_state_load), replaces or adds each key of `values_dict_ptr`
  * in the dict `section_ptr` (eg. "Dock"), keeping all other contents, and
