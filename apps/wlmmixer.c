@@ -7,9 +7,12 @@
  *
  * Talks to the sound server through the PulseAudio client library, which
  * works with PulseAudio and with PipeWire (through `pipewire-pulse`). Changes
- * are received as events, there is no polling. The mouse wheel changes the
- * volume, a left click toggles mute, and a right or middle click starts a
- * full mixer application (`pavucontrol`, by default).
+ * are received as events, there is no polling. The meter's bars light up
+ * in proportion to the volume (0% at the left, 100% at the right). Clicking
+ * on the meter sets the volume to that position, also when dragging along
+ * it; the mouse wheel changes it by steps. A left click elsewhere toggles
+ * mute, and a right or middle click starts a full mixer application
+ * (`pavucontrol`, by default).
  *
  * The PulseAudio mainloop runs in a separate thread, and signals updates to
  * the Wayland mainloop through an `eventfd`.
@@ -64,6 +67,20 @@
 
 /** Number of bars in the volume meter. */
 #define BARS 12
+/** Left end of the volume meter (0%), in icon coordinates. */
+#define METER_LEFT 5.0
+/** Bottom of the volume meter's bars. */
+#define METER_BOTTOM 50.0
+/** Height of the highest bar. */
+#define METER_MAX_HEIGHT 22.0
+/** Width of a bar. */
+#define BAR_WIDTH 2.6
+/** Distance from one bar to the next. */
+#define BAR_PITCH 3.85
+/** Length of the meter, from 0% to 100%. */
+#define METER_LENGTH ((BARS - 1) * BAR_PITCH + BAR_WIDTH)
+/** Margin around the meter that still counts as a click on it. */
+#define METER_MARGIN 3.0
 
 /** Initial delay for reconnecting to the sound server. */
 #define RECONNECT_MIN_USEC (500 * PA_USEC_PER_MSEC)
@@ -96,6 +113,18 @@ typedef struct {
     struct wl_listener        pointer_button_listener;
     /** Listener for @ref wlmcl_client_events::pointer_axis. */
     struct wl_listener        pointer_axis_listener;
+    /** Listener for @ref wlmcl_client_events::pointer_motion. */
+    struct wl_listener        pointer_motion_listener;
+    /** Listener for @ref wlmcl_client_events::pointer_leave. */
+    struct wl_listener        pointer_leave_listener;
+    /** Size of the icon's surface, in surface coordinates. */
+    uint32_t                  width;
+    /** Size of the icon's surface, in surface coordinates. */
+    uint32_t                  height;
+    /** Whether the volume is being set by dragging along the meter. */
+    bool                      dragging;
+    /** The volume, in percent, last set by clicking or dragging. */
+    int                       dragged_percent;
     /** Accumulated continuous scroll motion. */
     double                    axis_accumulator;
     /** The state as shown on the icon. Accessed from the Wayland thread. */
@@ -428,39 +457,41 @@ static void _draw_percent(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+/** Color of the illuminated bar `i`: From green over yellow to red. */
+static uint32_t _bar_color(int i, bool mute)
+{
+    if (mute) return color_bar_muted;
+    if (i < BARS / 2) return 0xff40e040;
+    if (i < BARS * 5 / 6) return 0xffe0e040;
+    return 0xffff5030;
+}
+
+/* ------------------------------------------------------------------------- */
 /**
- * Draws the volume meter: Bars of increasing height, illuminated up to the
- * volume. Colors go from green over yellow to red.
+ * Draws the volume meter: Bars of increasing height, from 0% at the left to
+ * 100% at the right. They are illuminated up to the volume, exactly: The
+ * last one partly. Clicking on the meter sets the volume to that position.
  */
 static void _draw_meter(cairo_t *cairo_ptr, const sink_state_t *state_ptr)
 {
-    const double left = 5.0, bottom = 50.0, max_height = 22.0;
-    const double bar_width = 2.6, bar_pitch = 3.85;
-
-    double ratio = 0;
+    double fraction = 0;
     if (state_ptr->connected && state_ptr->have_sink) {
-        ratio = (double)pa_cvolume_max(&state_ptr->cvolume) / PA_VOLUME_NORM;
+        fraction = wlm_volume_meter_fraction(
+            pa_cvolume_max(&state_ptr->cvolume));
     }
-    // Each bar stands for 1/BARS of 100%. Bars are lit if at least half-way.
-    int lit = (int)floor(ratio * BARS + 0.5);
+    double lit_until = METER_LEFT + fraction * METER_LENGTH;
 
     for (int i = 0; i < BARS; ++i) {
-        double height = 4.0 + (max_height - 4.0) * i / (BARS - 1);
-        uint32_t color = color_off;
-        if (i < lit) {
-            if (state_ptr->mute) {
-                color = color_bar_muted;
-            } else if (i < BARS / 2) {
-                color = 0xff40e040;
-            } else if (i < BARS * 5 / 6) {
-                color = 0xffe0e040;
-            } else {
-                color = 0xffff5030;
-            }
-        }
-        cairo_set_source_argb8888(cairo_ptr, color);
-        cairo_rectangle(cairo_ptr, left + i * bar_pitch, bottom - height,
-                        bar_width, height);
+        double height = 4.0 + (METER_MAX_HEIGHT - 4.0) * i / (BARS - 1);
+        double x = METER_LEFT + i * BAR_PITCH;
+        cairo_set_source_argb8888(cairo_ptr, color_off);
+        cairo_rectangle(cairo_ptr, x, METER_BOTTOM - height, BAR_WIDTH, height);
+        cairo_fill(cairo_ptr);
+
+        double lit_width = BS_MIN(BAR_WIDTH, lit_until - x);
+        if (0 >= lit_width) continue;
+        cairo_set_source_argb8888(cairo_ptr, _bar_color(i, state_ptr->mute));
+        cairo_rectangle(cairo_ptr, x, METER_BOTTOM - height, lit_width, height);
         cairo_fill(cairo_ptr);
     }
 }
@@ -551,6 +582,67 @@ static void _change_volume(mixer_t *mixer_ptr, int steps)
 }
 
 /* ------------------------------------------------------------------------- */
+/** Sets the volume to `percent`, at most to `--max_volume`. */
+static void _set_volume_percent(mixer_t *mixer_ptr, unsigned percent)
+{
+    percent = BS_MIN(percent, arg_max_volume);
+    pa_threaded_mainloop_lock(mixer_ptr->mainloop_ptr);
+    sink_state_t *state_ptr = &mixer_ptr->state;
+    if (state_ptr->connected && state_ptr->have_sink &&
+        pa_cvolume_valid(&state_ptr->cvolume)) {
+        pa_volume_t volume = wlm_volume_from_percent(percent);
+        // Scales all channels, keeping the balance. Muted stays as is.
+        if (0 == pa_cvolume_max(&state_ptr->cvolume)) {
+            pa_cvolume_set(&state_ptr->cvolume, state_ptr->cvolume.channels,
+                           volume);
+        } else {
+            pa_cvolume_scale(&state_ptr->cvolume, volume);
+        }
+        pa_operation *op_ptr = pa_context_set_sink_volume_by_index(
+            mixer_ptr->context_ptr, state_ptr->sink_index,
+            &state_ptr->cvolume, NULL, NULL);
+        if (NULL != op_ptr) pa_operation_unref(op_ptr);
+        _notify(mixer_ptr);
+    }
+    pa_threaded_mainloop_unlock(mixer_ptr->mainloop_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Converts a pointer position on the surface into icon coordinates, and
+ * tells whether that is on the volume meter.
+ *
+ * @param mixer_ptr
+ * @param x
+ * @param y
+ * @param icon_x_ptr          Set to the x position, in icon coordinates.
+ *
+ * @return true if on the meter.
+ */
+static bool _on_meter(mixer_t *mixer_ptr, double x, double y,
+                      double *icon_x_ptr)
+{
+    if (0 == mixer_ptr->width || 0 == mixer_ptr->height) return false;
+    double ix = x * ICON_SIZE / mixer_ptr->width;
+    double iy = y * ICON_SIZE / mixer_ptr->height;
+    *icon_x_ptr = ix;
+    return (METER_LEFT - METER_MARGIN <= ix &&
+            ix <= METER_LEFT + METER_LENGTH + METER_MARGIN &&
+            METER_BOTTOM - METER_MAX_HEIGHT - METER_MARGIN <= iy &&
+            iy <= METER_BOTTOM + METER_MARGIN);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Sets the volume for the pointer at icon position `icon_x`. */
+static void _set_volume_at(mixer_t *mixer_ptr, double icon_x)
+{
+    int percent = wlm_volume_percent_at(icon_x, METER_LEFT, METER_LENGTH);
+    if (percent == mixer_ptr->dragged_percent) return;
+    mixer_ptr->dragged_percent = percent;
+    _set_volume_percent(mixer_ptr, percent);
+}
+
+/* ------------------------------------------------------------------------- */
 /** Toggles mute of the sink. */
 static void _toggle_mute(mixer_t *mixer_ptr)
 {
@@ -611,12 +703,25 @@ static void _handle_pointer_button(
     mixer_t *mixer_ptr = BS_CONTAINER_OF(
         listener_ptr, mixer_t, pointer_button_listener);
     struct wlmcl_client_pointer_button_event *event_ptr = data_ptr;
+    if (BTN_LEFT == event_ptr->button && !event_ptr->pressed) {
+        mixer_ptr->dragging = false;
+        return;
+    }
     if (event_ptr->wl_surface_ptr != wlmcl_icon_wl_surface(mixer_ptr->icon_ptr) ||
         !event_ptr->pressed) return;
 
+    double icon_x;
     switch (event_ptr->button) {
     case BTN_LEFT:
-        _toggle_mute(mixer_ptr);
+        // On the meter: Sets the volume there, also while dragging.
+        // Elsewhere: Toggles mute.
+        if (_on_meter(mixer_ptr, event_ptr->x, event_ptr->y, &icon_x)) {
+            mixer_ptr->dragging = true;
+            mixer_ptr->dragged_percent = -1;
+            _set_volume_at(mixer_ptr, icon_x);
+        } else {
+            _toggle_mute(mixer_ptr);
+        }
         break;
     case BTN_RIGHT:
     case BTN_MIDDLE:
@@ -625,6 +730,35 @@ static void _handle_pointer_button(
     default:
         break;
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles pointer motion: While dragging, sets the volume. */
+static void _handle_pointer_motion(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    mixer_t *mixer_ptr = BS_CONTAINER_OF(
+        listener_ptr, mixer_t, pointer_motion_listener);
+    struct wlmcl_client_pointer_motion_event *event_ptr = data_ptr;
+    if (!mixer_ptr->dragging ||
+        event_ptr->wl_surface_ptr != wlmcl_icon_wl_surface(mixer_ptr->icon_ptr)) {
+        return;
+    }
+    double icon_x;
+    _on_meter(mixer_ptr, event_ptr->x, event_ptr->y, &icon_x);
+    _set_volume_at(mixer_ptr, icon_x);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles the pointer leaving: Ends dragging. */
+static void _handle_pointer_leave(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    mixer_t *mixer_ptr = BS_CONTAINER_OF(
+        listener_ptr, mixer_t, pointer_leave_listener);
+    mixer_ptr->dragging = false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -649,6 +783,8 @@ static void _handle_pointer_axis(
 static void _handle_configure(void *ud_ptr, uint32_t width, uint32_t height)
 {
     mixer_t *mixer_ptr = ud_ptr;
+    mixer_ptr->width = width;
+    mixer_ptr->height = height;
     if (NULL != mixer_ptr->dblbuf_ptr) {
         wlmcl_dblbuf_destroy(mixer_ptr->dblbuf_ptr);
     }
@@ -695,6 +831,12 @@ static int _run(mixer_t *mixer_ptr)
     mixer_ptr->pointer_axis_listener.notify = _handle_pointer_axis;
     wl_signal_add(&events_ptr->pointer_axis,
                   &mixer_ptr->pointer_axis_listener);
+    mixer_ptr->pointer_motion_listener.notify = _handle_pointer_motion;
+    wl_signal_add(&events_ptr->pointer_motion,
+                  &mixer_ptr->pointer_motion_listener);
+    mixer_ptr->pointer_leave_listener.notify = _handle_pointer_leave;
+    wl_signal_add(&events_ptr->pointer_leave,
+                  &mixer_ptr->pointer_leave_listener);
 
     int rv = EXIT_FAILURE;
     if (wlmcl_client_register_fd(mixer_ptr->wlclient_ptr, mixer_ptr->event_fd,
@@ -738,6 +880,8 @@ static int _run(mixer_t *mixer_ptr)
         wlmcl_client_unregister_fd(mixer_ptr->wlclient_ptr, mixer_ptr->event_fd);
     }
 
+    wl_list_remove(&mixer_ptr->pointer_leave_listener.link);
+    wl_list_remove(&mixer_ptr->pointer_motion_listener.link);
     wl_list_remove(&mixer_ptr->pointer_axis_listener.link);
     wl_list_remove(&mixer_ptr->pointer_button_listener.link);
     if (NULL != mixer_ptr->dblbuf_ptr) {
