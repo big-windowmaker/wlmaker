@@ -28,6 +28,7 @@
 #include <stddef.h>
 
 #include "input/cursor.h"
+#include "dock_fx.h"
 #include "task_list.h"  // IWYU pragma: keep
 #include "toolkit/toolkit.h"
 #include "util/files.h"
@@ -76,6 +77,8 @@ typedef struct {
     wlmaker_config_clip_style_t clip;
     /** Task list style. */
     struct wlmaker_task_list_style task_list;
+    /** Balloons of the Dock, Clip and dock-apps. Optional. */
+    wlmaker_dock_fx_balloon_style_t balloon;
     /** Cursor style. */
     struct wlmim_cursor_style cursor;
 } wlmaker_config_style_t;
