@@ -223,12 +223,30 @@ bool wlmaker_dockapp_prefs_add_preferences(
     wlmaker_dockapp_prefs_t *prefs_ptr,
     wlmaker_context_menu_t *context_menu_ptr)
 {
+    return wlmaker_dockapp_prefs_add_preferences_titled(
+        prefs_ptr, context_menu_ptr, wlmaker_i18n("Preferences"));
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dockapp_prefs_has_preferences(wlmaker_dockapp_prefs_t *prefs_ptr)
+{
+    bspl_array_t *list_ptr = bspl_dict_get_array(
+        prefs_ptr->app_dict_ptr, "Preferences");
+    return NULL != list_ptr && 0 < bspl_array_size(list_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dockapp_prefs_add_preferences_titled(
+    wlmaker_dockapp_prefs_t *prefs_ptr,
+    wlmaker_context_menu_t *context_menu_ptr,
+    const char *title_ptr)
+{
     bspl_array_t *list_ptr = bspl_dict_get_array(
         prefs_ptr->app_dict_ptr, "Preferences");
     if (NULL == list_ptr || 0 == bspl_array_size(list_ptr)) return true;
 
     wlmtk_menu_t *menu_ptr = wlmaker_context_menu_add_submenu(
-        context_menu_ptr, NULL, wlmaker_i18n("Preferences"));
+        context_menu_ptr, NULL, title_ptr);
     if (NULL == menu_ptr) return false;
 
     for (size_t i = 0; i < bspl_array_size(list_ptr); ++i) {

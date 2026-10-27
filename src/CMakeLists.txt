@@ -47,6 +47,8 @@ set(public_header_files
   context_menu.h
   corner.h
   dock_fx.h
+  dock_launchers.h
+  dock_menu.h
   dock_position.h
   dockapp_prefs.h
   i18n.h
@@ -61,6 +63,7 @@ set(public_header_files
   root_menu.h
   server.h
   task_list.h
+  tile_drag.h
   tl_menu.h
   toplevel_tracker.h
   workspace_manager.h
@@ -79,6 +82,8 @@ target_sources(wlmaker_lib PRIVATE
   context_menu.c
   corner.c
   dock_fx.c
+  dock_launchers.c
+  dock_menu.c
   dock_position.c
   dockapp_prefs.c
   i18n.c
@@ -93,6 +98,7 @@ target_sources(wlmaker_lib PRIVATE
   root_menu.c
   server.c
   task_list.c
+  tile_drag.c
   tl_menu.c
   toplevel_tracker.c
   workspace_manager.c

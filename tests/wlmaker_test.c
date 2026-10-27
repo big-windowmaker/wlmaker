@@ -29,6 +29,8 @@
 #include "context_menu.h"
 #include "corner.h"
 #include "dock_fx.h"
+#include "dock_launchers.h"
+#include "dock_menu.h"
 #include "dock_position.h"
 #include "dockapp_prefs.h"
 #include "i18n.h"
@@ -37,6 +39,7 @@
 #include "lock_mgr.h"
 #include "menu_scroll.h"
 #include "root_menu.h"
+#include "tile_drag.h"
 #include "toplevel_tracker.h"
 #include "util/backtrace.h"
 #include "workspace_manager.h"
@@ -65,6 +68,8 @@ int main(int argc, const char **argv)
         &wlmaker_context_menu_test_set,
         &wlmaker_corner_test_set,
         &wlmaker_dock_fx_test_set,
+        &wlmaker_dock_launchers_test_set,
+        &wlmaker_dock_menu_test_set,
         &wlmaker_dock_position_test_set,
         &wlmaker_dockapp_prefs_test_set,
         &wlmaker_i18n_test_set,
@@ -73,6 +78,7 @@ int main(int argc, const char **argv)
         &wlmaker_lock_mgr_test_set,
         &wlmaker_menu_scroll_test_set,
         &wlmaker_root_menu_test_set,
+        &wlmaker_tile_drag_test_set,
         &wlmaker_toplevel_tracker_test_set,
         &wlm_workspace_manager_test_set,
         &wlmaker_xdg_decoration_test_set,
