@@ -251,9 +251,15 @@ void wlmdock_container_surface_commit_size(
     }
     wlr_output_state_finish(&state);
 
-    // Transparent where there is no content.
-    struct wlr_buffer *wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(
-        width, height);
+    // Transparent where there is no content. A new buffer only for a new
+    // size.
+    struct wlr_buffer *current_ptr =
+        container_surface_ptr->transparent_buffer_ptr->buffer;
+    struct wlr_buffer *wlr_buffer_ptr = NULL;
+    if (NULL == current_ptr ||
+        current_ptr->width != width || current_ptr->height != height) {
+        wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(width, height);
+    }
     if (NULL != wlr_buffer_ptr) {
         wlr_scene_buffer_set_buffer(
             container_surface_ptr->transparent_buffer_ptr, wlr_buffer_ptr);
