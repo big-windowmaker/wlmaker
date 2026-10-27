@@ -66,6 +66,8 @@
 #include "wlclient/wlclient.h"
 
 #include "dock/launcher.h"
+#include "dock/maintile.h"
+#include "i18n.h"
 #include "dock/subcompositor.h"
 #include "dock/tilebox.h"
 #include "dock/toplevel.h"
@@ -127,14 +129,22 @@ typedef struct {
     wlmtk_container_t         root_container;
     /** The launcher's menu, when open. Otherwise NULL. */
     wlmtk_menu_t              *menu_ptr;
-    /** The launcher the menu is for. */
+    /** The launcher the menu is for. NULL for the main tile's menu. */
     wlmdock_launcher_t        *menu_launcher_ptr;
+    /** The tile the menu is for. */
+    wlmtk_tile_t              *menu_tile_ptr;
+    /** The Dock's main tile. NULL for the Clip's launchers (`--clip`). */
+    wlmdock_maintile_t        *maintile_ptr;
+    /** The `--default_state_file` argument, or NULL. */
+    const char                *default_state_fname_ptr;
     /** Destroys the closed menu, from the event loop. */
     struct wl_event_source    *menu_close_event_source_ptr;
     /** Listener for @ref wlmtk_menu_events_t::request_close. */
     struct wl_listener        menu_request_close_listener;
     /** Corners to flip to, once the menu is gone. 0 for none. */
     uint32_t                  pending_flip;
+    /** Whether to restore the default launchers, once the menu is gone. */
+    bool                      pending_restore;
     /** The menu element's original virtual method table. */
     wlmtk_element_vmt_t       menu_orig_vmt;
     /** Listener for @ref wlmcl_client_events::pointer_leave. */
@@ -148,6 +158,7 @@ typedef enum {
     WLMDOCK_MENU_REMOVE,
     WLMDOCK_MENU_FLIP_SIDE,
     WLMDOCK_MENU_FLIP_END,
+    WLMDOCK_MENU_RESTORE,
 } wlmdock_menu_action_t;
 
 /** An item of the launcher's menu. */
@@ -174,6 +185,10 @@ struct wlmdock_state {
     int64_t                   margin;
     /** Whether `Margin` was given. */
     bool                      has_margin;
+    /** Icon of the Dock's main tile. */
+    char                      *icon_ptr;
+    /** Whether `Icon` was given. */
+    bool                      has_icon;
 };
 
 static wlmdock_t *_wlmdock_create(
@@ -212,6 +227,12 @@ static void _wlmdock_handle_pointer_leave(
 static bool _wlmdock_menu_pointer_button(
     wlmtk_element_t *element_ptr,
     const wlmtk_button_event_t *button_event_ptr);
+static void _wlmdock_open_main_menu(
+    wlmdock_maintile_t *maintile_ptr,
+    void *ud_ptr);
+static void _wlmdock_set_launchers(
+    wlmdock_t *dock_ptr,
+    bspl_array_t *launchers_array_ptr);
 
 /* == Data ================================================================= */
 
@@ -223,6 +244,8 @@ static char *wlmdock_arg_state_file_ptr = NULL;
 static char *wlmdock_arg_theme_file_ptr = NULL;
 /** Will hold the value of --clip. */
 static bool wlmdock_arg_clip = false;
+/** Will hold the value of --default_state_file. */
+static char *wlmdock_arg_default_state_file_ptr = NULL;
 
 /** Definition of commandline arguments. */
 static const bs_arg_t wlmdock_args[] = {
@@ -253,6 +276,14 @@ static const bs_arg_t wlmdock_args[] = {
         "by default.",
         false,
         &wlmdock_arg_clip),
+    BS_ARG_STRING(
+        "default_state_file",
+        "Optional: State file with the default launchers, for the menu item "
+        "'Restore Default Launchers'. If not provided: The file configured "
+        "at build time, ${XDG_CONFIG_DIRS}/wlmaker/State.plist, or the "
+        "built-in default.",
+        NULL,
+        &wlmdock_arg_default_state_file_ptr),
     bs_arg_log_level,
     bs_arg_log_to_stderr,
     BS_ARG_SENTINEL()
@@ -283,6 +314,8 @@ const bspl_desc_t _wlmdock_plist_desc[] = {
                      NULL),
     BSPL_DESC_INT64("Margin", false, struct wlmdock_state,
                     margin, has_margin, 0),
+    BSPL_DESC_STRING("Icon", false, struct wlmdock_state,
+                     icon_ptr, has_icon, ""),
     BSPL_DESC_SENTINEL(),
 };
 
@@ -381,30 +414,26 @@ int main(int argc, const char **argv)
     }
     dock_ptr->files_ptr = files_ptr;
     dock_ptr->state_fname_ptr = wlmdock_arg_state_file_ptr;
+    dock_ptr->default_state_fname_ptr = wlmdock_arg_default_state_file_ptr;
     dock_ptr->clip = wlmdock_arg_clip;
     dock_ptr->section_ptr = section_ptr;
 
-    for (size_t i = 0; i < bspl_array_size(state.launchers_array_ptr); ++i) {
-        bspl_dict_t *dict_ptr = bspl_dict_from_object(
-            bspl_array_at(state.launchers_array_ptr, i));
-        if (NULL == dict_ptr) {
-            bs_log(BS_ERROR, "Elements of 'Launchers' must be dicts.");
-            return EXIT_FAILURE;
-        }
-
-        wlmdock_launcher_t *launcher_ptr = wlmdock_launcher_create_from_plist(
-            &style.tile,
-            dict_ptr,
-            dock_ptr->tracker_ptr,
-            dock_ptr->subprocess_monitor_ptr,
-            files_ptr);
-        if (NULL == launcher_ptr) return EXIT_FAILURE;
-        wlmdock_launcher_set_menu_handler(
-            launcher_ptr, _wlmdock_open_menu, dock_ptr);
+    // Like on Window Maker: The Dock's main tile is always there, nearest the
+    // anchor. It carries the Dock's menu, and launchers can't all be gone.
+    // The Clip's launchers have the Clip for that.
+    if (!wlmdock_arg_clip) {
+        dock_ptr->maintile_ptr = wlmdock_maintile_create(
+            &style.tile, state.has_icon ? state.icon_ptr : NULL, files_ptr);
+        if (NULL == dock_ptr->maintile_ptr) return EXIT_FAILURE;
+        wlmdock_maintile_set_menu_handler(
+            dock_ptr->maintile_ptr, _wlmdock_open_main_menu, dock_ptr);
         wlmdock_tilebox_add_tile(
             dock_ptr->tilebox_ptr,
-            wlmdock_launcher_tile(launcher_ptr));
+            wlmdock_maintile_tile(dock_ptr->maintile_ptr));
     }
+    if (NULL != state.icon_ptr) free(state.icon_ptr);
+
+    _wlmdock_set_launchers(dock_ptr, state.launchers_array_ptr);
     if (state.launchers_array_ptr) bspl_array_unref(state.launchers_array_ptr);
 
     if (0 > wl_display_roundtrip(dock_ptr->remote_display_ptr)) {
@@ -420,6 +449,9 @@ int main(int argc, const char **argv)
     _wlmdock_destroy(dock_ptr);
     bspl_decoded_destroy(wlmaker_config_style_desc, &style);
     if (NULL != wlmdock_arg_state_file_ptr) free(wlmdock_arg_state_file_ptr);
+    if (NULL != wlmdock_arg_default_state_file_ptr) {
+        free(wlmdock_arg_default_state_file_ptr);
+    }
 
     if (NULL != files_ptr) wlm_util_files_destroy(files_ptr);
 
@@ -715,6 +747,11 @@ int handle_client_signal(int fd, uint32_t mask, void *data_ptr)
                     dock_ptr, state_dict_ptr, &positioning)) {
                 _wlmdock_set_positioning(dock_ptr, &positioning);
             }
+            // And the launchers: Eg. restored from the Clip's menu.
+            bspl_array_t *a = bspl_dict_get_array(
+                bspl_dict_get_dict(state_dict_ptr, dock_ptr->section_ptr),
+                "Launchers");
+            if (NULL != a) _wlmdock_set_launchers(dock_ptr, a);
             bspl_dict_unref(state_dict_ptr);
         } else if (rd == sizeof(siginfo)) {
             bs_log(BS_INFO, "wlmdock: Signal %d caught, exiting loop.",
@@ -761,6 +798,7 @@ bool _wlmdock_load_positioning(
     if (NULL != state.launchers_array_ptr) {
         bspl_array_unref(state.launchers_array_ptr);
     }
+    if (NULL != state.icon_ptr) free(state.icon_ptr);
     *positioning_ptr = state.positioning;
     positioning_ptr->margin = state.margin;
     positioning_ptr->overlay = dock_ptr->positioning.overlay;
@@ -907,6 +945,7 @@ static void _wlmdock_handle_menu_item_triggered(
     case WLMDOCK_MENU_REMOVE:
         if (NULL != launcher_ptr) {
             dock_ptr->menu_launcher_ptr = NULL;
+            dock_ptr->menu_tile_ptr = NULL;
             wlmdock_tilebox_remove_tile(dock_ptr->tilebox_ptr,
                                         wlmdock_launcher_tile(launcher_ptr));
             wlmdock_launcher_destroy(launcher_ptr);
@@ -919,6 +958,10 @@ static void _wlmdock_handle_menu_item_triggered(
         break;
     case WLMDOCK_MENU_FLIP_END:
         dock_ptr->pending_flip = WLR_EDGE_TOP | WLR_EDGE_BOTTOM;
+        break;
+    case WLMDOCK_MENU_RESTORE:
+        // Replaces the launchers, and destroys the menu: Not from here.
+        dock_ptr->pending_restore = true;
         break;
     }
     _wlmdock_close_menu(dock_ptr);
@@ -1018,55 +1061,25 @@ bool _wlmdock_menu_pointer_button(
 }
 
 /* ------------------------------------------------------------------------- */
-/**
- * Opens the launcher's right-click menu, like on Window Maker: Launch, Kill
- * (when it launched processes), Remove (stored in the state), and moving
- * the Dock to another corner (except the Clip's). Drawn next to the tiles,
- * on the dock's surface, which grows for it while open.
- */
-void _wlmdock_open_menu(
-    wlmdock_launcher_t *launcher_ptr,
-    void *ud_ptr)
+/** Starts a menu for `tile_ptr`: Closes the current one, creates a new one. */
+static bool _wlmdock_menu_begin(wlmdock_t *dock_ptr, wlmtk_tile_t *tile_ptr)
 {
-    wlmdock_t *dock_ptr = ud_ptr;
     _wlmdock_destroy_menu(dock_ptr);
-    if (NULL == dock_ptr->style_ptr->menu_style_ptr) return;
-
+    if (NULL == dock_ptr->style_ptr->menu_style_ptr) return false;
     dock_ptr->menu_ptr = wlmtk_menu_create(
         wlmtk_menu_style_to_ref(dock_ptr->style_ptr->menu_style_ptr));
-    if (NULL == dock_ptr->menu_ptr) return;
-    dock_ptr->menu_launcher_ptr = launcher_ptr;
+    if (NULL == dock_ptr->menu_ptr) return false;
+    dock_ptr->menu_tile_ptr = tile_ptr;
+    return true;
+}
 
-    bool rv = _wlmdock_menu_add(dock_ptr, "Launch", WLMDOCK_MENU_LAUNCH);
-    if (wlmdock_launcher_has_processes(launcher_ptr)) {
-        rv = rv && _wlmdock_menu_add(dock_ptr, "Kill", WLMDOCK_MENU_KILL);
-    }
-    rv = rv && _wlmdock_menu_add(dock_ptr, "Remove", WLMDOCK_MENU_REMOVE);
-    // The Clip's launchers follow the Clip: No moving them on their own.
-    if (!dock_ptr->clip) {
-        uint32_t corner = dock_ptr->positioning.edge |
-            dock_ptr->positioning.anchor;
-        if (0 != _wlmdock_flipped_corner(
-                dock_ptr, WLR_EDGE_LEFT | WLR_EDGE_RIGHT)) {
-            rv = rv && _wlmdock_menu_add(
-                dock_ptr,
-                (corner & WLR_EDGE_LEFT) ?
-                "Move to Right Side" : "Move to Left Side",
-                WLMDOCK_MENU_FLIP_SIDE);
-        }
-        if (0 != _wlmdock_flipped_corner(
-                dock_ptr, WLR_EDGE_TOP | WLR_EDGE_BOTTOM)) {
-            rv = rv && _wlmdock_menu_add(
-                dock_ptr,
-                (corner & WLR_EDGE_TOP) ? "Move to Bottom" : "Move to Top",
-                WLMDOCK_MENU_FLIP_END);
-        }
-    }
-    if (!rv) {
-        _wlmdock_destroy_menu(dock_ptr);
-        return;
-    }
-
+/* ------------------------------------------------------------------------- */
+/**
+ * Shows the menu started by @ref _wlmdock_menu_begin: Next to its tile, on
+ * the dock's surface, which grows for it while open.
+ */
+static void _wlmdock_menu_show(wlmdock_t *dock_ptr)
+{
     wlmtk_util_connect_listener_signal(
         &wlmtk_menu_events(dock_ptr->menu_ptr)->request_close,
         &dock_ptr->menu_request_close_listener,
@@ -1085,6 +1098,203 @@ void _wlmdock_open_menu(
     // Like the root menu: Gets all pointer events, to see the right button
     // released over an item, or a click elsewhere.
     wlmtk_container_pointer_grab(&dock_ptr->root_container, e);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Opens a launcher's right-click menu, like on Window Maker: Launch, Kill
+ * (when it launched processes), and Remove (stored in the state). The Dock
+ * keeps its main tile, so it can't become unreachable.
+ */
+void _wlmdock_open_menu(
+    wlmdock_launcher_t *launcher_ptr,
+    void *ud_ptr)
+{
+    wlmdock_t *dock_ptr = ud_ptr;
+    if (!_wlmdock_menu_begin(dock_ptr, wlmdock_launcher_tile(launcher_ptr))) {
+        return;
+    }
+    dock_ptr->menu_launcher_ptr = launcher_ptr;
+
+    bool rv = _wlmdock_menu_add(
+        dock_ptr, wlmaker_i18n("Launch"), WLMDOCK_MENU_LAUNCH);
+    if (wlmdock_launcher_has_processes(launcher_ptr)) {
+        rv = rv && _wlmdock_menu_add(
+            dock_ptr, wlmaker_i18n("Kill"), WLMDOCK_MENU_KILL);
+    }
+    rv = rv && _wlmdock_menu_add(
+        dock_ptr, wlmaker_i18n("Remove"), WLMDOCK_MENU_REMOVE);
+    if (!rv) {
+        _wlmdock_destroy_menu(dock_ptr);
+        return;
+    }
+    _wlmdock_menu_show(dock_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The default launchers of the dock's section. NULL if none. */
+static bspl_array_t *_wlmdock_default_launchers(wlmdock_t *dock_ptr)
+{
+    bspl_dict_t *d = wlmaker_state_load_defaults(
+        dock_ptr->files_ptr, dock_ptr->default_state_fname_ptr);
+    bspl_array_t *a = bspl_dict_get_array(
+        bspl_dict_get_dict(d, dock_ptr->section_ptr), "Launchers");
+    if (NULL != a) a = bspl_array_ref(a);
+    if (NULL != d) bspl_dict_unref(d);
+    if (NULL != a && 0 == bspl_array_size(a)) {
+        bspl_array_unref(a);
+        a = NULL;
+    }
+    return a;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Opens the Dock's menu, from its main tile: Moving the Dock to the other
+ * side or end (not into the Clip's corner), and restoring the default
+ * launchers.
+ */
+void _wlmdock_open_main_menu(
+    wlmdock_maintile_t *maintile_ptr,
+    void *ud_ptr)
+{
+    wlmdock_t *dock_ptr = ud_ptr;
+    if (!_wlmdock_menu_begin(dock_ptr, wlmdock_maintile_tile(maintile_ptr))) {
+        return;
+    }
+
+    bool rv = true;
+    uint32_t corner = dock_ptr->positioning.edge | dock_ptr->positioning.anchor;
+    if (0 != _wlmdock_flipped_corner(
+            dock_ptr, WLR_EDGE_LEFT | WLR_EDGE_RIGHT)) {
+        rv = rv && _wlmdock_menu_add(
+            dock_ptr,
+            wlmaker_i18n((corner & WLR_EDGE_LEFT) ?
+                         "Move to Right Side" : "Move to Left Side"),
+            WLMDOCK_MENU_FLIP_SIDE);
+    }
+    if (0 != _wlmdock_flipped_corner(
+            dock_ptr, WLR_EDGE_TOP | WLR_EDGE_BOTTOM)) {
+        rv = rv && _wlmdock_menu_add(
+            dock_ptr,
+            wlmaker_i18n((corner & WLR_EDGE_TOP) ?
+                         "Move to Bottom" : "Move to Top"),
+            WLMDOCK_MENU_FLIP_END);
+    }
+    bspl_array_t *a = _wlmdock_default_launchers(dock_ptr);
+    if (NULL != a) {
+        rv = rv && _wlmdock_menu_add(
+            dock_ptr, wlmaker_i18n("Restore Default Launchers"),
+            WLMDOCK_MENU_RESTORE);
+        bspl_array_unref(a);
+    }
+    if (!rv || 0 == wlmtk_menu_items_size(dock_ptr->menu_ptr)) {
+        _wlmdock_destroy_menu(dock_ptr);
+        return;
+    }
+    _wlmdock_menu_show(dock_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Restores the default launchers: In the state, and on the dock. */
+static void _wlmdock_restore_launchers(wlmdock_t *dock_ptr)
+{
+    bspl_array_t *a = _wlmdock_default_launchers(dock_ptr);
+    if (NULL == a) return;
+    _wlmdock_set_launchers(dock_ptr, a);
+    bspl_array_unref(a);
+    _wlmdock_store_launchers(dock_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return Whether `dict_ptr` and `other_dict_ptr` write the same plist. */
+static bool _wlmdock_dicts_equal(bspl_dict_t *dict_ptr,
+                                 bspl_dict_t *other_dict_ptr)
+{
+    bs_dynbuf_t a = {}, b = {};
+    bool rv = false;
+    if (bs_dynbuf_init(&a, 1024, SIZE_MAX) &&
+        bs_dynbuf_init(&b, 1024, SIZE_MAX) &&
+        bspl_object_write(bspl_object_from_dict(dict_ptr), &a) &&
+        bspl_object_write(bspl_object_from_dict(other_dict_ptr), &b)) {
+        rv = a.length == b.length &&
+            0 == memcmp(a.data_ptr, b.data_ptr, a.length);
+    }
+    bs_dynbuf_fini(&a);
+    bs_dynbuf_fini(&b);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Sets the dock's launchers to those of `launchers_array_ptr`, after the main
+ * tile. Keeps the dock as it is when they are the same. Launchers that can't
+ * be created (eg. a missing icon) are left out.
+ */
+void _wlmdock_set_launchers(
+    wlmdock_t *dock_ptr,
+    bspl_array_t *launchers_array_ptr)
+{
+    if (NULL == launchers_array_ptr) return;
+    size_t n = wlmdock_tilebox_tiles(dock_ptr->tilebox_ptr, NULL, 0);
+    wlmtk_tile_t **tiles_ptr = NULL;
+    if (0 < n) {
+        tiles_ptr = logged_calloc(n, sizeof(wlmtk_tile_t*));
+        if (NULL == tiles_ptr) return;
+        wlmdock_tilebox_tiles(dock_ptr->tilebox_ptr, tiles_ptr, n);
+    }
+
+    // Unchanged?
+    size_t launchers = 0;
+    bool equal = true;
+    for (size_t i = 0; i < n; ++i) {
+        wlmdock_launcher_t *l_ptr = wlmdock_launcher_from_tile(tiles_ptr[i]);
+        if (NULL == l_ptr) continue;
+        bspl_dict_t *d = bspl_dict_from_object(
+            bspl_array_at(launchers_array_ptr, launchers));
+        if (NULL == d ||
+            !_wlmdock_dicts_equal(d, wlmdock_launcher_dict(l_ptr))) {
+            equal = false;
+        }
+        ++launchers;
+    }
+    if (equal && launchers == bspl_array_size(launchers_array_ptr)) {
+        if (NULL != tiles_ptr) free(tiles_ptr);
+        return;
+    }
+
+    _wlmdock_destroy_menu(dock_ptr);
+    for (size_t i = 0; i < n; ++i) {
+        wlmdock_launcher_t *l_ptr = wlmdock_launcher_from_tile(tiles_ptr[i]);
+        if (NULL == l_ptr) continue;
+        wlmdock_tilebox_remove_tile(dock_ptr->tilebox_ptr, tiles_ptr[i]);
+        wlmdock_launcher_destroy(l_ptr);
+    }
+    if (NULL != tiles_ptr) free(tiles_ptr);
+
+    for (size_t i = 0; i < bspl_array_size(launchers_array_ptr); ++i) {
+        bspl_dict_t *dict_ptr = bspl_dict_from_object(
+            bspl_array_at(launchers_array_ptr, i));
+        if (NULL == dict_ptr) {
+            bs_log(BS_WARNING, "Elements of 'Launchers' must be dicts.");
+            continue;
+        }
+        wlmdock_launcher_t *launcher_ptr = wlmdock_launcher_create_from_plist(
+            &dock_ptr->style_ptr->tile,
+            dict_ptr,
+            dock_ptr->tracker_ptr,
+            dock_ptr->subprocess_monitor_ptr,
+            dock_ptr->files_ptr);
+        if (NULL == launcher_ptr) {
+            bs_log(BS_WARNING, "wlmdock: Leaving out launcher %zu.", i);
+            continue;
+        }
+        wlmdock_launcher_set_menu_handler(
+            launcher_ptr, _wlmdock_open_menu, dock_ptr);
+        wlmdock_tilebox_add_tile(
+            dock_ptr->tilebox_ptr,
+            wlmdock_launcher_tile(launcher_ptr));
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1112,6 +1322,10 @@ void _wlmdock_idle_destroy_menu(void *data_ptr)
         dock_ptr->pending_flip = 0;
         _wlmdock_flip(dock_ptr, flip);
     }
+    if (dock_ptr->pending_restore) {
+        dock_ptr->pending_restore = false;
+        _wlmdock_restore_launchers(dock_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1133,6 +1347,7 @@ void _wlmdock_destroy_menu(wlmdock_t *dock_ptr)
     wlmtk_menu_destroy(dock_ptr->menu_ptr);
     dock_ptr->menu_ptr = NULL;
     dock_ptr->menu_launcher_ptr = NULL;
+    dock_ptr->menu_tile_ptr = NULL;
     _wlmdock_layout(dock_ptr);
 }
 
@@ -1144,7 +1359,7 @@ void _wlmdock_destroy_menu(wlmdock_t *dock_ptr)
 void _wlmdock_layout(wlmdock_t *dock_ptr)
 {
     wlmtk_element_t *tb_ptr = wlmdock_tilebox_element(dock_ptr->tilebox_ptr);
-    if (NULL == dock_ptr->menu_ptr || NULL == dock_ptr->menu_launcher_ptr) {
+    if (NULL == dock_ptr->menu_ptr || NULL == dock_ptr->menu_tile_ptr) {
         wlmtk_element_set_position(tb_ptr, 0, 0);
         wlmtk_container_invalidate_layout(&dock_ptr->root_container);
         return;
@@ -1155,7 +1370,7 @@ void _wlmdock_layout(wlmdock_t *dock_ptr)
     struct wlr_box m = wlmtk_element_get_dimensions_box(m_ptr);
     struct wlr_box t = wlmdock_tilebox_tile_box(
         dock_ptr->tilebox_ptr,
-        wlmdock_launcher_tile(dock_ptr->menu_launcher_ptr));
+        dock_ptr->menu_tile_ptr);
     uint32_t edge = dock_ptr->positioning.edge;
     uint32_t anchor = dock_ptr->positioning.anchor;
 

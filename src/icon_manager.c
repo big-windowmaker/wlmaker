@@ -38,6 +38,7 @@
 
 #include "context_menu.h"
 #include "dockapps.h"
+#include "i18n.h"
 #include "input/cursor.h"
 #include "input/manager.h"
 #include "toolkit/toolkit.h"
@@ -765,7 +766,7 @@ void _wlmaker_toplevel_icon_open_menu(
     }
     wlmaker_context_menu_t *cm_ptr = wlmaker_context_menu_create(
         server_ptr, toplevel_icon_ptr,
-        NULL != name_ptr ? name_ptr : "Dock-app");
+        NULL != name_ptr ? name_ptr : wlmaker_i18n("Dock-app"));
     if (NULL != name_ptr) free(name_ptr);
     if (NULL == cm_ptr) return;
     bool rv = true;
@@ -776,12 +777,13 @@ void _wlmaker_toplevel_icon_open_menu(
             continue;
         }
         rv = rv && wlmaker_context_menu_add_item(
-            cm_ptr, moves[i].text_ptr, moves[i].callback, toplevel_icon_ptr);
+            cm_ptr, wlmaker_i18n(moves[i].text_ptr), moves[i].callback,
+            toplevel_icon_ptr);
         ++items;
     }
     if (0 != _wlmaker_toplevel_icon_pid(toplevel_icon_ptr)) {
         rv = rv && wlmaker_context_menu_add_item(
-            cm_ptr, "Kill", _wlmaker_toplevel_icon_menu_kill,
+            cm_ptr, wlmaker_i18n("Kill"), _wlmaker_toplevel_icon_menu_kill,
             toplevel_icon_ptr);
         ++items;
     }
