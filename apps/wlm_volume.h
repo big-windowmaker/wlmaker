@@ -94,6 +94,28 @@ uint32_t wlm_volume_step(
 int wlm_volume_axis_steps(double *accumulator_ptr, int discrete, double value);
 
 /** Unit tests. */
+/**
+ * Converts a position along the volume meter into a volume in percent: The
+ * meter spans `length` from `start`, for 0% to 100%. Positions before or
+ * beyond it give 0% and 100%.
+ *
+ * @param position            Eg. the pointer's x coordinate.
+ * @param start               Where the meter starts (0%).
+ * @param length              Length of the meter (up to 100%).
+ *
+ * @return The volume, in percent, from 0 to 100.
+ */
+unsigned wlm_volume_percent_at(double position, double start, double length);
+
+/**
+ * Converts a volume into the fraction of the meter to illuminate.
+ *
+ * @param volume              Eg. 0x10000 for 100%.
+ *
+ * @return A value from 0.0 (nothing) to 1.0 (everything, at 100% or more).
+ */
+double wlm_volume_meter_fraction(uint32_t volume);
+
 extern const bs_test_set_t wlm_volume_test_set;
 
 #ifdef __cplusplus

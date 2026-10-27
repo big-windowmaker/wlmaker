@@ -21,6 +21,7 @@
 
 #include "wlm_volume.h"
 
+#include <math.h>
 #include <stdbool.h>
 
 /* == Exported methods ===================================================== */
@@ -76,17 +77,34 @@ int wlm_volume_axis_steps(double *accumulator_ptr, int discrete, double value)
     return -steps;
 }
 
+/* ------------------------------------------------------------------------- */
+unsigned wlm_volume_percent_at(double position, double start, double length)
+{
+    if (0 >= length || position <= start) return 0;
+    if (position >= start + length) return 100;
+    return (unsigned)lround((position - start) * 100.0 / length);
+}
+
+/* ------------------------------------------------------------------------- */
+double wlm_volume_meter_fraction(uint32_t volume)
+{
+    double f = (double)volume / WLM_VOLUME_NORM;
+    return f > 1.0 ? 1.0 : f;
+}
+
 /* == Unit tests =========================================================== */
 
 static void test_percent(bs_test_t *test_ptr);
 static void test_step(bs_test_t *test_ptr);
 static void test_axis_steps(bs_test_t *test_ptr);
+static void test_percent_at(bs_test_t *test_ptr);
 
 /** Test cases. */
 static const bs_test_case_t _wlm_volume_test_cases[] = {
     { 1, "percent", test_percent },
     { 1, "step", test_step },
     { 1, "axis_steps", test_axis_steps },
+    { 1, "percent_at", test_percent_at },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -167,6 +185,28 @@ void test_axis_steps(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 0, wlm_volume_axis_steps(&acc, 0, 10.0));
     BS_TEST_VERIFY_EQ(test_ptr, -2, wlm_volume_axis_steps(&acc, 0, 30.0));
     BS_TEST_VERIFY_EQ(test_ptr, 5.0, acc);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Positions on the meter, and the meter's illumination. */
+void test_percent_at(bs_test_t *test_ptr)
+{
+    // A meter from x=5, 45 wide: The middle is 50%.
+    BS_TEST_VERIFY_EQ(test_ptr, 50, wlm_volume_percent_at(27.5, 5, 45));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlm_volume_percent_at(5, 5, 45));
+    BS_TEST_VERIFY_EQ(test_ptr, 100, wlm_volume_percent_at(50, 5, 45));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlm_volume_percent_at(1, 5, 45));
+    BS_TEST_VERIFY_EQ(test_ptr, 100, wlm_volume_percent_at(55, 5, 45));
+    BS_TEST_VERIFY_EQ(test_ptr, 25, wlm_volume_percent_at(16.25, 5, 45));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlm_volume_percent_at(10, 5, 0));
+
+    BS_TEST_VERIFY_EQ(test_ptr, 0.5, wlm_volume_meter_fraction(0x8000));
+    BS_TEST_VERIFY_EQ(test_ptr, 1.0, wlm_volume_meter_fraction(0x18000));
+    BS_TEST_VERIFY_EQ(test_ptr, 0.0, wlm_volume_meter_fraction(0));
+    // Clicking where the meter lights up to, gives that volume back.
+    BS_TEST_VERIFY_EQ(test_ptr, 50, wlm_volume_percent_at(
+                          5 + 45 * wlm_volume_meter_fraction(
+                              wlm_volume_from_percent(50)), 5, 45));
 }
 
 /* == End of wlm_volume.c ================================================== */
