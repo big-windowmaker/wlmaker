@@ -34,6 +34,7 @@ set(public_header_files
   context_menu.h
   corner.h
   dock_position.h
+  i18n.h
   dockapps.h
   icon_manager.h
   idle.h
@@ -61,6 +62,7 @@ target_sources(wlmaker_lib PRIVATE
   context_menu.c
   corner.c
   dock_position.c
+  i18n.c
   dockapps.c
   icon_manager.c
   idle.c
