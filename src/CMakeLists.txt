@@ -42,6 +42,7 @@ set(public_header_files
   layer_panel.h
   layer_shell.h
   lock_mgr.h
+  menu_scroll.h
   root_menu.h
   server.h
   task_list.h
@@ -70,6 +71,7 @@ target_sources(wlmaker_lib PRIVATE
   layer_panel.c
   layer_shell.c
   lock_mgr.c
+  menu_scroll.c
   root_menu.c
   server.c
   task_list.c

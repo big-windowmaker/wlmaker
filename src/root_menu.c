@@ -46,6 +46,7 @@
 #include "config.h"
 #include "context_menu.h"
 #include "input/manager.h"
+#include "menu_scroll.h"
 #include "util/subprocess_monitor.h"
 #include "server.h"
 
@@ -72,6 +73,8 @@ struct _wlmaker_root_menu_t {
 
     /** Back-link to the server. */
     wlmaker_server_t          *server_ptr;
+    /** Scrolls the menu at the edge of the output. */
+    wlmaker_menu_scroll_t     *menu_scroll_ptr;
 };
 
 /** State of a menu generator, while waiting for subprocess to complete. */
@@ -246,6 +249,14 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
         bspl_array_string_value_at(root_menu_array_ptr, 0));
     wlmtk_window_set_server_side_decorated(root_menu_ptr->window_ptr, true);
 
+    root_menu_ptr->menu_scroll_ptr = wlmaker_menu_scroll_create(
+        server_ptr, root_menu_ptr->window_ptr, root_menu_ptr->menu_ptr);
+    if (NULL == root_menu_ptr->menu_scroll_ptr) {
+        wlmaker_root_menu_destroy(root_menu_ptr);
+        bspl_array_unref(root_menu_array_ptr);
+        return NULL;
+    }
+
     bspl_array_unref(root_menu_array_ptr);
     return root_menu_ptr;
 }
@@ -253,6 +264,10 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
 /* ------------------------------------------------------------------------- */
 void wlmaker_root_menu_destroy(wlmaker_root_menu_t *root_menu_ptr)
 {
+    if (NULL != root_menu_ptr->menu_scroll_ptr) {
+        wlmaker_menu_scroll_destroy(root_menu_ptr->menu_scroll_ptr);
+        root_menu_ptr->menu_scroll_ptr = NULL;
+    }
     if (NULL != root_menu_ptr->server_ptr) {
         BS_ASSERT(root_menu_ptr->server_ptr->root_menu_ptr == root_menu_ptr);
         root_menu_ptr->server_ptr->root_menu_ptr = NULL;
