@@ -771,7 +771,29 @@ void wlmtk_window_menu_set_enabled(wlmtk_window_t *window_ptr, bool enabled)
             menu_element_ptr->parent_container_ptr,
             menu_element_ptr);
 
+        wlmtk_element_set_position(menu_element_ptr, x_pos, 0);
+
+        // Keep it within the usable area of the output, and its submenus.
+        wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+            window_ptr);
+        if (NULL != workspace_ptr) {
+            struct wlr_box b = wlmtk_workspace_get_maximize_extents(
+                workspace_ptr, wlmtk_window_get_wlr_output(window_ptr));
+            wlmtk_menu_set_bounds(window_ptr->window_menu_ptr, &b);
+            int ax, ay;
+            wlmtk_element_get_absolute_position(menu_element_ptr, &ax, &ay);
+            struct wlr_box mbox = wlmtk_element_get_dimensions_box(
+                menu_element_ptr);
+            int left = ax + mbox.x, new_left = left;
+            if (!wlr_box_empty(&b)) {
+                if (new_left + mbox.width > b.x + b.width) {
+                    new_left = b.x + b.width - mbox.width;
+                }
+                if (new_left < b.x) new_left = b.x;
+            }
+            x_pos += new_left - left;
             wlmtk_element_set_position(menu_element_ptr, x_pos, 0);
+        }
     } else {
         wlmtk_container_pointer_grab_release(
             menu_element_ptr->parent_container_ptr,

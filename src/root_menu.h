@@ -63,6 +63,17 @@ wlmtk_window_t *wlmaker_root_menu_window(wlmaker_root_menu_t *root_menu_ptr);
 /** @return Pointer to @ref wlmtk_menu_t of the root menu. */
 wlmtk_menu_t *wlmaker_root_menu_menu(wlmaker_root_menu_t *root_menu_ptr);
 
+/**
+ * Opens the root menu at the pointer, on the current workspace. It is kept
+ * within the usable area of the output: Not under docks and panels. That is
+ * also the bounds for its submenus, see @ref wlmtk_menu_set_bounds.
+ *
+ * @param root_menu_ptr
+ * @param mode
+ */
+void wlmaker_root_menu_open(wlmaker_root_menu_t *root_menu_ptr,
+                            enum wlmtk_menu_mode mode);
+
 /** Unit test set. */
 extern const bs_test_set_t wlmaker_root_menu_test_set;
 

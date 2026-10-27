@@ -101,6 +101,7 @@ static void _wlmtk_menu_item_set_state(
     wlmtk_menu_item_t *menu_item_ptr,
     wlmtk_menu_item_state_t state);
 static void _wlmtk_menu_item_draw_state(wlmtk_menu_item_t *menu_item_ptr);
+static void _wlmtk_menu_item_place_submenu(wlmtk_menu_item_t *menu_item_ptr);
 static struct wlr_buffer *_wlmtk_menu_item_create_buffer(
     wlmtk_menu_item_t *menu_item_ptr,
     wlmtk_menu_item_state_t state,
@@ -333,6 +334,13 @@ void wlmtk_menu_item_set_parent_menu(
             wlmtk_menu_base(menu_item_ptr->menu_ptr),
             wlmtk_menu_element(menu_item_ptr->submenu_ptr));
     }
+}
+
+/* ------------------------------------------------------------------------- */
+wlmtk_menu_t *wlmtk_menu_item_get_parent_menu(
+    wlmtk_menu_item_t *menu_item_ptr)
+{
+    return menu_item_ptr->menu_ptr;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -573,20 +581,51 @@ void _wlmtk_menu_item_set_state(
     _wlmtk_menu_item_draw_state(menu_item_ptr);
 
     if (NULL != menu_item_ptr->submenu_ptr) {
-        wlmtk_element_t *e = wlmtk_menu_element(menu_item_ptr->submenu_ptr);
-
-        int x, y, t, r;
-        wlmtk_element_t *ie_ptr = wlmtk_menu_item_element(menu_item_ptr);
-        wlmtk_element_get_position(ie_ptr, &x, &y);
-        wlmtk_element_get_dimensions(ie_ptr, NULL, &t, &r, NULL);
-        x += r;
-        y += t;
-        wlmtk_element_set_position(e, x, y);
+        if (WLMTK_MENU_ITEM_HIGHLIGHTED == menu_item_ptr->state) {
+            _wlmtk_menu_item_place_submenu(menu_item_ptr);
+        }
 
         wlmtk_menu_set_open(
             menu_item_ptr->submenu_ptr,
             menu_item_ptr->state == WLMTK_MENU_ITEM_HIGHLIGHTED);
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Places the submenu next to the item: To the right, or to the left if it
+ * does not fit within the menu's bounds. See @ref wlmtk_menu_place_submenu.
+ *
+ * @param menu_item_ptr
+ */
+void _wlmtk_menu_item_place_submenu(wlmtk_menu_item_t *menu_item_ptr)
+{
+    wlmtk_element_t *e = wlmtk_menu_element(menu_item_ptr->submenu_ptr);
+    wlmtk_element_t *ie_ptr = wlmtk_menu_item_element(menu_item_ptr);
+
+    // Item position, relative to the submenu's parent (the menu's base).
+    int x, y, l, t, r;
+    wlmtk_element_get_position(ie_ptr, &x, &y);
+    wlmtk_element_get_dimensions(ie_ptr, &l, &t, &r, NULL);
+    struct wlr_box sub = wlmtk_element_get_dimensions_box(e);
+    if (NULL == menu_item_ptr->menu_ptr ||
+        NULL == e->parent_container_ptr) {
+        wlmtk_element_set_position(e, x + r - sub.x, y + t - sub.y);
+        return;
+    }
+
+    // In absolute coordinates, as the bounds are.
+    int ax, ay, px, py;
+    wlmtk_element_get_absolute_position(ie_ptr, &ax, &ay);
+    wlmtk_element_get_absolute_position(
+        &e->parent_container_ptr->super_element, &px, &py);
+    struct wlr_box bounds = wlmtk_menu_get_bounds(menu_item_ptr->menu_ptr);
+    int sx, sy;
+    bool left = wlmtk_menu_place_submenu(
+        &bounds, ax + l, ax + r, ay + t, sub.width, sub.height,
+        wlmtk_menu_opens_left(menu_item_ptr->menu_ptr), &sx, &sy);
+    wlmtk_menu_set_opens_left(menu_item_ptr->submenu_ptr, left);
+    wlmtk_element_set_position(e, sx - px - sub.x, sy - py - sub.y);
 }
 
 /* ------------------------------------------------------------------------- */
