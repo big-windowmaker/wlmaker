@@ -49,6 +49,12 @@ typedef struct {
     /** Distance from the anchor, in pixels. Optional, defaults to 0. */
     int                       margin;
     /**
+     * Distance from the edge, in pixels. Optional, defaults to 0. Eg. for a
+     * row of tiles sticking out of a dock's column, as Window Maker's
+     * drawers.
+     */
+    int                       edge_offset;
+    /**
      * Whether the dock is positioned relative to the full output, ignoring
      * other panels' exclusive zones, and without an exclusive zone of its own.
      * Eg. for placing launchers adjacent to the Clip. Optional.

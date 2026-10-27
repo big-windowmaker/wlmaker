@@ -479,6 +479,27 @@ bool _wlmtk_dock_positioning(
         break;
     }
 
+    // Distance from the edge.
+    switch (dock_ptr->dock_positioning.edge) {
+    case WLR_EDGE_TOP:
+        panel_positioning_ptr->margin_top = dock_ptr->dock_positioning.edge_offset;
+        break;
+    case WLR_EDGE_BOTTOM:
+        panel_positioning_ptr->margin_bottom =
+            dock_ptr->dock_positioning.edge_offset;
+        break;
+    case WLR_EDGE_LEFT:
+        panel_positioning_ptr->margin_left =
+            dock_ptr->dock_positioning.edge_offset;
+        break;
+    case WLR_EDGE_RIGHT:
+        panel_positioning_ptr->margin_right =
+            dock_ptr->dock_positioning.edge_offset;
+        break;
+    default:
+        break;
+    }
+
     panel_positioning_ptr->exclusive_edge = dock_ptr->dock_positioning.edge;
     // Overlay: Relative to the full output, without an exclusive zone. As
     // the layer shell's exclusive zone of -1.
@@ -512,12 +533,14 @@ void _wlmtk_dock_tile_destroy(bs_dllist_node_t *dlnode_ptr, void *ud_ptr)
 static void test_create_destroy(bs_test_t *test_ptr);
 static void test_move_tile(bs_test_t *test_ptr);
 static void test_set_positioning(bs_test_t *test_ptr);
+static void test_edge_offset(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_dock_test_cases[] = {
     { 1, "create_destroy", test_create_destroy },
     { 1, "move_tile", test_move_tile },
     { 1, "set_positioning", test_set_positioning },
+    { 1, "edge_offset", test_edge_offset },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -659,6 +682,25 @@ void test_set_positioning(bs_test_t *test_ptr)
         wlmtk_dock_remove_tile(dock_ptr, &t[i]);
         wlmtk_tile_fini(&t[i]);
     }
+    wlmtk_dock_destroy(dock_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests the distance from the edge, and an overlay's exclusive zone. */
+void test_edge_offset(bs_test_t *test_ptr)
+{
+    wlmtk_dock_positioning_t pos = {
+        .edge = WLR_EDGE_TOP, .anchor = WLR_EDGE_RIGHT,
+        .margin = 65, .edge_offset = 130, .overlay = true };
+    struct wlmtk_dock_style style = {};
+    wlmtk_dock_t *dock_ptr = wlmtk_dock_create(&pos, &style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dock_ptr);
+    wlmtk_panel_positioning_t p = {};
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmtk_dock_positioning(dock_ptr, &p));
+    BS_TEST_VERIFY_EQ(test_ptr, WLR_EDGE_TOP | WLR_EDGE_RIGHT, p.anchor);
+    BS_TEST_VERIFY_EQ(test_ptr, 65, p.margin_right);
+    BS_TEST_VERIFY_EQ(test_ptr, 130, p.margin_top);
+    BS_TEST_VERIFY_EQ(test_ptr, -1, p.exclusive_zone);
     wlmtk_dock_destroy(dock_ptr);
 }
 
