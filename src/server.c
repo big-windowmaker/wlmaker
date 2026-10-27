@@ -21,6 +21,8 @@
 
 #include "server.h"
 
+#include "dnd.h"
+
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <linux/input-event-codes.h>
@@ -221,6 +223,14 @@ wlmaker_server_t *wlmaker_server_create(
         &server_ptr->theme_changed_event,
         &server_ptr->dock_fx_theme_changed_listener,
         _wlmaker_server_handle_dock_fx_theme_changed);
+
+    // Drag and drop of clients: The dragged icons are above all.
+    server_ptr->dnd_ptr = wlmaker_dnd_create(
+        server_ptr, &server_ptr->wlr_scene_ptr->tree);
+    if (NULL == server_ptr->dnd_ptr) {
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
 
     server_ptr->input_manager_ptr = wlmim_input_manager_create(
         server_ptr->wl_display_ptr,
@@ -594,6 +604,10 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
             &server_ptr->dock_fx_theme_changed_listener);
         wlmaker_dock_fx_destroy(server_ptr->dock_fx_ptr);
         server_ptr->dock_fx_ptr = NULL;
+    }
+    if (NULL != server_ptr->dnd_ptr) {
+        wlmaker_dnd_destroy(server_ptr->dnd_ptr);
+        server_ptr->dnd_ptr = NULL;
     }
 
     if (NULL != server_ptr->root_ptr) {

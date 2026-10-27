@@ -248,6 +248,13 @@ bool wlmaker_layer_panel_get_box(
 }
 
 /* ------------------------------------------------------------------------- */
+struct wlr_surface *wlmaker_layer_panel_wlr_surface(
+    wlmaker_layer_panel_t *layer_panel_ptr)
+{
+    return layer_panel_ptr->wlr_layer_surface_v1_ptr->surface;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_layer_panel_update_layer(wlmaker_layer_panel_t *layer_panel_ptr)
 {
     if (NULL == layer_panel_ptr->wlr_layer_surface_v1_ptr) return;

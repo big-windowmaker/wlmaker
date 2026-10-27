@@ -209,6 +209,8 @@ struct _wlmaker_server_t {
     struct _wlmaker_tile_drag_t *tile_drag_ptr;
     /** Visual effects of Dock and Clip: Dragged icon, ghost, balloons. */
     wlmaker_dock_fx_t         *dock_fx_ptr;
+    /** Drag and drop of clients. */
+    struct _wlmaker_dnd_t     *dnd_ptr;
     /** Listener for @ref wlmaker_server_t::theme_changed_event. */
     struct wl_listener        dock_fx_theme_changed_listener;
 
