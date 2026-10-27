@@ -327,6 +327,20 @@ void wlmtk_element_get_position(
     int *y_ptr);
 
 /**
+ * Gets the position of the element relative to its top-most container: The
+ * sum of the positions of the element and of all its parents. For elements
+ * of the compositor's scene, these are layout coordinates.
+ *
+ * @param element_ptr
+ * @param x_ptr               Optional, may be NULL.
+ * @param y_ptr               Optional, may be NULL.
+ */
+void wlmtk_element_get_absolute_position(
+    wlmtk_element_t *element_ptr,
+    int *x_ptr,
+    int *y_ptr);
+
+/**
  * Sets the position of the element.
  *
  * @param element_ptr

@@ -251,6 +251,7 @@ void wlmaker_context_menu_open(wlmaker_context_menu_t *context_menu_ptr)
     wlmtk_workspace_set_window_position(
         workspace_ptr, context_menu_ptr->window_ptr,
         x + pos.x - bbox.x, y + pos.y - bbox.y);
+    wlmtk_menu_set_bounds(context_menu_ptr->menu_ptr, &area);
 
     wlmtk_menu_set_mode(context_menu_ptr->menu_ptr,
                         WLMTK_MENU_MODE_RIGHTCLICK);

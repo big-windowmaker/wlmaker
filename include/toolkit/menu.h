@@ -174,6 +174,70 @@ void wlmtk_menu_set_parent_item(wlmtk_menu_t *menu_ptr,
 wlmtk_menu_item_t *wlmtk_menu_get_parent_item(wlmtk_menu_t *menu_ptr);
 
 /**
+ * Sets the bounds for the menu's submenus, eg. the usable area of the output.
+ * In the coordinates of @ref wlmtk_element_get_absolute_position. Like on
+ * Window Maker: A submenu opens to the left of its item, if it would extend
+ * beyond the right of the bounds; and moves up, to not extend beyond the
+ * bottom.
+ *
+ * @param menu_ptr
+ * @param bounds_ptr          The bounds, or NULL for none.
+ */
+void wlmtk_menu_set_bounds(wlmtk_menu_t *menu_ptr,
+                           const struct wlr_box *bounds_ptr);
+
+/**
+ * @return The bounds for the submenus of `menu_ptr`: Those set for the
+ *     top-level menu. An empty box, if there are none.
+ */
+struct wlr_box wlmtk_menu_get_bounds(wlmtk_menu_t *menu_ptr);
+
+/**
+ * Sets whether the menu's submenus prefer to open to the left. Like on
+ * Window Maker, a submenu that opened to the left, opens its submenus to the
+ * left, too.
+ *
+ * @protected Called when placing the submenu of a @ref wlmtk_menu_item_t.
+ *
+ * @param menu_ptr
+ * @param opens_left
+ */
+void wlmtk_menu_set_opens_left(wlmtk_menu_t *menu_ptr, bool opens_left);
+
+/** @return Whether the submenus prefer to open to the left. */
+bool wlmtk_menu_opens_left(wlmtk_menu_t *menu_ptr);
+
+/**
+ * Computes where to place a submenu of `width` x `height` for an item: To
+ * the right of the item, or to the left if it does not fit there (or if
+ * `prefer_left` and it fits on the left). If it fits on neither side, on the
+ * side with more room. Aligned with the item's top, but moved up to not
+ * extend beyond the bottom, and down to not extend beyond the top.
+ *
+ * @param bounds_ptr          The bounds. If empty: To the right, aligned.
+ * @param item_left           Left edge of the item.
+ * @param item_right          Right edge of the item.
+ * @param item_top            Top edge of the item.
+ * @param width
+ * @param height
+ * @param prefer_left
+ * @param x_ptr               Set to the left edge of the submenu.
+ * @param y_ptr               Set to the top edge of the submenu.
+ *
+ * @return true if the submenu opens to the left.
+ */
+bool wlmtk_menu_place_submenu(
+    const struct wlr_box *bounds_ptr,
+    int item_left,
+    int item_right,
+    int item_top,
+    int width,
+    int height,
+    bool prefer_left,
+    int *x_ptr,
+    int *y_ptr);
+
+/**
  * Requests that menu_item_ptr be highlighted.
  *
  * @param menu_ptr

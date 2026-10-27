@@ -59,6 +59,10 @@ struct _wlmtk_menu_t {
     wlmtk_menu_item_t         *parent_menu_item_ptr;
     /** Current mode of the menu. */
     enum wlmtk_menu_mode      mode;
+    /** Bounds for the submenus. See @ref wlmtk_menu_set_bounds. */
+    struct wlr_box            bounds;
+    /** Whether submenus prefer to open to the left. */
+    bool                      opens_left;
 
     /**
      * Right-click mode: Whether a pointer position was recorded since the
@@ -349,6 +353,79 @@ void wlmtk_menu_set_parent_item(wlmtk_menu_t *menu_ptr,
 wlmtk_menu_item_t *wlmtk_menu_get_parent_item(wlmtk_menu_t *menu_ptr)
 {
     return menu_ptr->parent_menu_item_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_menu_set_bounds(wlmtk_menu_t *menu_ptr,
+                           const struct wlr_box *bounds_ptr)
+{
+    if (NULL == bounds_ptr) {
+        menu_ptr->bounds = (struct wlr_box){};
+    } else {
+        menu_ptr->bounds = *bounds_ptr;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_box wlmtk_menu_get_bounds(wlmtk_menu_t *menu_ptr)
+{
+    while (NULL != menu_ptr->parent_menu_item_ptr &&
+           NULL != wlmtk_menu_item_get_parent_menu(
+               menu_ptr->parent_menu_item_ptr)) {
+        menu_ptr = wlmtk_menu_item_get_parent_menu(
+            menu_ptr->parent_menu_item_ptr);
+    }
+    return menu_ptr->bounds;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_menu_set_opens_left(wlmtk_menu_t *menu_ptr, bool opens_left)
+{
+    menu_ptr->opens_left = opens_left;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_menu_opens_left(wlmtk_menu_t *menu_ptr)
+{
+    return menu_ptr->opens_left;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_menu_place_submenu(
+    const struct wlr_box *bounds_ptr,
+    int item_left,
+    int item_right,
+    int item_top,
+    int width,
+    int height,
+    bool prefer_left,
+    int *x_ptr,
+    int *y_ptr)
+{
+    *x_ptr = item_right;
+    *y_ptr = item_top;
+    if (NULL == bounds_ptr || wlr_box_empty(bounds_ptr)) return false;
+
+    const int right = bounds_ptr->x + bounds_ptr->width;
+    const int bottom = bounds_ptr->y + bounds_ptr->height;
+    bool fits_right = item_right + width <= right;
+    bool fits_left = item_left - width >= bounds_ptr->x;
+    bool left;
+    if (prefer_left && fits_left) {
+        left = true;
+    } else if (fits_right) {
+        left = false;
+    } else if (fits_left) {
+        left = true;
+    } else {
+        // Fits on neither side: Where there is more room.
+        left = item_left - bounds_ptr->x > right - item_right;
+    }
+    *x_ptr = left ? item_left - width : item_right;
+
+    if (*y_ptr + height > bottom) *y_ptr = bottom - height;
+    if (*y_ptr < bounds_ptr->y) *y_ptr = bounds_ptr->y;
+    return left;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -829,6 +906,8 @@ static void test_set_mode(bs_test_t *test_ptr);
 static void test_keyboard_navigation(bs_test_t *test_ptr);
 static void test_keyboard_navigation_nested(bs_test_t *test_ptr);
 static void test_rightclick(bs_test_t *test_ptr);
+static void test_place_submenu(bs_test_t *test_ptr);
+static void test_submenu_bounds(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_menu_test_cases[] = {
@@ -837,6 +916,8 @@ static const bs_test_case_t _wlmtk_menu_test_cases[] = {
     { 1, "keyboard_navigation", test_keyboard_navigation },
     { 1, "keyboard_navigation_nested", test_keyboard_navigation_nested },
     { 1, "rightclick", test_rightclick },
+    { 1, "place_submenu", test_place_submenu },
+    { 1, "submenu_bounds", test_submenu_bounds },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -1280,6 +1361,121 @@ void test_rightclick(bs_test_t *test_ptr)
     wlmtk_util_disconnect_test_listener(&t2);
     wlmtk_util_disconnect_test_listener(&t1);
     wlmtk_menu_destroy(menu_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests @ref wlmtk_menu_place_submenu. */
+void test_place_submenu(bs_test_t *test_ptr)
+{
+    struct wlr_box b = { .x = 0, .y = 0, .width = 1000, .height = 700 };
+    int x, y;
+
+    // No bounds: Right of the item, aligned.
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_place_submenu(
+                             NULL, 900, 990, 650, 200, 300, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 990, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 650, y);
+
+    // Fits right.
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_place_submenu(
+                             &b, 100, 300, 50, 200, 100, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 300, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 50, y);
+
+    // Would extend beyond the right, and the bottom: Left, moved up.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_place_submenu(
+                            &b, 700, 900, 650, 200, 300, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 500, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 400, y);
+
+    // Prefers left: Stays left, unless it does not fit there.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_place_submenu(
+                            &b, 300, 500, 0, 200, 100, true, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 100, x);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_place_submenu(
+                             &b, 100, 300, 0, 200, 100, true, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 300, x);
+
+    // Fits nowhere: Where there is more room. Taller than the bounds: Top.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_place_submenu(
+                            &b, 600, 700, 100, 650, 900, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, -50, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, y);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_place_submenu(
+                             &b, 300, 400, 100, 650, 100, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 400, x);
+}
+
+/* ------------------------------------------------------------------------- */
+/** A submenu opens to the left, when there is no room on the right. */
+void test_submenu_bounds(bs_test_t *test_ptr)
+{
+    wlmtk_container_t *c = wlmtk_container_create_fake_parent();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, c);
+    wlmtk_menu_t *m0 = wlmtk_menu_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, m0);
+    wlmtk_menu_item_t *i00 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i00);
+    wlmtk_menu_add_item(m0, i00);
+    wlmtk_menu_t *m1 = wlmtk_menu_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, m1);
+    wlmtk_menu_item_set_submenu(i00, m1);
+    wlmtk_menu_item_t *i10 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i10);
+    wlmtk_menu_add_item(m1, i10);
+    wlmtk_menu_t *m2 = wlmtk_menu_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, m2);
+    wlmtk_menu_item_set_submenu(i10, m2);
+    wlmtk_menu_item_t *i20 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i20);
+    wlmtk_menu_add_item(m2, i20);
+
+    wlmtk_element_t *me = wlmtk_menu_element(m0);
+    wlmtk_container_add_element(c, me);
+    wlmtk_element_set_visible(me, true);
+    wlmtk_element_set_position(me, 300, 50);
+    int ix, iy;
+    wlmtk_element_get_absolute_position(
+        wlmtk_menu_item_element(i00), &ix, &iy);
+    BS_TEST_VERIFY_TRUE(test_ptr, 300 <= ix && ix < 310);
+    BS_TEST_VERIFY_TRUE(test_ptr, 50 <= iy && iy < 60);
+    int w = wlmtk_element_get_dimensions_box(wlmtk_menu_element(m1)).width;
+    int h = wlmtk_element_get_dimensions_box(wlmtk_menu_element(m1)).height;
+    BS_TEST_VERIFY_TRUE(test_ptr, 100 <= w && w < 120);
+
+    // Room on the right (no bounds): Opens to the right of the item.
+    int x, y;
+    wlmtk_menu_request_item_highlight(m0, i00);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m1));
+    wlmtk_element_get_absolute_position(wlmtk_menu_element(m1), &x, &y);
+    BS_TEST_VERIFY_EQ(test_ptr, ix + 100, x);
+    BS_TEST_VERIFY_EQ(test_ptr, iy, y);
+    wlmtk_menu_request_item_highlight(m0, NULL);
+
+    // Bounds end at 450: Opens to the left of the item. And its submenu, too.
+    struct wlr_box b = { .x = 0, .y = 0, .width = 450, .height = 700 };
+    wlmtk_menu_set_bounds(m0, &b);
+    wlmtk_menu_request_item_highlight(m0, i00);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m1));
+    wlmtk_element_get_absolute_position(wlmtk_menu_element(m1), &x, &y);
+    BS_TEST_VERIFY_EQ(test_ptr, ix - w, x);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_opens_left(m1));
+    wlmtk_menu_request_item_highlight(m1, i10);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m2));
+    wlmtk_element_get_absolute_position(wlmtk_menu_element(m2), &x, &y);
+    BS_TEST_VERIFY_EQ(test_ptr, ix - 2 * w, x);
+
+    // Bounds end at 60 below: Moves up.
+    wlmtk_menu_request_item_highlight(m0, NULL);
+    b.height = 60;
+    wlmtk_menu_set_bounds(m0, &b);
+    wlmtk_menu_request_item_highlight(m0, i00);
+    wlmtk_element_get_absolute_position(wlmtk_menu_element(m1), &x, &y);
+    BS_TEST_VERIFY_EQ(test_ptr, 60 - h, y);
+
+    wlmtk_container_remove_element(c, me);
+    wlmtk_menu_destroy(m0);
+    wlmtk_container_destroy_fake_parent(c);
 }
 
 /* == End of menu.c ======================================================== */
