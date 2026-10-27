@@ -25,11 +25,13 @@
 #include <stddef.h>
 
 #include "wlm_calendar.h"
+#include "wlm_settings.h"
 #include "wlm_volume.h"
 
 /** Unit tests. */
 const bs_test_set_t *test_sets[] = {
     &wlm_calendar_test_set,
+    &wlm_settings_test_set,
     &wlm_volume_test_set,
     NULL,
 };
