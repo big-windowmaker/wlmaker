@@ -69,6 +69,11 @@ static const wlmaker_i18n_entry_t _wlmaker_i18n_pt_br[] = {
       "Confirme, por favor." },
     { "Yes", "Sim" },
     { "No", "Não" },
+    // Window Maker's drawers: "Drawer options", "Autocollapse", "Remove
+    // drawer", "Drawer" and its message are untranslated there, and stay so.
+    { "Collapsed", "Minimizado" },
+    { "OK", "Ok" },
+    { "Cancel", "Cancelar" },
     { "Restore Default Launchers", "Restaurar lançadores padrão" },
     { "Dock-app", "Dockapp" },
     { "Workspace", "Área" },

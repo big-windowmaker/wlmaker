@@ -69,6 +69,66 @@ bool wlmaker_dock_launchers_store(
     const char *section_ptr,
     bspl_array_t *array_ptr);
 
+/**
+ * Loads the launchers of column `column` (see @ref WLMAKER_COLUMN_CLIP):
+ * The Clip's, the Dock's, or a drawer's (the `Launchers` of its entry in
+ * the Dock's), as shown (with their icon found).
+ *
+ * @return An array of dicts, or NULL on error.
+ */
+bspl_array_t *wlmaker_dock_launchers_load_column(
+    wlmaker_server_t *server_ptr,
+    int column);
+
+/**
+ * Moves launcher `from_index` of column `from_column` to `to_index` of
+ * column `to_column`, in the state: Within a column, or across. Stores the
+ * result at once, and tells `wlmdock` and the drawers.
+ *
+ * @return true on success.
+ */
+bool wlmaker_dock_launchers_move(
+    wlmaker_server_t *server_ptr,
+    int from_column,
+    size_t from_index,
+    int to_column,
+    size_t to_index);
+
+/**
+ * Removes launcher `index` of column `column` from the state; or, with
+ * `entry_ptr`, inserts that entry at `index`.
+ *
+ * @return true on success.
+ */
+bool wlmaker_dock_launchers_edit(
+    wlmaker_server_t *server_ptr,
+    int column,
+    size_t index,
+    bspl_dict_t *entry_ptr);
+
+/**
+ * Replaces the entry of drawer `id_ptr` in the Dock's launchers with
+ * `entry_ptr`, and stores it. Eg. for its options.
+ *
+ * @return true on success.
+ */
+bool wlmaker_dock_launchers_replace_drawer(
+    wlmaker_server_t *server_ptr,
+    const char *id_ptr,
+    bspl_dict_t *entry_ptr);
+
+/**
+ * Stores the boolean `key_ptr` (eg. "Collapsed") of drawer `id_ptr`'s entry
+ * in the Dock's launchers, as Yes or No.
+ *
+ * @return true on success.
+ */
+bool wlmaker_dock_launchers_set_drawer_flag(
+    wlmaker_server_t *server_ptr,
+    const char *id_ptr,
+    const char *key_ptr,
+    bool value);
+
 /** @return The string value of `key_ptr` in the launcher, or NULL. */
 const char *wlmaker_dock_launcher_value(
     bspl_dict_t *dict_ptr,

@@ -74,12 +74,13 @@ static void _wlmaker_tile_drag_remove(
     wlmaker_tile_drag_t *tile_drag_ptr,
     double x,
     double y);
-static bool _wlmaker_tile_drag_move_launcher(
-    wlmaker_server_t *server_ptr,
-    bool from_dock,
-    size_t from_index,
-    bool to_dock,
-    size_t to_index);
+static bool _wlmaker_tile_drag_try_column(
+    wlmaker_tile_drag_t *tile_drag_ptr,
+    int id,
+    bool own,
+    double x,
+    double y,
+    wlmaker_tile_drag_target_t *target_ptr);
 static void _wlmaker_tile_drag_destroy(wlmaker_tile_drag_t *tile_drag_ptr);
 static int _wlmaker_tile_drag_slot_position(
     const wlmaker_dock_column_t *column_ptr,
@@ -120,13 +121,13 @@ wlmaker_tile_drag_t *wlmaker_tile_drag_start(
 
     // Where it was: Its slot in the column.
     wlmaker_dock_column_t column;
-    if (wlmaker_clip_column(server_ptr, source_ptr->from_dock, &column)) {
+    if (wlmaker_clip_column_id(server_ptr, source_ptr->column, &column)) {
         size_t slot = 1 + source_ptr->index;
         if (WLMAKER_TILE_DRAG_DOCKAPP == source_ptr->kind) {
             slot += column.launchers;
         }
         tile_drag_ptr->origin = (wlmaker_tile_drag_target_t){
-            .dock = source_ptr->from_dock,
+            .column = source_ptr->column,
             .index = source_ptr->index,
             .slot = slot };
         tile_drag_ptr->origin.x = _wlmaker_tile_drag_slot_position(
@@ -135,7 +136,8 @@ wlmaker_tile_drag_t *wlmaker_tile_drag_start(
         tile_drag_ptr->target = tile_drag_ptr->origin;
         tile_drag_ptr->has_target = true;
 
-        // A launcher is drawn by `wlmdock`: Cover it with an empty tile.
+        // A launcher is drawn by `wlmdock` (or the drawer): Cover it with an
+        // empty tile.
         if (WLMAKER_TILE_DRAG_LAUNCHER == source_ptr->kind) {
             struct wlr_buffer *empty_ptr = wlmaker_dock_tile_buffer(
                 &server_ptr->style_ptr->tile, NULL, NULL);
@@ -342,8 +344,6 @@ bool _wlmaker_tile_drag_find_target(
     double y,
     wlmaker_tile_drag_target_t *target_ptr)
 {
-    int tx = x - tile_drag_ptr->source.grab_x;
-    int ty = y - tile_drag_ptr->source.grab_y;
     // Window Maker: With the move modifier held, a docked icon detaches.
     // Not for dock-apps: They are dragged with the modifier, or by the
     // tile's border.
@@ -351,22 +351,71 @@ bool _wlmaker_tile_drag_find_target(
         !tile_drag_ptr->source.locked &&
         _wlmaker_tile_drag_modifier_held(tile_drag_ptr)) return false;
 
-    bool docks[2] = { tile_drag_ptr->source.from_dock,
-                      !tile_drag_ptr->source.from_dock };
-    for (int i = 0; i < 2; ++i) {
-        wlmaker_dock_column_t column;
-        if (!wlmaker_clip_column(tile_drag_ptr->server_ptr, docks[i], &column)) {
+    wlmaker_server_t *server_ptr = tile_drag_ptr->server_ptr;
+    int own = tile_drag_ptr->source.column;
+    // The column it comes from first: With Window Maker's threshold.
+    if (_wlmaker_tile_drag_try_column(tile_drag_ptr, own, true, x, y,
+                                      target_ptr)) return true;
+    // A drawer's tile stays on the Dock.
+    if (tile_drag_ptr->source.drawer) return false;
+    // Then the open drawers, the Dock and the Clip.
+    for (int id = 2; id < wlmaker_clip_columns(server_ptr); ++id) {
+        wlmaker_drawer_t *d_ptr = wlmaker_clip_drawer(server_ptr, id);
+        if (id == own || NULL == d_ptr || wlmaker_drawer_collapsed(d_ptr)) {
             continue;
         }
-        bool own = (0 == i);
-        // The dragged tile is no longer counted in its own area.
-        if (wlmaker_tile_drag_snap(&column, tile_drag_ptr->source.kind, own,
-                                   tx, ty, target_ptr)) {
-            target_ptr->dock = docks[i];
+        if (_wlmaker_tile_drag_try_column(tile_drag_ptr, id, false, x, y,
+                                          target_ptr)) return true;
+    }
+    static const int docks[2] = { WLMAKER_COLUMN_DOCK, WLMAKER_COLUMN_CLIP };
+    for (int i = 0; i < 2; ++i) {
+        if (docks[i] == own) continue;
+        if (_wlmaker_tile_drag_try_column(tile_drag_ptr, docks[i], false, x, y,
+                                          target_ptr)) return true;
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tries to attach the tile to column `id`, for the pointer at `x`, `y`. On
+ * the Dock, with the pointer on a drawer's tile: Into that drawer, which
+ * opens (as Window Maker's Autoexpand).
+ */
+bool _wlmaker_tile_drag_try_column(
+    wlmaker_tile_drag_t *tile_drag_ptr,
+    int id,
+    bool own,
+    double x,
+    double y,
+    wlmaker_tile_drag_target_t *target_ptr)
+{
+    wlmaker_server_t *server_ptr = tile_drag_ptr->server_ptr;
+    int tx = x - tile_drag_ptr->source.grab_x;
+    int ty = y - tile_drag_ptr->source.grab_y;
+    wlmaker_dock_column_t column;
+    if (!wlmaker_clip_column_id(server_ptr, id, &column)) return false;
+
+    if (WLMAKER_COLUMN_DOCK == id && !tile_drag_ptr->source.drawer) {
+        for (int d = 2; d < wlmaker_clip_columns(server_ptr); ++d) {
+            wlmaker_drawer_t *d_ptr = wlmaker_clip_drawer(server_ptr, d);
+            wlmaker_dock_column_t dc;
+            if (NULL == d_ptr || !wlmaker_drawer_column(d_ptr, &dc)) continue;
+            struct wlr_box box = { .x = dc.x, .y = dc.y,
+                                   .width = dc.size, .height = dc.size };
+            if (!wlr_box_contains_point(&box, x, y)) continue;
+            wlmaker_drawer_hovered(d_ptr);
+            if (!wlmaker_tile_drag_snap(&dc, tile_drag_ptr->source.kind,
+                                        d == tile_drag_ptr->source.column,
+                                        dc.x, dc.y, target_ptr)) return false;
+            target_ptr->column = d;
             return true;
         }
     }
-    return false;
+    if (!wlmaker_tile_drag_snap(&column, tile_drag_ptr->source.kind, own,
+                                tx, ty, target_ptr)) return false;
+    target_ptr->column = id;
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -417,22 +466,22 @@ void _wlmaker_tile_drag_apply(wlmaker_tile_drag_t *tile_drag_ptr)
     wlmaker_server_t *server_ptr = tile_drag_ptr->server_ptr;
     wlmaker_tile_drag_source_t *s_ptr = &tile_drag_ptr->source;
     wlmaker_tile_drag_target_t *t_ptr = &tile_drag_ptr->target;
-    bool moved = s_ptr->from_dock != t_ptr->dock || s_ptr->index != t_ptr->index;
+    bool moved = s_ptr->column != t_ptr->column || s_ptr->index != t_ptr->index;
 
     if (WLMAKER_TILE_DRAG_DOCKAPP == s_ptr->kind) {
         if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);
         if (moved && NULL != s_ptr->tile_ptr) {
             wlmaker_clip_move_dockapp(server_ptr, s_ptr->tile_ptr,
-                                      t_ptr->dock, t_ptr->index);
+                                      t_ptr->column, t_ptr->index);
         }
         wlmaker_dock_fx_cover_hide(server_ptr->dock_fx_ptr);
         return;
     }
 
     if (moved) {
-        _wlmaker_tile_drag_move_launcher(
-            server_ptr, s_ptr->from_dock, s_ptr->index,
-            t_ptr->dock, t_ptr->index);
+        wlmaker_dock_launchers_move(
+            server_ptr, s_ptr->column, s_ptr->index,
+            t_ptr->column, t_ptr->index);
     }
     // `wlmdock` shows the launcher where it now is.
     wlmaker_dock_fx_cover_hide(server_ptr->dock_fx_ptr);
@@ -490,83 +539,22 @@ void _wlmaker_tile_drag_remove(
         wlmaker_dock_fx_kaboom(server_ptr->dock_fx_ptr, s_ptr->image_ptr,
                                tx, ty, &area);
     }
-    const char *section_ptr = s_ptr->from_dock ? "Dock" : "Clip";
-    bspl_array_t *a = wlmaker_dock_launchers_load(server_ptr, section_ptr);
-    bspl_array_t *n = bspl_array_create();
-    bool rv = NULL != a && NULL != n;
-    for (size_t i = 0; rv && i < bspl_array_size(a); ++i) {
-        if (i == s_ptr->index) continue;
-        rv = bspl_array_push_back(n, bspl_array_at(a, i));
-    }
-    if (rv) wlmaker_dock_launchers_store(server_ptr, section_ptr, n);
-    if (NULL != n) bspl_array_unref(n);
-    if (NULL != a) bspl_array_unref(a);
-}
-
-/* ------------------------------------------------------------------------- */
-/** Moves a launcher in the state: Within the Dock or the Clip, or across. */
-bool _wlmaker_tile_drag_move_launcher(
-    wlmaker_server_t *server_ptr,
-    bool from_dock,
-    size_t from_index,
-    bool to_dock,
-    size_t to_index)
-{
-    const char *from_ptr = from_dock ? "Dock" : "Clip";
-    const char *to_ptr = to_dock ? "Dock" : "Clip";
-    bspl_array_t *from_a = wlmaker_dock_launchers_load(server_ptr, from_ptr);
-    bspl_array_t *to_a = (from_dock == to_dock) ? NULL :
-        wlmaker_dock_launchers_load(server_ptr, to_ptr);
-    bspl_array_t *new_from = bspl_array_create();
-    bspl_array_t *new_to = (from_dock == to_dock) ? NULL : bspl_array_create();
-    bool rv = NULL != from_a && NULL != new_from &&
-        from_index < bspl_array_size(from_a) &&
-        (from_dock == to_dock || (NULL != to_a && NULL != new_to));
-    bspl_object_t *moved_ptr = rv ? bspl_array_at(from_a, from_index) : NULL;
-
-    // Without the moved one; and for a move within, with it at `to_index`.
-    for (size_t i = 0, j = 0; rv && i < bspl_array_size(from_a); ++i) {
-        if (i == from_index) continue;
-        if (from_dock == to_dock && j == to_index) {
-            rv = bspl_array_push_back(new_from, moved_ptr);
-            ++j;
-        }
-        rv = rv && bspl_array_push_back(new_from, bspl_array_at(from_a, i));
-        ++j;
-    }
-    if (rv && from_dock == to_dock &&
-        bspl_array_size(new_from) < bspl_array_size(from_a)) {
-        rv = bspl_array_push_back(new_from, moved_ptr);
-    }
-    if (rv && from_dock != to_dock) {
-        size_t n = bspl_array_size(to_a);
-        for (size_t i = 0; rv && i <= n; ++i) {
-            if (i == to_index || (i == n && to_index > n)) {
-                rv = bspl_array_push_back(new_to, moved_ptr);
-            }
-            if (rv && i < n) {
-                rv = bspl_array_push_back(new_to, bspl_array_at(to_a, i));
-            }
-        }
-    }
-    if (rv && NULL != new_to) {
-        rv = wlmaker_dock_launchers_store(server_ptr, to_ptr, new_to);
-    }
-    if (rv) rv = wlmaker_dock_launchers_store(server_ptr, from_ptr, new_from);
-
-    if (NULL != new_to) bspl_array_unref(new_to);
-    if (NULL != new_from) bspl_array_unref(new_from);
-    if (NULL != to_a) bspl_array_unref(to_a);
-    if (NULL != from_a) bspl_array_unref(from_a);
-    return rv;
+    wlmaker_dock_launchers_edit(server_ptr, s_ptr->column, s_ptr->index, NULL);
 }
 
 /* ------------------------------------------------------------------------- */
 /** Destroys the drag. */
 void _wlmaker_tile_drag_destroy(wlmaker_tile_drag_t *tile_drag_ptr)
 {
-    if (tile_drag_ptr->server_ptr->tile_drag_ptr == tile_drag_ptr) {
-        tile_drag_ptr->server_ptr->tile_drag_ptr = NULL;
+    wlmaker_server_t *server_ptr = tile_drag_ptr->server_ptr;
+    if (server_ptr->tile_drag_ptr == tile_drag_ptr) {
+        server_ptr->tile_drag_ptr = NULL;
+    }
+    // Drawers opened while dragging close again, with Autocollapse.
+    for (int id = 2; NULL != server_ptr->clip_ptr &&
+             id < wlmaker_clip_columns(server_ptr); ++id) {
+        wlmaker_drawer_t *d_ptr = wlmaker_clip_drawer(server_ptr, id);
+        if (NULL != d_ptr) wlmaker_drawer_left(d_ptr);
     }
     if (NULL != tile_drag_ptr->source.image_ptr) {
         wlr_buffer_unlock(tile_drag_ptr->source.image_ptr);
