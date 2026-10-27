@@ -430,27 +430,11 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         break;
 
     case WLMAKER_ACTION_ROOT_MENU:
-        // TODO(kaeser@gubbe.ch): Clean up.
         if (NULL != server_ptr->root_menu_ptr &&
             NULL == wlmtk_window_get_workspace(
                 wlmaker_root_menu_window(server_ptr->root_menu_ptr))) {
-            wlmtk_workspace_map_window(
-                wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr),
-                wlmaker_root_menu_window(server_ptr->root_menu_ptr));
-            wlmtk_workspace_set_window_position(
-                wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr),
-                wlmaker_root_menu_window(server_ptr->root_menu_ptr),
-                wlmim_wlr_cursor(server_ptr->input_manager_ptr)->x,
-                wlmim_wlr_cursor(server_ptr->input_manager_ptr)->y);
-            wlmtk_workspace_confine_within(
-                wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr),
-                wlmaker_root_menu_window(server_ptr->root_menu_ptr));
-            wlmtk_menu_set_mode(
-                wlmaker_root_menu_menu(server_ptr->root_menu_ptr),
-                WLMTK_MENU_MODE_NORMAL);
-            wlmtk_menu_set_open(
-                wlmaker_root_menu_menu(server_ptr->root_menu_ptr),
-                true);
+            wlmaker_root_menu_open(server_ptr->root_menu_ptr,
+                                   WLMTK_MENU_MODE_NORMAL);
         }
         break;
 

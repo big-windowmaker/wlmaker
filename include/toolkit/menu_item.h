@@ -136,6 +136,10 @@ void wlmtk_menu_item_set_parent_menu(
     wlmtk_menu_item_t *menu_item_ptr,
     wlmtk_menu_t *menu_ptr);
 
+/** @return the menu the item belongs to, or NULL. */
+wlmtk_menu_t *wlmtk_menu_item_get_parent_menu(
+    wlmtk_menu_item_t *menu_item_ptr);
+
 /**
  * Sets the submenu for this menu item.
  *

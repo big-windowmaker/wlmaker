@@ -34,6 +34,7 @@
 #include <unistd.h>
 #include <wayland-server-core.h>
 #define WLR_USE_UNSTABLE
+#include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
@@ -43,6 +44,8 @@
 #include "action.h"
 #include "action_item.h"
 #include "config.h"
+#include "context_menu.h"
+#include "input/manager.h"
 #include "util/subprocess_monitor.h"
 #include "server.h"
 
@@ -295,6 +298,37 @@ wlmtk_window_t *wlmaker_root_menu_window(wlmaker_root_menu_t *root_menu_ptr)
 wlmtk_menu_t *wlmaker_root_menu_menu(wlmaker_root_menu_t *root_menu_ptr)
 {
     return root_menu_ptr->menu_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_root_menu_open(wlmaker_root_menu_t *root_menu_ptr,
+                            enum wlmtk_menu_mode mode)
+{
+    wlmaker_server_t *server_ptr = root_menu_ptr->server_ptr;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_desktop_get_current_workspace(
+        server_ptr->desktop_ptr);
+    struct wlr_cursor *wlr_cursor_ptr = wlmim_wlr_cursor(
+        server_ptr->input_manager_ptr);
+    int x = wlr_cursor_ptr->x, y = wlr_cursor_ptr->y;
+
+    wlmtk_workspace_map_window(workspace_ptr, root_menu_ptr->window_ptr);
+    wlmtk_workspace_set_window_position(
+        workspace_ptr, root_menu_ptr->window_ptr, x, y);
+
+    struct wlr_box area = wlmtk_desktop_get_usable_area(
+        server_ptr->desktop_ptr,
+        wlmaker_server_get_output_at_cursor(server_ptr));
+    struct wlr_box bbox = wlmtk_window_get_bounding_box(
+        root_menu_ptr->window_ptr);
+    struct wlr_box pos = wlmaker_context_menu_confine(
+        &area, bbox.x, bbox.y, bbox.width, bbox.height);
+    wlmtk_workspace_set_window_position(
+        workspace_ptr, root_menu_ptr->window_ptr,
+        x + pos.x - bbox.x, y + pos.y - bbox.y);
+    wlmtk_menu_set_bounds(root_menu_ptr->menu_ptr, &area);
+
+    wlmtk_menu_set_mode(root_menu_ptr->menu_ptr, mode);
+    wlmtk_menu_set_open(root_menu_ptr->menu_ptr, true);
 }
 
 /* == Local (static) methods =============================================== */
