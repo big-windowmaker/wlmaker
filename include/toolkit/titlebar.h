@@ -138,6 +138,17 @@ wlmtk_element_t *wlmtk_titlebar_element(wlmtk_titlebar_t *titlebar_ptr);
 extern const bspl_desc_t wlmtk_titlebar_style_desc[];
 
 /** Unit test cases. */
+/** Default maximum time between two clicks of a double-click, in ms. */
+#define WLMTK_TITLEBAR_DOUBLE_CLICK_MSEC 300
+
+/**
+ * Sets the maximum time between two clicks on a title bar to be taken as
+ * double-click. Applies to all title bars.
+ *
+ * @param msec                Time in milliseconds. 0 restores the default.
+ */
+void wlmtk_titlebar_set_double_click_msec(uint32_t msec);
+
 extern const bs_test_set_t wlmtk_titlebar_test_set;
 
 #ifdef __cplusplus

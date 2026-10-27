@@ -89,6 +89,8 @@ struct _wlmtk_desktop_t {
     struct wlr_output_layout  *wlr_output_layout_ptr;
     /** Policy for placing new windows. */
     wlmtk_window_placement_t  window_placement;
+    /** Whether windows get activated when the pointer enters them. */
+    bool                      focus_follows_pointer;
 };
 
 static void _wlmtk_desktop_switch_to_workspace(
@@ -626,6 +628,20 @@ wlmtk_window_placement_t wlmtk_desktop_get_window_placement(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmtk_desktop_set_focus_follows_pointer(
+    wlmtk_desktop_t *desktop_ptr,
+    bool follows)
+{
+    desktop_ptr->focus_follows_pointer = follows;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_desktop_get_focus_follows_pointer(wlmtk_desktop_t *desktop_ptr)
+{
+    return desktop_ptr->focus_follows_pointer;
+}
+
+/* ------------------------------------------------------------------------- */
 wlmtk_element_t *wlmtk_desktop_element(wlmtk_desktop_t *desktop_ptr)
 {
     return &desktop_ptr->container.super_element;
@@ -897,11 +913,13 @@ bool _wlmtk_desktop_workspace_set_style(
 
 static void test_create_destroy(bs_test_t *test_ptr);
 static void test_workspaces(bs_test_t *test_ptr);
+static void test_focus_follows_pointer(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_desktop_test_cases[] = {
     { 1, "create_destroy", test_create_destroy },
     { 1, "workspaces", test_workspaces },
+    { 1, "focus_follows_pointer", test_focus_follows_pointer },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -969,6 +987,59 @@ static void test_destroy_current_last(
     wlmtk_window_destroy(w_ptr);
     wlmtk_desktop_remove_workspace(desktop_ptr, ws1_ptr);
     wlmtk_workspace_destroy(ws1_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Activates windows on pointer entry, only with focus-follows-pointer. */
+void test_focus_follows_pointer(bs_test_t *test_ptr)
+{
+    struct wlr_scene *wlr_scene_ptr = wlr_scene_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wlr_scene_ptr);
+    struct wl_display *wl_display_ptr = wl_display_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wl_display_ptr);
+    struct wlr_output_layout *wlr_output_layout_ptr =
+        wlr_output_layout_create(wl_display_ptr);
+    struct wlmtk_desktop_style ds = {};
+    wlmtk_desktop_t *desktop_ptr = wlmtk_desktop_create(
+        wlr_scene_ptr, &ds, wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, desktop_ptr);
+    static const struct wlmtk_tile_style tstyle = {};
+    wlmtk_workspace_t *ws_ptr = wlmtk_workspace_create(
+        wlr_output_layout_ptr, "1", &tstyle);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws_ptr);
+    wlmtk_desktop_add_workspace(desktop_ptr, ws_ptr);
+
+    wlmtk_window_t *w1_ptr = wlmtk_test_window_create(NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w1_ptr);
+    wlmtk_workspace_map_window(ws_ptr, w1_ptr);
+    wlmtk_window_t *w2_ptr = wlmtk_test_window_create(NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w2_ptr);
+    wlmtk_workspace_map_window(ws_ptr, w2_ptr);
+    wlmtk_workspace_activate_window(ws_ptr, w1_ptr);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_activated(w1_ptr));
+
+    // Default: Click to focus. Entering w2 doesn't activate it.
+    BS_TEST_VERIFY_FALSE(
+        test_ptr, wlmtk_desktop_get_focus_follows_pointer(desktop_ptr));
+    wl_signal_emit(&wlmtk_window_element(w2_ptr)->events.pointer_enter, NULL);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_activated(w1_ptr));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_activated(w2_ptr));
+
+    // Focus follows pointer: Entering w2 activates it.
+    wlmtk_desktop_set_focus_follows_pointer(desktop_ptr, true);
+    wl_signal_emit(&wlmtk_window_element(w2_ptr)->events.pointer_enter, NULL);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_activated(w1_ptr));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_activated(w2_ptr));
+
+    wlmtk_workspace_unmap_window(ws_ptr, w2_ptr);
+    wlmtk_window_destroy(w2_ptr);
+    wlmtk_workspace_unmap_window(ws_ptr, w1_ptr);
+    wlmtk_window_destroy(w1_ptr);
+    wlmtk_desktop_remove_workspace(desktop_ptr, ws_ptr);
+    wlmtk_workspace_destroy(ws_ptr);
+    wlmtk_desktop_destroy(desktop_ptr);
+    wl_display_destroy(wl_display_ptr);
+    wlr_scene_node_destroy(&wlr_scene_ptr->tree.node);
 }
 
 /* ------------------------------------------------------------------------- */

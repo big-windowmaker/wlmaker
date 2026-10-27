@@ -231,6 +231,18 @@ wlmaker_server_t *wlmaker_server_create(
 void wlmaker_server_destroy(wlmaker_server_t *server_ptr);
 
 /**
+ * Applies the desktop's settings from the configuration: 'WindowPlacement'
+ * (Smart or Center) and 'FocusMode' (Click, or Sloppy: windows get
+ * activated when the pointer enters them).
+ *
+ * @param server_ptr
+ * @param config_dict_ptr
+ */
+void wlmaker_server_configure_desktop(
+    wlmaker_server_t *server_ptr,
+    bspl_dict_t *config_dict_ptr);
+
+/**
  * Activates the task list.
  *
  * @param server_ptr

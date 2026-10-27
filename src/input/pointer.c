@@ -109,8 +109,36 @@ const bspl_desc_t wlmim_pointer_options_desc[] = {
     BSPL_DESC_SENTINEL()
 };
 
+static const bspl_enum_desc_t _wlmim_pointer_accel_profiles[] = {
+    BSPL_ENUM("Adaptive", LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE),
+    BSPL_ENUM("Flat", LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT),
+    BSPL_ENUM_SENTINEL()
+};
+
+const bspl_desc_t wlmim_mouse_options_desc[] = {
+    BSPL_DESC_DOUBLE(
+        "AccelSpeed",
+        false,
+        struct wlmim_pointer_options,
+        mouse.accel_speed,
+        mouse.accel_speed,
+        0.0),
+    BSPL_DESC_ENUM(
+        "AccelProfile",
+        false,
+        struct wlmim_pointer_options,
+        mouse.accel_profile,
+        mouse.accel_profile,
+        LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE,
+        _wlmim_pointer_accel_profiles),
+    BSPL_DESC_SENTINEL()
+};
+
 /* == Exported methods ===================================================== */
 
+static void _wlmim_pointer_apply_mouse(
+    struct libinput_device *lid_ptr,
+    const struct wlmim_pointer_options *options_ptr);
 void _wlmim_pointer_apply(
     wlmim_pointer_t *pointer_ptr,
     const struct wlmim_pointer_options *options_ptr);
@@ -162,6 +190,8 @@ void _wlmim_pointer_apply(
 
     if (!wlr_input_device_is_libinput(p->wlr_input_device_ptr)) return;
     lid_ptr = wlr_libinput_get_device_handle(p->wlr_input_device_ptr);
+
+    _wlmim_pointer_apply_mouse(lid_ptr, options_ptr);
 
     // Guard clause: Ignore non-touchpad pointers.
     if (0 >= libinput_device_config_tap_get_finger_count(lid_ptr)) return;
@@ -261,13 +291,45 @@ void _wlmim_pointer_apply(
 }
 
 
+/* ------------------------------------------------------------------------- */
+/** Applies the 'Mouse' options (acceleration) to a pointer device. */
+void _wlmim_pointer_apply_mouse(
+    struct libinput_device *lid_ptr,
+    const struct wlmim_pointer_options *options_ptr)
+{
+    if (!options_ptr->mouse.present ||
+        !libinput_device_config_accel_is_available(lid_ptr)) return;
+
+    double speed = BS_MAX(-1.0, BS_MIN(1.0, options_ptr->mouse.accel_speed));
+    enum libinput_config_status s = libinput_device_config_accel_set_speed(
+        lid_ptr, speed);
+    if (LIBINPUT_CONFIG_STATUS_SUCCESS != s) {
+        bs_log(BS_WARNING,
+               "Failed libinput_device_config_accel_set_speed(%p, %f)",
+               lid_ptr, speed);
+    }
+
+    if (libinput_device_config_accel_get_profiles(lid_ptr) &
+        options_ptr->mouse.accel_profile) {
+        s = libinput_device_config_accel_set_profile(
+            lid_ptr, options_ptr->mouse.accel_profile);
+        if (LIBINPUT_CONFIG_STATUS_SUCCESS != s) {
+            bs_log(BS_WARNING,
+                   "Failed libinput_device_config_accel_set_profile(%p, %d)",
+                   lid_ptr, options_ptr->mouse.accel_profile);
+        }
+    }
+}
+
 /* == Unit Tests =========================================================== */
 
 static void _wlmim_pointer_test_parse(bs_test_t *test_ptr);
+static void _wlmim_pointer_test_parse_mouse(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t wlmim_pointer_test_cases[] = {
     { true, "parse", _wlmim_pointer_test_parse },
+    { true, "parse_mouse", _wlmim_pointer_test_parse_mouse },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -307,6 +369,37 @@ void _wlmim_pointer_test_parse(bs_test_t *test_ptr)
         o.touchpad.scroll_method);
     BS_TEST_VERIFY_FALSE(test_ptr, o.touchpad.natural_scrolling);
 
+    bspl_dict_unref(d);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests decoding the 'Mouse' section. */
+void _wlmim_pointer_test_parse_mouse(bs_test_t *test_ptr)
+{
+    bspl_dict_t *d = bspl_dict_from_object(
+        bspl_create_object_from_plist_string(
+            "{ AccelSpeed = \"-0.5\"; AccelProfile = Flat; }"));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+
+    struct wlmim_pointer_options o = {};
+    BS_TEST_VERIFY_TRUE(
+        test_ptr,
+        bspl_decode_dict(d, wlmim_mouse_options_desc, &o));
+    BS_TEST_VERIFY_TRUE(test_ptr, -0.5 == o.mouse.accel_speed);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, LIBINPUT_CONFIG_ACCEL_PROFILE_FLAT, o.mouse.accel_profile);
+    bspl_dict_unref(d);
+
+    // Defaults: libinput's.
+    d = bspl_dict_from_object(bspl_create_object_from_plist_string("{}"));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    BS_TEST_VERIFY_TRUE(
+        test_ptr,
+        bspl_decode_dict(d, wlmim_mouse_options_desc, &o));
+    BS_TEST_VERIFY_TRUE(test_ptr, 0.0 == o.mouse.accel_speed);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, LIBINPUT_CONFIG_ACCEL_PROFILE_ADAPTIVE,
+        o.mouse.accel_profile);
     bspl_dict_unref(d);
 }
 

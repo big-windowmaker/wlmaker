@@ -38,6 +38,18 @@
         NaturalScrolling = Enabled;
     };
 
+    // Optional: Pointer acceleration of all pointer devices (mice and
+    // touchpads). Without this section, libinput's defaults apply.
+    // Mouse = {
+    //     // From "-1.0" (slowest) to "1.0" (fastest). Quote negative values.
+    //     AccelSpeed = 0.0;
+    //     // Adaptive or Flat.
+    //     AccelProfile = Adaptive;
+    //     // Maximum time between the clicks of a double-click on a title
+    //     // bar, in milliseconds. 300 if not set.
+    //     DoubleClickTime = 300;
+    // };
+
     Cursor = {
         // Optional. If set: A keyboard modifier that will emulate a mouse
         // right-button click, if the modifier is held while the left button
@@ -129,6 +141,9 @@
     // usable area of the output under the pointer, `Smart` (the default, if
     // not set) fills free spots row by row.
     WindowPlacement = Center;
+    // Optional: Which window gets the keyboard focus. `Click` (the default)
+    // activates a window when clicked, `Sloppy` when the pointer enters it.
+    FocusMode = Click;
     // Optional array: Commands to start once wlmaker is running.
     Autostart = (
         // TODO(kaeser@gubbe.ch): Add wlmdock.

@@ -142,6 +142,8 @@ struct _wlmtk_window_t {
     bool                      placed;
     /** Whether this window is currently activated (has keyboard focus). */
     bool                      activated;
+    /** Listener for `pointer_enter` of the window's element. */
+    struct wl_listener        pointer_enter_listener;
 };
 
 /** Type-safe holder for the window style's reference counter. */
@@ -181,6 +183,10 @@ static void _wlmtk_window_menu_request_close_handler(
     void *data_ptr);
 
 static void _wlmtk_window_style_destroy(bs_ref_t *ref_ptr);
+
+static void _wlmtk_window_handle_pointer_enter(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 
 static void _wlmtk_window_request_fullscreen_size(
     wlmtk_window_t *window_ptr,
@@ -259,6 +265,10 @@ wlmtk_window_t *wlmtk_window_create(
     window_ptr->orig_super_element_vmt = wlmtk_element_extend(
         &window_ptr->bordered.super_container.super_element,
         &window_element_vmt);
+    wlmtk_util_connect_listener_signal(
+        &window_ptr->bordered.super_container.super_element.events.pointer_enter,
+        &window_ptr->pointer_enter_listener,
+        _wlmtk_window_handle_pointer_enter);
 
     wlmtk_element_extend(
         &window_ptr->content_container.super_element,
@@ -300,6 +310,7 @@ error:
 /* ------------------------------------------------------------------------- */
 void wlmtk_window_destroy(wlmtk_window_t *window_ptr)
 {
+    wlmtk_util_disconnect_listener(&window_ptr->pointer_enter_listener);
     wlmtk_window_set_server_side_decorated(window_ptr, false);
 
     if (NULL != window_ptr->window_menu_ptr) {
@@ -1309,6 +1320,29 @@ void _wlmtk_window_request_fullscreen_size(wlmtk_window_t *window_ptr,
     }
 
     wl_signal_emit(&window_ptr->events.request_size, &desired_size);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles `pointer_enter` of the window's element: With focus follows
+ * pointer, activates the window (without raising it), like Window Maker's
+ * 'sloppy' focus.
+ *
+ * @param listener_ptr
+ * @param data_ptr
+ */
+void _wlmtk_window_handle_pointer_enter(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmtk_window_t *window_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmtk_window_t, pointer_enter_listener);
+    wlmtk_workspace_t *workspace_ptr = window_ptr->workspace_ptr;
+    if (NULL == workspace_ptr || window_ptr->activated) return;
+    wlmtk_desktop_t *desktop_ptr = wlmtk_workspace_get_desktop(workspace_ptr);
+    if (NULL == desktop_ptr ||
+        !wlmtk_desktop_get_focus_follows_pointer(desktop_ptr)) return;
+    wlmtk_workspace_activate_window(workspace_ptr, window_ptr);
 }
 
 /* == Unit Tests =========================================================== */
