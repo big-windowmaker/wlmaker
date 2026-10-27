@@ -38,6 +38,17 @@
         NaturalScrolling = Enabled;
     };
 
+    // Optional, as Window Maker's SingleClickLaunch: Whether the launchers
+    // of the Dock and the Clip launch on a click. By default (No), on a
+    // double-click; a double-click on a running application's launcher then
+    // shows the application.
+    // SingleClickLaunch = No;
+
+    // Optional: Command for "Settings..." in the menu of the launchers of
+    // the Dock and the Clip. Run as `<command> launcher Dock|Clip <index>`.
+    // Without it, the item is disabled.
+    // DockSettingsCommand = "/usr/bin/my-dock-settings";
+
     // Optional: Pointer acceleration of all pointer devices (mice and
     // touchpads). Without this section, libinput's defaults apply.
     // Mouse = {

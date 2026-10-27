@@ -127,6 +127,13 @@ void wlm_util_subprocess_monitor_destroy(
 }
 
 /* ------------------------------------------------------------------------- */
+struct wl_event_loop *wlm_util_subprocess_monitor_event_loop(
+    wlm_util_subprocess_monitor_t *monitor_ptr)
+{
+    return monitor_ptr->wl_event_loop_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 struct wlm_util_subprocess *wlm_util_subprocess_monitor_entrust(
     wlm_util_subprocess_monitor_t *monitor_ptr,
     bs_subprocess_t *subprocess_ptr,
