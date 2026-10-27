@@ -28,6 +28,7 @@
 #include "config.h"
 #include "context_menu.h"
 #include "corner.h"
+#include "dialog.h"
 #include "dock_fx.h"
 #include "dock_launchers.h"
 #include "dock_menu.h"
@@ -66,6 +67,7 @@ int main(int argc, const char **argv)
         &wlmaker_config_test_set,
         &wlmaker_context_menu_test_set,
         &wlmaker_corner_test_set,
+        &wlmaker_dialog_test_set,
         &wlmaker_dock_fx_test_set,
         &wlmaker_dock_launchers_test_set,
         &wlmaker_dock_menu_test_set,
