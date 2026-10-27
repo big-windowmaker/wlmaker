@@ -31,6 +31,8 @@ typedef struct _wlmaker_toplevel_icon_t wlmaker_toplevel_icon_t;
 
 #include "task_list.h"
 
+struct wlr_layer_surface_v1;
+
 #ifdef __cplusplus
 extern "C" {
 #endif  // __cplusplus
@@ -55,6 +57,25 @@ wlmaker_icon_manager_t *wlmaker_icon_manager_create(
  */
 void wlmaker_icon_manager_destroy(
     wlmaker_icon_manager_t *icon_manager_ptr);
+
+/**
+ * Adopts a layer surface as a dock-app: Its surface becomes the content of
+ * a tile, placed on the Dock, the Clip or a drawer like the dock-apps of the
+ * icon protocol (by the client's name), and handled as they are: dragged,
+ * removed, its menu. Its popups show above the dock. The surface keeps the
+ * size it asks for (up to the tile's); the right button goes to it where it
+ * takes input (its input region), the tile's menu elsewhere. Layer, anchor
+ * and margins are ignored. For layer-shell clients with the namespace
+ * "wlmaker-dockapp", eg. the system tray.
+ *
+ * @param icon_manager_ptr
+ * @param wlr_layer_surface_v1_ptr
+ *
+ * @return true if adopted: The tile goes with the layer surface.
+ */
+bool wlmaker_icon_manager_adopt_layer_surface(
+    wlmaker_icon_manager_t *icon_manager_ptr,
+    struct wlr_layer_surface_v1 *wlr_layer_surface_v1_ptr);
 
 #ifdef __cplusplus
 }  // extern "C"

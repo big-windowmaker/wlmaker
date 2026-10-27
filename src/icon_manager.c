@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
@@ -36,11 +37,13 @@
 #include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/util/edges.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #undef WLR_USE_UNSTABLE
 
+#include "backend/backend.h"
 #include "clip.h"
 #include "context_menu.h"
 #include "dockapp_prefs.h"
@@ -55,6 +58,7 @@
 #include "dock_launchers.h"
 #include "dock_menu.h"
 #include "tile_drag.h"
+#include "xdg_popup.h"
 #include "xdg_shell.h"
 
 struct wl_client;
@@ -71,6 +75,12 @@ struct _wlmaker_icon_manager_t {
 
     /** The global holding the icon manager's interface. */
     struct wl_global          *wl_global_ptr;
+    /**
+     * Holds the popups of adopted layer surfaces (eg. the tray's menus and
+     * balloons): An empty dock in the overlay layer, above all. Created on
+     * the first popup.
+     */
+    wlmtk_dock_t              *popup_dock_ptr;
 };
 
 /** State of a toplevel icon. */
@@ -129,6 +139,23 @@ struct _wlmaker_toplevel_icon_t {
     struct wl_listener        pointer_leave_listener;
     /** Whether the balloon is shown, or pending, for the icon. */
     bool                      balloon_entered;
+
+    /**
+     * A layer surface adopted as dock-app (namespace "wlmaker-dockapp"),
+     * instead of the icon protocol's surface. NULL otherwise.
+     */
+    struct wlr_layer_surface_v1 *wlr_layer_surface_v1_ptr;
+    /** Listener for `destroy` of the adopted layer surface. */
+    struct wl_listener        layer_destroy_listener;
+    /** Listener for `new_popup` of the adopted layer surface. */
+    struct wl_listener        layer_new_popup_listener;
+    /**
+     * The adopted surface's popups (eg. its menus): At the surface's origin,
+     * in the popup container of the dock's panel holding the tile.
+     */
+    wlmtk_container_t         popup_anchor;
+    /** Whether @ref wlmaker_toplevel_icon_t::popup_anchor is initialized. */
+    bool                      popup_anchor_ready;
 };
 
 static wlmaker_icon_manager_t *icon_manager_from_resource(
@@ -203,6 +230,16 @@ static void _wlmaker_toplevel_icon_element_destroy(
 static bool _wlmaker_toplevel_icon_tile_set_content_size(
     wlmtk_tile_t *tile_ptr,
     uint64_t content_size);
+static void _wlmaker_toplevel_icon_layer_commit(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr);
+static void _wlmaker_toplevel_icon_handle_layer_destroy(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_toplevel_icon_handle_layer_new_popup(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static bool _wlmaker_toplevel_icon_content_has_pointer(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr);
 
 /* == Data ================================================================= */
 
@@ -268,6 +305,14 @@ void wlmaker_icon_manager_destroy(
     if (NULL != icon_manager_ptr->wl_global_ptr) {
         wl_global_destroy(icon_manager_ptr->wl_global_ptr);
         icon_manager_ptr->wl_global_ptr = NULL;
+    }
+    if (NULL != icon_manager_ptr->popup_dock_ptr) {
+        wlmtk_panel_t *p_ptr = wlmtk_dock_panel(icon_manager_ptr->popup_dock_ptr);
+        if (NULL != wlmtk_panel_get_layer(p_ptr)) {
+            wlmtk_layer_remove_panel(wlmtk_panel_get_layer(p_ptr), p_ptr);
+        }
+        wlmtk_dock_destroy(icon_manager_ptr->popup_dock_ptr);
+        icon_manager_ptr->popup_dock_ptr = NULL;
     }
 
     free(icon_manager_ptr);
@@ -541,6 +586,18 @@ void wlmaker_toplevel_icon_destroy(
     _wlmaker_toplevel_icon_element_destroy(
         wlmtk_tile_element(&toplevel_icon_ptr->super_tile));
     wlmtk_util_disconnect_listener(&toplevel_icon_ptr->pointer_leave_listener);
+    wlmtk_util_disconnect_listener(&toplevel_icon_ptr->layer_new_popup_listener);
+    wlmtk_util_disconnect_listener(&toplevel_icon_ptr->layer_destroy_listener);
+    if (toplevel_icon_ptr->popup_anchor_ready) {
+        wlmtk_element_t *a_ptr = &toplevel_icon_ptr->popup_anchor.super_element;
+        if (NULL != a_ptr->parent_container_ptr) {
+            wlmtk_container_remove_element(a_ptr->parent_container_ptr, a_ptr);
+        }
+        // Popups go with their surface, before it.
+        if (bs_dllist_empty(&toplevel_icon_ptr->popup_anchor.elements)) {
+            wlmtk_container_fini(&toplevel_icon_ptr->popup_anchor);
+        }
+    }
     wlmtk_tile_fini(&toplevel_icon_ptr->super_tile);
 
     // Note: Not destroying toplevel_icon_ptr->resource, since that causes
@@ -607,6 +664,10 @@ void handle_surface_commit(
     struct wlr_surface *wlr_surface_ptr = data_ptr;
     BS_ASSERT(toplevel_icon_ptr->wlr_surface_ptr == wlr_surface_ptr);
 
+    if (NULL != toplevel_icon_ptr->wlr_layer_surface_v1_ptr) {
+        _wlmaker_toplevel_icon_layer_commit(toplevel_icon_ptr);
+        return;
+    }
     if (NULL == wlr_surface_ptr->buffer) {
         // An initial commit is expected with a NULL buffer, so we can
         // respond with a `configure` event.
@@ -998,6 +1059,15 @@ bool _wlmaker_toplevel_icon_element_pointer_button(
     // The right button opens the tile's menu, like on Window Maker. Also on
     // the dock-app itself: It does not get the right button. Dock-apps
     // offer their own actions through the menu instead.
+    // An adopted layer surface (eg. the system tray) takes the right button
+    // where it takes input (its icons): Their own menus. Elsewhere on the
+    // tile, the tile's menu.
+    if (NULL != toplevel_icon_ptr->wlr_layer_surface_v1_ptr &&
+        BTN_RIGHT == button_event_ptr->button &&
+        _wlmaker_toplevel_icon_content_has_pointer(toplevel_icon_ptr)) {
+        return toplevel_icon_ptr->orig_element_vmt.pointer_button(
+            element_ptr, button_event_ptr);
+    }
     if (NULL != server_ptr->dockapps_ptr &&
         BTN_RIGHT == button_event_ptr->button) {
         if (WLMTK_BUTTON_DOWN == button_event_ptr->type) {
@@ -1109,7 +1179,10 @@ void _wlmaker_toplevel_icon_balloon(
     if (motion_event_ptr->x < box.x || motion_event_ptr->y < box.y ||
         motion_event_ptr->x >= box.x + box.width ||
         motion_event_ptr->y >= box.y + box.height ||
-        NULL != server_ptr->tile_drag_ptr) {
+        NULL != server_ptr->tile_drag_ptr ||
+        // The adopted client shows its own balloons, on its icons.
+        (NULL != toplevel_icon_ptr->wlr_layer_surface_v1_ptr &&
+         _wlmaker_toplevel_icon_content_has_pointer(toplevel_icon_ptr))) {
         wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, toplevel_icon_ptr);
         toplevel_icon_ptr->balloon_entered = false;
         return;
@@ -1193,8 +1266,19 @@ char *_wlmaker_toplevel_icon_cmdline(pid_t pid)
     buf[n] = '\0';
     // Arguments are separated by NUL; the last one ends with it.
     while (0 < n && '\0' == buf[n - 1]) --n;
-    for (size_t i = 0; i < n; ++i) if ('\0' == buf[i]) buf[i] = ' ';
-    return logged_strdup(buf);
+    // A script (eg. "python3 -I /usr/bin/big-wm-tray"): Its own path, not
+    // the interpreter's, and the interpreter's options.
+    size_t start = 0;
+    const char *base_ptr = strrchr(buf, '/');
+    base_ptr = NULL != base_ptr ? base_ptr + 1 : buf;
+    if (0 == strncmp(base_ptr, "python", 6) || 0 == strcmp(base_ptr, "sh") ||
+        0 == strcmp(base_ptr, "bash") || 0 == strcmp(base_ptr, "perl")) {
+        size_t i = strlen(buf) + 1;
+        while (i < n && '-' == buf[i]) i += strlen(buf + i) + 1;
+        if (i < n) start = i;
+    }
+    for (size_t i = start; i < n; ++i) if ('\0' == buf[i]) buf[i] = ' ';
+    return logged_strdup(buf + start);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1205,6 +1289,8 @@ bool _wlmaker_toplevel_icon_tile_set_content_size(
 {
     wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
         tile_ptr, wlmaker_toplevel_icon_t, super_tile);
+    // An adopted layer surface keeps the size it asked for.
+    if (NULL != toplevel_icon_ptr->wlr_layer_surface_v1_ptr) return true;
 
     toplevel_icon_ptr->pending_serial = wl_display_next_serial(
         toplevel_icon_ptr->icon_manager_ptr->wl_display_ptr);
@@ -1216,6 +1302,215 @@ bool _wlmaker_toplevel_icon_tile_set_content_size(
 
     // TODO(kaeser@gubbe.ch): Constrain image size to the content size.
     return true;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_icon_manager_adopt_layer_surface(
+    wlmaker_icon_manager_t *icon_manager_ptr,
+    struct wlr_layer_surface_v1 *wlr_layer_surface_v1_ptr)
+{
+    wlmaker_server_t *server_ptr = icon_manager_ptr->server_ptr;
+    if (NULL == server_ptr->dockapps_ptr || NULL == server_ptr->clip_ptr) {
+        return false;
+    }
+    struct wl_client *wl_client_ptr = wl_resource_get_client(
+        wlr_layer_surface_v1_ptr->resource);
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr = logged_calloc(
+        1, sizeof(wlmaker_toplevel_icon_t));
+    if (NULL == toplevel_icon_ptr) return false;
+    toplevel_icon_ptr->wl_client_ptr = wl_client_ptr;
+    toplevel_icon_ptr->icon_manager_ptr = icon_manager_ptr;
+    toplevel_icon_ptr->server_ptr = server_ptr;
+    toplevel_icon_ptr->wlr_surface_ptr = wlr_layer_surface_v1_ptr->surface;
+    toplevel_icon_ptr->wlr_layer_surface_v1_ptr = wlr_layer_surface_v1_ptr;
+    // No configure sequence of the icon protocol: The layer surface's.
+    toplevel_icon_ptr->acknowledged = true;
+
+    if (!wlmtk_tile_init(&toplevel_icon_ptr->super_tile,
+                         &server_ptr->style_ptr->tile)) {
+        free(toplevel_icon_ptr);
+        return false;
+    }
+    toplevel_icon_ptr->orig_element_vmt = wlmtk_element_extend(
+        wlmtk_tile_element(&toplevel_icon_ptr->super_tile),
+        &_wlmaker_toplevel_icon_element_vmt);
+    wlmtk_tile_extend(&toplevel_icon_ptr->super_tile,
+                      &_wlmaker_toplevel_icon_tile_vmt);
+    wlmtk_element_set_visible(
+        wlmtk_tile_element(&toplevel_icon_ptr->super_tile), true);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_tile_element(&toplevel_icon_ptr->super_tile)->events.pointer_leave,
+        &toplevel_icon_ptr->pointer_leave_listener,
+        _wlmaker_toplevel_icon_handle_pointer_leave);
+
+    if (!wlmtk_container_init(&toplevel_icon_ptr->popup_anchor)) {
+        wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
+        return false;
+    }
+    toplevel_icon_ptr->popup_anchor_ready = true;
+    wlmtk_element_set_visible(
+        &toplevel_icon_ptr->popup_anchor.super_element, true);
+
+    toplevel_icon_ptr->content_surface_ptr = wlmtk_surface_create(
+        toplevel_icon_ptr->wlr_surface_ptr, server_ptr->wlr_seat_ptr);
+    if (NULL == toplevel_icon_ptr->content_surface_ptr) {
+        wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
+        return false;
+    }
+    wlmtk_element_set_visible(
+        wlmtk_surface_element(toplevel_icon_ptr->content_surface_ptr), true);
+
+    // Placed as the other dock-apps: Where it was before, by its name.
+    char *name_ptr = wlmaker_dockapps_client_name(wl_client_ptr);
+    bool added = wlmaker_clip_add_dockapp(
+        server_ptr, &toplevel_icon_ptr->super_tile, name_ptr);
+    bs_log(BS_INFO, "Adopted layer surface %p of \"%s\" as dock-app %p.",
+           wlr_layer_surface_v1_ptr, NULL != name_ptr ? name_ptr : "(unknown)",
+           toplevel_icon_ptr);
+    if (NULL != name_ptr) free(name_ptr);
+    if (!added) {
+        wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
+        return false;
+    }
+
+    wlmtk_util_connect_listener_signal(
+        &toplevel_icon_ptr->wlr_surface_ptr->events.commit,
+        &toplevel_icon_ptr->surface_commit_listener,
+        handle_surface_commit);
+    wlmtk_util_connect_listener_signal(
+        &toplevel_icon_ptr->wlr_surface_ptr->events.destroy,
+        &toplevel_icon_ptr->surface_destroy_listener,
+        handle_surface_destroy);
+    wlmtk_util_connect_listener_signal(
+        &wlr_layer_surface_v1_ptr->events.destroy,
+        &toplevel_icon_ptr->layer_destroy_listener,
+        _wlmaker_toplevel_icon_handle_layer_destroy);
+    wlmtk_util_connect_listener_signal(
+        &wlr_layer_surface_v1_ptr->events.new_popup,
+        &toplevel_icon_ptr->layer_new_popup_listener,
+        _wlmaker_toplevel_icon_handle_layer_new_popup);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * A commit of the adopted layer surface: The first one gets the configure,
+ * with the size it asked for (else the tile's); then its buffer is the
+ * tile's content.
+ */
+void _wlmaker_toplevel_icon_layer_commit(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    struct wlr_layer_surface_v1 *ls_ptr =
+        toplevel_icon_ptr->wlr_layer_surface_v1_ptr;
+    if (ls_ptr->initial_commit) {
+        uint32_t w = ls_ptr->pending.desired_width;
+        uint32_t h = ls_ptr->pending.desired_height;
+        uint64_t s = toplevel_icon_ptr->super_tile.style.size;
+        if (0 == w || w > s) w = s;
+        if (0 == h || h > s) h = s;
+        wlr_layer_surface_v1_configure(ls_ptr, w, h);
+        return;
+    }
+    if (NULL == toplevel_icon_ptr->wlr_surface_ptr->buffer) return;
+    wlmtk_element_t *e = wlmtk_surface_element(
+        toplevel_icon_ptr->content_surface_ptr);
+    if (NULL == e->parent_container_ptr) {
+        wlmtk_tile_set_content(&toplevel_icon_ptr->super_tile, e);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** The adopted layer surface goes away: So does its tile. */
+void _wlmaker_toplevel_icon_handle_layer_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_toplevel_icon_t, layer_destroy_listener);
+    wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return Whether the pointer is on the content, where it takes input. */
+bool _wlmaker_toplevel_icon_content_has_pointer(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    return NULL != toplevel_icon_ptr->content_surface_ptr &&
+        wlmtk_surface_element(
+            toplevel_icon_ptr->content_surface_ptr)->pointer_inside;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Places the popup anchor at the adopted surface's origin, in the popup
+ * container of the icon manager's popup dock: Above all, also above the
+ * dock's other tiles and the windows.
+ */
+static void _wlmaker_toplevel_icon_place_popup_anchor(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    wlmaker_server_t *server_ptr = toplevel_icon_ptr->server_ptr;
+    wlmaker_icon_manager_t *im_ptr = toplevel_icon_ptr->icon_manager_ptr;
+    if (NULL == im_ptr->popup_dock_ptr) {
+        wlmtk_dock_positioning_t pos = {
+            .edge = WLR_EDGE_LEFT, .anchor = WLR_EDGE_TOP, .overlay = true };
+        im_ptr->popup_dock_ptr = wlmtk_dock_create(
+            &pos, &server_ptr->style_ptr->dock);
+        if (NULL == im_ptr->popup_dock_ptr) return;
+        wlmtk_element_set_visible(
+            wlmtk_dock_element(im_ptr->popup_dock_ptr), true);
+        struct wlr_output *wlr_output_ptr = wlmbe_primary_output(
+            server_ptr->wlr_output_layout_ptr);
+        wlmtk_layer_t *layer_ptr = wlmtk_desktop_get_layer(
+            server_ptr->desktop_ptr, WLMTK_DESKTOP_LAYER_OVERLAY);
+        if (NULL == wlr_output_ptr || NULL == layer_ptr ||
+            !wlmtk_layer_add_panel(layer_ptr,
+                                   wlmtk_dock_panel(im_ptr->popup_dock_ptr),
+                                   wlr_output_ptr)) {
+            wlmtk_dock_destroy(im_ptr->popup_dock_ptr);
+            im_ptr->popup_dock_ptr = NULL;
+            return;
+        }
+    }
+    wlmtk_panel_t *panel_ptr = wlmtk_dock_panel(im_ptr->popup_dock_ptr);
+    wlmtk_element_t *anchor_ptr = &toplevel_icon_ptr->popup_anchor.super_element;
+    if (anchor_ptr->parent_container_ptr != &panel_ptr->popup_container) {
+        if (NULL != anchor_ptr->parent_container_ptr) {
+            wlmtk_container_remove_element(
+                anchor_ptr->parent_container_ptr, anchor_ptr);
+        }
+        wlmtk_container_add_element(&panel_ptr->popup_container, anchor_ptr);
+    }
+    int sx, sy, px, py;
+    wlmtk_element_get_absolute_position(
+        wlmtk_surface_element(toplevel_icon_ptr->content_surface_ptr),
+        &sx, &sy);
+    wlmtk_element_get_absolute_position(
+        &panel_ptr->popup_container.super_element, &px, &py);
+    wlmtk_element_set_position(anchor_ptr, sx - px, sy - py);
+}
+
+/* ------------------------------------------------------------------------- */
+/** A popup of the adopted layer surface, eg. a menu. */
+void _wlmaker_toplevel_icon_handle_layer_new_popup(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_toplevel_icon_t, layer_new_popup_listener);
+    struct wlr_xdg_popup *wlr_xdg_popup_ptr = data_ptr;
+    wlmaker_xdg_popup_t *popup_ptr = wlmaker_xdg_popup_create(
+        wlr_xdg_popup_ptr, toplevel_icon_ptr->server_ptr->wlr_seat_ptr);
+    if (NULL == popup_ptr) {
+        wl_resource_post_error(wlr_xdg_popup_ptr->resource,
+                               WL_DISPLAY_ERROR_NO_MEMORY,
+                               "Failed wlmaker_xdg_popup_create.");
+        return;
+    }
+    _wlmaker_toplevel_icon_place_popup_anchor(toplevel_icon_ptr);
+    wlmtk_container_add_element(&toplevel_icon_ptr->popup_anchor,
+                                wlmaker_xdg_popup_element(popup_ptr));
 }
 
 /* == End of icon_manager.c ================================================ */
