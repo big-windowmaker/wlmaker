@@ -141,6 +141,17 @@ wlmtk_menu_t *wlmtk_menu_item_get_parent_menu(
     wlmtk_menu_item_t *menu_item_ptr);
 
 /**
+ * Updates the item's buffer for whether its menu is open: An item of a
+ * closed menu holds no buffer, it is drawn when the menu opens. The item's
+ * dimensions are those of its style, with or without a buffer.
+ *
+ * Private: Should only be called by @ref wlmtk_menu_set_open.
+ *
+ * @param menu_item_ptr
+ */
+void wlmtk_menu_item_update_shown(wlmtk_menu_item_t *menu_item_ptr);
+
+/**
  * Sets the submenu for this menu item.
  *
  * @param menu_item_ptr

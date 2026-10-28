@@ -109,6 +109,9 @@ static bool _wlmtk_menu_set_item_style(
 static void _wlmtk_menu_set_item_mode(
     bs_dllist_node_t *dlnode_ptr,
     void *ud_ptr);
+static void _wlmtk_menu_update_item_shown(
+    bs_dllist_node_t *dlnode_ptr,
+    void *ud_ptr);
 
 static void _wlmtk_menu_box_element_destroy(wlmtk_element_t *element_ptr);
 
@@ -273,10 +276,17 @@ bool wlmtk_menu_set_style(
 /* ------------------------------------------------------------------------- */
 void wlmtk_menu_set_open(wlmtk_menu_t *menu_ptr, bool opened)
 {
-    if (wlmtk_menu_element(menu_ptr)->visible == opened) return;
+    // Items of a closed menu hold no buffers; drawn when (re)opened. Also
+    // when the menu's element was made visible by other means.
+    if (wlmtk_menu_element(menu_ptr)->visible == opened) {
+        bs_dllist_for_each(
+            &menu_ptr->items, _wlmtk_menu_update_item_shown, NULL);
+        return;
+    }
 
     wlmtk_element_set_visible(wlmtk_menu_element(menu_ptr), opened);
     _wlmtk_menu_reset_rightclick(menu_ptr);
+    bs_dllist_for_each(&menu_ptr->items, _wlmtk_menu_update_item_shown, NULL);
 
     if (NULL != menu_ptr->highlighted_menu_item_ptr) {
         wlmtk_menu_item_set_highlighted(
@@ -596,6 +606,15 @@ void _wlmtk_menu_set_item_mode(bs_dllist_node_t *dlnode_ptr, void *ud_ptr)
     wlmtk_menu_item_set_mode(
         wlmtk_menu_item_from_dlnode(dlnode_ptr),
         ((wlmtk_menu_t*)ud_ptr)->mode);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Callback for bs_dllist_for_each: Updates the item for the menu's state. */
+void _wlmtk_menu_update_item_shown(
+    bs_dllist_node_t *dlnode_ptr,
+    __UNUSED__ void *ud_ptr)
+{
+    wlmtk_menu_item_update_shown(wlmtk_menu_item_from_dlnode(dlnode_ptr));
 }
 
 /* ------------------------------------------------------------------------- */
