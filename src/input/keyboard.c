@@ -426,6 +426,34 @@ void handle_key(struct wl_listener *listener_ptr, void *data_ptr)
         }
     }
 
+    // A key binding names the key's plain keysym, eg. "Ctrl+Alt+Backspace".
+    // With some XKB options, the modifiers translate the key to another
+    // keysym: terminate:ctrl_alt_bksp makes Ctrl+Alt+BackSpace the
+    // Terminate_Server keysym. If no binding matched the translated keysyms,
+    // try the key's keysyms at the first shift level, as other compositors do.
+    if (!processed &&
+        WL_KEYBOARD_KEY_STATE_PRESSED == wlr_keyboard_key_event_ptr->state) {
+        struct xkb_state *xkb_state_ptr =
+            keyboard_ptr->wlr_keyboard_ptr->xkb_state;
+        const xkb_keysym_t *raw_syms;
+        int raw_count = xkb_keymap_key_get_syms_by_level(
+            xkb_state_get_keymap(xkb_state_ptr),
+            keycode,
+            xkb_state_key_get_layout(xkb_state_ptr, keycode),
+            0,
+            &raw_syms);
+        for (int i = 0; i < raw_count && !processed; ++i) {
+            bool translated = false;
+            for (int j = 0; j < key_syms_count; ++j) {
+                if (key_syms[j] == raw_syms[i]) translated = true;
+            }
+            if (translated) continue;
+            processed = wlmim_process_key(keyboard_ptr->input_manager_ptr,
+                                          raw_syms[i],
+                                          modifiers);
+        }
+    }
+
     if (processed) return;
 
     // Events are interpreted by the seat's keyboard keymap: With multiple
