@@ -57,6 +57,16 @@ target_link_libraries(
   PRIVATE
   wlmtoolkit_lib
   PkgConfig::WLROOTS)
+
+# EGL and GLESv2: To identify a software rasterizer (llvmpipe) as wlroots'
+# automatically chosen renderer, and use pixman instead. Optional.
+pkg_check_modules(EGL IMPORTED_TARGET egl)
+pkg_check_modules(GLESV2 IMPORTED_TARGET glesv2)
+if(EGL_FOUND AND GLESV2_FOUND)
+  target_compile_definitions(wlmbackend_lib PRIVATE WLMBE_HAVE_GL_PROBE)
+  target_link_libraries(
+    wlmbackend_lib PRIVATE PkgConfig::EGL PkgConfig::GLESV2)
+endif()
 add_dependencies(wlmbackend_lib protocol_headers)
 if(iwyu_path_and_options)
   set_target_properties(
