@@ -140,6 +140,13 @@ static void _wlmtk_menu_item_handle_pointer_motion(
 static void _wlmtk_menu_item_handle_open_changed(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static void _wlmtk_menu_item_element_get_dimensions(
+    wlmtk_element_t *element_ptr,
+    int *left_ptr,
+    int *top_ptr,
+    int *right_ptr,
+    int *bottom_ptr);
+static bool _wlmtk_menu_item_shown(wlmtk_menu_item_t *menu_item_ptr);
 
 /* == Data ================================================================= */
 
@@ -147,6 +154,7 @@ static void _wlmtk_menu_item_handle_open_changed(
 static const wlmtk_element_vmt_t _wlmtk_menu_item_element_vmt = {
     .pointer_button = _wlmtk_menu_item_element_pointer_button,
     .destroy = _wlmtk_menu_item_element_destroy,
+    .get_dimensions = _wlmtk_menu_item_element_get_dimensions,
 };
 
 const bspl_desc_t wlmtk_menu_item_style_desc[] = {
@@ -335,6 +343,13 @@ void wlmtk_menu_item_set_parent_menu(
             wlmtk_menu_base(menu_item_ptr->menu_ptr),
             wlmtk_menu_element(menu_item_ptr->submenu_ptr));
     }
+    wlmtk_menu_item_update_shown(menu_item_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_menu_item_update_shown(wlmtk_menu_item_t *menu_item_ptr)
+{
+    _wlmtk_menu_item_draw_state(menu_item_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -539,11 +554,20 @@ wlmtk_element_t *wlmtk_menu_item_element(wlmtk_menu_item_t *menu_item_ptr)
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */
-/** Redraws the buffer for the menu item's current state, and shows it. */
+/**
+ * Redraws the buffer for the menu item's current state, and shows it. An
+ * item of a closed menu gets no buffer, see @ref _wlmtk_menu_item_shown.
+ */
 bool _wlmtk_menu_item_redraw(
     wlmtk_menu_item_t *menu_item_ptr,
     const struct wlmtk_menu_item_style *style_ptr)
 {
+    if (!_wlmtk_menu_item_shown(menu_item_ptr)) {
+        wlmtk_buffer_set(&menu_item_ptr->super_buffer, NULL);
+        wlr_buffer_drop_nullify(&menu_item_ptr->wlr_buffer_ptr);
+        return true;
+    }
+
     struct wlr_buffer *wlr_buffer_ptr = _wlmtk_menu_item_create_buffer(
         menu_item_ptr, menu_item_ptr->state, style_ptr);
     if (NULL == wlr_buffer_ptr) return false;
@@ -627,7 +651,8 @@ void _wlmtk_menu_item_draw_state(wlmtk_menu_item_t *menu_item_ptr)
     }
 
     if (NULL != menu_item_ptr->wlr_buffer_ptr &&
-        menu_item_ptr->buffer_state == menu_item_ptr->state) {
+        menu_item_ptr->buffer_state == menu_item_ptr->state &&
+        _wlmtk_menu_item_shown(menu_item_ptr)) {
         wlmtk_buffer_set(&menu_item_ptr->super_buffer,
                          menu_item_ptr->wlr_buffer_ptr);
         return;
@@ -635,6 +660,52 @@ void _wlmtk_menu_item_draw_state(wlmtk_menu_item_t *menu_item_ptr)
     // Before the first redraw (no style yet), there is nothing to show.
     if (NULL == menu_item_ptr->style_ptr) return;
     _wlmtk_menu_item_redraw(menu_item_ptr, &menu_item_ptr->style_ptr->item);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Whether the item is shown, and needs a buffer: When it belongs to an open
+ * menu, or to no menu at all.
+ *
+ * @param menu_item_ptr
+ *
+ * @return true if shown.
+ */
+bool _wlmtk_menu_item_shown(wlmtk_menu_item_t *menu_item_ptr)
+{
+    return (NULL == menu_item_ptr->menu_ptr ||
+            wlmtk_menu_is_open(menu_item_ptr->menu_ptr));
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::get_dimensions: The dimensions of
+ * the item's style, also while the item holds no buffer.
+ *
+ * @param element_ptr
+ * @param left_ptr
+ * @param top_ptr
+ * @param right_ptr
+ * @param bottom_ptr
+ */
+void _wlmtk_menu_item_element_get_dimensions(
+    wlmtk_element_t *element_ptr,
+    int *left_ptr,
+    int *top_ptr,
+    int *right_ptr,
+    int *bottom_ptr)
+{
+    wlmtk_menu_item_t *menu_item_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmtk_menu_item_t, super_buffer.super_element);
+    if (NULL == menu_item_ptr->style_ptr) {
+        menu_item_ptr->orig_super_element_vmt.get_dimensions(
+            element_ptr, left_ptr, top_ptr, right_ptr, bottom_ptr);
+        return;
+    }
+    if (NULL != left_ptr) *left_ptr = 0;
+    if (NULL != top_ptr) *top_ptr = 0;
+    if (NULL != right_ptr) *right_ptr = menu_item_ptr->style_ptr->item.width;
+    if (NULL != bottom_ptr) *bottom_ptr = menu_item_ptr->style_ptr->item.height;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1086,6 +1157,15 @@ void test_pointer(bs_test_t *test_ptr)
 
     wlmtk_menu_item_set_text(item_ptr, "Menu item");
 
+    // An item of a closed menu holds no buffer, but keeps its dimensions.
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, item_ptr->wlr_buffer_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, item_ptr->super_buffer.wlr_buffer_ptr);
+    struct wlr_box box = wlmtk_element_get_dimensions_box(e);
+    BS_TEST_VERIFY_EQ(test_ptr, 80, box.width);
+    BS_TEST_VERIFY_EQ(test_ptr, (int)s->item.height, box.height);
+    wlmtk_menu_set_open(menu_ptr, true);
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, item_ptr->wlr_buffer_ptr);
+
     // Initial state: enabled.
     BS_TEST_VERIFY_EQ(
         test_ptr,
@@ -1146,6 +1226,10 @@ void test_pointer(bs_test_t *test_ptr)
         test_ptr,
         item_ptr->super_buffer.wlr_buffer_ptr,
         item_ptr->wlr_buffer_ptr);
+
+    // Closing the menu releases the buffer.
+    wlmtk_menu_set_open(menu_ptr, false);
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, item_ptr->wlr_buffer_ptr);
 
     wlmtk_menu_remove_item(menu_ptr, item_ptr);
     BS_TEST_VERIFY_EQ(test_ptr, NULL, item_ptr->menu_ptr);
