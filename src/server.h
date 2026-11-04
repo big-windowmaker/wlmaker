@@ -172,6 +172,9 @@ struct _wlmaker_server_t {
     /** Whether the task list is currently shown. */
     bool                      task_list_enabled;
     /** Signal: When the task list is enabled. (to be shown) */
+    /** Window zones and tiling (wmake-zones). NULL if unavailable. */
+    struct _wlmaker_zones_t   *zones_ptr;
+
     struct wl_signal          task_list_enabled_event;
     /** Signal: When the task list is disabled. (to be hidden) */
     struct wl_signal          task_list_disabled_event;

@@ -181,6 +181,21 @@ wlmtk_window_t *wlmtk_window_from_element(wlmtk_element_t *element_ptr);
  */
 struct wlr_box wlmtk_window_get_bounding_box(wlmtk_window_t *window_ptr);
 
+/** @return The window's properties, see `WLMTK_WINDOW_PROPERTY_*`. */
+uint32_t wlmtk_window_get_properties(wlmtk_window_t *window_ptr);
+
+/**
+ * Places the window so that its bounding box (with decorations) becomes
+ * `box_ptr`: Moves it and requests the matching content size. For window
+ * organizers (zones, tiling). Un-maximizes; ignored when fullscreen.
+ *
+ * @param window_ptr
+ * @param box_ptr             In layout coordinates.
+ */
+void wlmtk_window_request_bounding_box(
+    wlmtk_window_t *window_ptr,
+    const struct wlr_box *box_ptr);
+
 /** Helper: Indicates that the position has changed. */
 void wlmtk_window_position_changed(wlmtk_window_t *window_ptr);
 

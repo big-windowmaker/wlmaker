@@ -93,6 +93,8 @@ struct _wlmtk_workspace_t {
     int                       initial_height;
     /** Edges currently active for resizing: `enum wlr_edges`. */
     uint32_t                  resize_edges;
+    /** Whether the grab is a move (signals @ref wlmtk_desktop_events_t). */
+    bool                      moving;
 
     /** Top left X coordinate of workspace. */
     int                       x1;
@@ -155,6 +157,9 @@ static struct wlr_box _wlmtk_workspace_usable_area(
     wlmtk_workspace_t *workspace_ptr,
     struct wlr_output *wlr_output_ptr);
 
+/** Which window move signal to emit. */
+enum { WLMTK_WS_MOVE_BEGIN, WLMTK_WS_MOVE_MOTION, WLMTK_WS_MOVE_END };
+static void _wlmtk_workspace_emit_move(wlmtk_workspace_t *workspace_ptr, int which);
 static bool pfsm_move_begin(wlmtk_fsm_t *fsm_ptr, void *ud_ptr);
 static bool pfsm_move_motion(wlmtk_fsm_t *fsm_ptr, void *ud_ptr);
 static bool pfsm_resize_begin(wlmtk_fsm_t *fsm_ptr, void *ud_ptr);
@@ -1149,6 +1154,26 @@ void _wlmtk_workspace_place_window(wlmtk_workspace_t *workspace_ptr,
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Emits one of the window move signals of the desktop, if attached to one:
+ * Lets window organizers (eg. zones) follow an interactive move.
+ */
+void _wlmtk_workspace_emit_move(wlmtk_workspace_t *workspace_ptr, int which)
+{
+    if (NULL == workspace_ptr->desktop_ptr ||
+        NULL == workspace_ptr->grabbed_window_ptr) return;
+    wlmtk_window_move_event_t ev = {
+        .window_ptr = workspace_ptr->grabbed_window_ptr,
+        .x = workspace_ptr->window_container.super_element.last_pointer_motion_event.x,
+        .y = workspace_ptr->window_container.super_element.last_pointer_motion_event.y,
+    };
+    wlmtk_desktop_events_t *e = wlmtk_desktop_events(workspace_ptr->desktop_ptr);
+    struct wl_signal *s = which == WLMTK_WS_MOVE_BEGIN ? &e->window_move_begin :
+        which == WLMTK_WS_MOVE_MOTION ? &e->window_move_motion : &e->window_move_end;
+    wl_signal_emit(s, &ev);
+}
+
+/* ------------------------------------------------------------------------- */
 /** Initiates a move. */
 bool pfsm_move_begin(wlmtk_fsm_t *fsm_ptr, void *ud_ptr)
 {
@@ -1165,6 +1190,9 @@ bool pfsm_move_begin(wlmtk_fsm_t *fsm_ptr, void *ud_ptr)
         wlmtk_window_element(workspace_ptr->grabbed_window_ptr),
         &workspace_ptr->initial_x,
         &workspace_ptr->initial_y);
+
+    workspace_ptr->moving = true;
+    _wlmtk_workspace_emit_move(workspace_ptr, WLMTK_WS_MOVE_BEGIN);
 
     // TODO(kaeser@gubbe.ch): When in move mode, set (and keep) a corresponding
     // cursor image.
@@ -1191,6 +1219,7 @@ bool pfsm_move_motion(wlmtk_fsm_t *fsm_ptr, __UNUSED__ void *ud_ptr)
         workspace_ptr->initial_x + rel_x,
         workspace_ptr->initial_y + rel_y);
 
+    _wlmtk_workspace_emit_move(workspace_ptr, WLMTK_WS_MOVE_MOTION);
     return true;
 }
 
@@ -1276,6 +1305,10 @@ bool pfsm_reset(wlmtk_fsm_t *fsm_ptr, __UNUSED__ void *ud_ptr)
 
     wlmtk_window_set_resize_edges(workspace_ptr->grabbed_window_ptr, 0);
 
+    if (workspace_ptr->moving) {
+        _wlmtk_workspace_emit_move(workspace_ptr, WLMTK_WS_MOVE_END);
+        workspace_ptr->moving = false;
+    }
     workspace_ptr->grabbed_window_ptr = NULL;
     return true;
 }

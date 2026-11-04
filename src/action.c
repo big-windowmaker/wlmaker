@@ -45,6 +45,7 @@
 #include "input/manager.h"
 #include "root_menu.h"
 #include "server.h"
+#include "zones.h"
 #include "util/subprocess_monitor.h"
 #include "toolkit/toolkit.h"
 
@@ -159,6 +160,9 @@ const bspl_enum_desc_t wlmaker_action_desc[] = {
     BSPL_ENUM("SwitchToVT11", WLMAKER_ACTION_SWITCH_TO_VT11),
     BSPL_ENUM("SwitchToVT12", WLMAKER_ACTION_SWITCH_TO_VT12),
 
+    // Window zones and tiling (wmake-zones): (Zones, "move left") etc.
+    BSPL_ENUM("Zones", WLMAKER_ACTION_ZONES),
+
     // A duplicate to ShellExecute, permits `wmmenugen` compatibility.
     BSPL_ENUM("SHEXEC", WLMAKER_ACTION_SHELL_EXECUTE),
     // A duplicate to Execute, permits compatibility with Window Maker.
@@ -257,6 +261,10 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         wlm_util_subprocess_monitor_run(
             server_ptr->monitor_ptr,
             bs_subprocess_create(argv[0], argv, NULL));
+        break;
+
+    case WLMAKER_ACTION_ZONES:
+        wlmaker_zones_command(server_ptr->zones_ptr, arg_ptr, NULL, 0);
         break;
 
     case WLMAKER_ACTION_SHELL_EXECUTE:
@@ -711,6 +719,7 @@ bool _wlmaker_action_bound_callback(
 void _wlmaker_action_reload_idle(void *data_ptr)
 {
     wlmaker_server_reload(data_ptr);
+    wlmaker_zones_reload(((wlmaker_server_t*)data_ptr)->zones_ptr);
 }
 
 /* ------------------------------------------------------------------------- */

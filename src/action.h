@@ -92,6 +92,8 @@ typedef enum {
     WLMAKER_ACTION_SWITCH_TO_VT11,
     WLMAKER_ACTION_SWITCH_TO_VT12,
 
+    WLMAKER_ACTION_ZONES,
+
 } wlmaker_action_t;
 
 extern const char *wlmaker_action_config_dict_key;

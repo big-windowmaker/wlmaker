@@ -388,6 +388,39 @@ struct wlr_box wlmtk_window_get_bounding_box(wlmtk_window_t *window_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+uint32_t wlmtk_window_get_properties(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->properties;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_request_bounding_box(
+    wlmtk_window_t *window_ptr,
+    const struct wlr_box *box_ptr)
+{
+    if (window_ptr->fullscreen || NULL == window_ptr->workspace_ptr) return;
+
+    // Decorations: the bordered element minus the content, as for maximize.
+    struct wlr_box wbox = wlmtk_element_get_dimensions_box(
+        wlmtk_bordered_element(&window_ptr->bordered));
+    struct wlr_box cbox = wlmtk_element_get_dimensions_box(
+        window_ptr->content_element_ptr);
+    // Offset of the bounding box from the element's position (title bar).
+    struct wlr_box bbox = wlmtk_window_get_bounding_box(window_ptr);
+    int x, y;
+    wlmtk_element_get_position(wlmtk_window_element(window_ptr), &x, &y);
+
+    wlmtk_workspace_set_window_position(
+        window_ptr->workspace_ptr, window_ptr,
+        box_ptr->x - (bbox.x - x), box_ptr->y - (bbox.y - y));
+    struct wlr_box content = {
+        .width = BS_MAX(1, box_ptr->width - (wbox.width - cbox.width)),
+        .height = BS_MAX(1, box_ptr->height - (wbox.height - cbox.height)),
+    };
+    wlmtk_window_request_size(window_ptr, &content);
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmtk_window_position_changed(wlmtk_window_t *window_ptr)
 {
     if (window_ptr->inorganic_sizing) return;
