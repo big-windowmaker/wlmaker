@@ -33,6 +33,8 @@ endif()
 pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb>=1.15)
 # XWayland considered optional.
 pkg_check_modules(XWAYLAND xwayland>=22.1.9)
+# Optional: wmake-zones (window zones and tiling), shared engine and config.
+pkg_check_modules(WMAKE_ZONES IMPORTED_TARGET wmake-zones-engine)
 add_subdirectory(backend)
 add_subdirectory(dock)
 add_subdirectory(input)
@@ -66,6 +68,7 @@ set(public_header_files
   root_menu.h
   server.h
   task_list.h
+  zones.h
   tile_drag.h
   tl_menu.h
   toplevel_tracker.h
@@ -104,6 +107,7 @@ target_sources(wlmaker_lib PRIVATE
   root_menu.c
   server.c
   task_list.c
+  zones.c
   tile_drag.c
   tl_menu.c
   toplevel_tracker.c
@@ -175,6 +179,11 @@ if(wmmenugen_executable)
   target_compile_definitions(
     wlmaker_lib PRIVATE "WLMAKER_WMMENUGEN_PATH=\"${wmmenugen_executable}\"")
 endif()
+if(WMAKE_ZONES_FOUND)
+  target_compile_definitions(wlmaker_lib PUBLIC WLMAKER_HAVE_ZONES)
+  target_link_libraries(wlmaker_lib PkgConfig::WMAKE_ZONES)
+endif()
+
 if(XWAYLAND_FOUND)
   target_compile_definitions(wlmaker_lib PUBLIC WLMAKER_HAVE_XWAYLAND)
 endif()

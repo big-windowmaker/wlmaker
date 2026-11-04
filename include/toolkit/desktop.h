@@ -65,7 +65,26 @@ typedef struct {
     struct wl_signal          window_mapped;
     /** Triggers when a window is unmapped from a workspace. */
     struct wl_signal          window_unmapped;
+    /**
+     * Interactive move of a window: begins, moves and ends. For window
+     * organizers (zones, snapping). Data: @ref wlmtk_window_move_event_t.
+     */
+    struct wl_signal          window_move_begin;
+    /** See @ref wlmtk_desktop_events_t::window_move_begin. */
+    struct wl_signal          window_move_motion;
+    /** See @ref wlmtk_desktop_events_t::window_move_begin. */
+    struct wl_signal          window_move_end;
 } wlmtk_desktop_events_t;
+
+/** Data of the window move signals. Coordinates in layout space. */
+typedef struct {
+    /** The window being moved. */
+    struct _wlmtk_window_t    *window_ptr;
+    /** Pointer position. */
+    double                    x;
+    /** Pointer position. */
+    double                    y;
+} wlmtk_window_move_event_t;
 
 /**
  * Indicates which layer the view shall be rendered in.

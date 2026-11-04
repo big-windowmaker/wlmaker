@@ -46,6 +46,7 @@
 #include "root_menu.h"
 #include "server.h"
 #include "workspace_manager.h"
+#include "zones.h"
 #include "task_list.h"
 #include "toolkit/toolkit.h"
 #include "util/backtrace.h"
@@ -169,6 +170,7 @@ bool start_subprocess(const char *cmdline_ptr)
 static int _wlmaker_handle_sighup(__UNUSED__ int signal_number, void *data_ptr)
 {
     wlmaker_server_reload(data_ptr);
+    wlmaker_zones_reload(((wlmaker_server_t*)data_ptr)->zones_ptr);
     return 0;
 }
 
@@ -330,6 +332,7 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
 
         clip_ptr = wlmaker_clip_create(
             server_ptr, state_dict_ptr, &style);
+        server_ptr->zones_ptr = wlmaker_zones_create(server_ptr);
         task_list_ptr = wlmaker_task_list_create(
             server_ptr, &style.task_list);
         if (NULL == clip_ptr || NULL == task_list_ptr) {
@@ -343,6 +346,10 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
         rv = EXIT_FAILURE;
     }
 
+    if (NULL != server_ptr->zones_ptr) {
+        wlmaker_zones_destroy(server_ptr->zones_ptr);
+        server_ptr->zones_ptr = NULL;
+    }
     if (NULL != task_list_ptr) wlmaker_task_list_destroy(task_list_ptr);
     if (NULL != clip_ptr) wlmaker_clip_destroy(clip_ptr);
     if (NULL != wlmaker_sighup_event_source_ptr) {
