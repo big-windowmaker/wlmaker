@@ -150,6 +150,16 @@
       );
     };
 
+    "wmake-zones-wl" = {
+      Actions = (
+        { Title = "Zones On / Off"; Command = "wmake-zones zones toggle"; },
+        { Title = "Auto Tiling On / Off"; Command = "wmake-zones autotile toggle"; },
+        { Title = "Next Layout"; Command = "wmake-zones layout next"; },
+        { Title = "Edit Zones..."; Command = "wmake-zones-prefs --editor"; },
+        { Title = "Window Organization Preferences..."; Command = "wmake-zones-prefs"; }
+      );
+    };
+
     wlmmixer = {
       Actions = (
         { Title = "Mute / Unmute"; Command = "pactl set-sink-mute @DEFAULT_SINK@ toggle"; },
