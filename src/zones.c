@@ -691,6 +691,7 @@ static int _wlmaker_zones_tile_run(void *data_ptr)
                 if (w->has_restore) {
                     wlmtk_window_request_bounding_box(window_ptr, &w->restore);
                     w->has_restore = false;
+                    w->zone = -1;
                 }
             }
             continue;
@@ -759,6 +760,7 @@ static void _wlmaker_zones_untile_all(wlmaker_zones_t *zones_ptr)
         if (w->has_restore) {
             wlmtk_window_request_bounding_box(w->window_ptr, &w->restore);
             w->has_restore = false;
+            w->zone = -1;
         }
     }
 }
