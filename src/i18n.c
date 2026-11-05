@@ -153,6 +153,29 @@ static const wlmaker_i18n_entry_t _wlmaker_i18n_pt_br[] = {
     { "PulseAudio Volume Control", "Controle de volume do PulseAudio" },
     { "PulseAudio Volume Control (Qt)", "Controle de volume do PulseAudio (Qt)" },
     { "PipeWire Volume Control", "Controle de volume do PipeWire" },
+    // wmake-zones: names of the built-in layouts (as wmake-zones translates
+    // them) and the texts of the zones overlay.
+    { "Halves", "Metades" },
+    { "Quarters", "Quadrantes" },
+    { "Three columns", "Três colunas" },
+    { "Main + stack", "Principal + pilha" },
+    { "Two top + one bottom", "Duas em cima + uma embaixo" },
+    { "One top + two bottom", "Uma em cima + duas embaixo" },
+    { "Grid 2x3", "Grade 2×3" },
+    { "Grid 3x3", "Grade 3×3" },
+    { "Main 70/30", "Principal 70/30" },
+    { "Ultrawide", "Ultrawide" },
+    { "Ultrawide: four columns", "Ultrawide: quatro colunas" },
+    { "Development", "Desenvolvimento" },
+    { "Small screen 60/40", "Tela pequena 60/40" },
+    { "Portrait: halves", "Retrato: metades" },
+    { "Portrait: three rows", "Retrato: três linhas" },
+    { "Window layout: choose a layout, then a zone",
+      "Organização de janelas: escolha o layout, depois a zona" },
+    { "1-9 or arrows to choose \xc2\xb7 Enter snaps \xc2\xb7 "
+      "Tab changes the layout \xc2\xb7 Esc cancels",
+      "1\xe2\x80\x93" "9 ou setas para escolher \xc2\xb7 Enter encaixa \xc2\xb7 "
+      "Tab troca o layout \xc2\xb7 Esc cancela" },
     { NULL, NULL }
 };
 
