@@ -95,6 +95,10 @@ struct _wlmtk_workspace_t {
     uint32_t                  resize_edges;
     /** Whether the grab is a move (signals @ref wlmtk_desktop_events_t). */
     bool                      moving;
+    /** Whether an interactive resize is going on (for window_resize_end). */
+    bool                      resizing;
+    /** The window container holds a pointer grab (move or resize). */
+    bool                      holding_pointer;
 
     /** Top left X coordinate of workspace. */
     int                       x1;
@@ -130,6 +134,14 @@ static void _wlmtk_workspace_window_element_get_dimensions(
     int *top_ptr,
     int *right_ptr,
     int *bottom_ptr);
+static bool _wlmtk_workspace_window_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr);
+static void _wlmtk_workspace_window_element_pointer_grab_cancel(
+    wlmtk_element_t *element_ptr);
+static void _wlmtk_workspace_hold_pointer(
+    wlmtk_workspace_t *workspace_ptr,
+    bool hold);
 static bool _wlmtk_workspace_window_element_pointer_button(
     wlmtk_element_t *element_ptr,
     const wlmtk_button_event_t *button_event_ptr);
@@ -158,7 +170,9 @@ static struct wlr_box _wlmtk_workspace_usable_area(
     struct wlr_output *wlr_output_ptr);
 
 /** Which window move signal to emit. */
-enum { WLMTK_WS_MOVE_BEGIN, WLMTK_WS_MOVE_MOTION, WLMTK_WS_MOVE_END };
+enum {
+    WLMTK_WS_MOVE_BEGIN, WLMTK_WS_MOVE_MOTION, WLMTK_WS_MOVE_END, WLMTK_WS_RESIZE_END
+};
 static void _wlmtk_workspace_emit_move(wlmtk_workspace_t *workspace_ptr, int which);
 static bool pfsm_move_begin(wlmtk_fsm_t *fsm_ptr, void *ud_ptr);
 static bool pfsm_move_motion(wlmtk_fsm_t *fsm_ptr, void *ud_ptr);
@@ -189,6 +203,9 @@ const wlmtk_element_vmt_t     workspace_window_element_vmt = {
     .destroy = _wlmtk_workspace_window_element_destroy,
     .get_dimensions = _wlmtk_workspace_window_element_get_dimensions,
     .pointer_button = _wlmtk_workspace_window_element_pointer_button,
+    .pointer_accepts_motion =
+    _wlmtk_workspace_window_element_pointer_accepts_motion,
+    .pointer_grab_cancel = _wlmtk_workspace_window_element_pointer_grab_cancel,
 };
 
 /** Finite state machine definition for pointer events. */
@@ -852,6 +869,67 @@ bool _wlmtk_workspace_window_element_pointer_button(
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Keeps (or lets go of) the pointer while a window is moved or resized: A
+ * fast motion can leave the window in a single event, before the window
+ * follows; without the grab, the pointer then leaves the workspace's window
+ * container, and the move ended where it was. Panels above (dock, zones
+ * overlay) do not take the pointer during the move either.
+ */
+void _wlmtk_workspace_hold_pointer(
+    wlmtk_workspace_t *workspace_ptr,
+    bool hold)
+{
+    wlmtk_element_t *element_ptr = &workspace_ptr->window_container.super_element;
+    if (hold == workspace_ptr->holding_pointer) return;
+    workspace_ptr->holding_pointer = hold;
+    if (NULL == element_ptr->parent_container_ptr) return;
+    if (hold) {
+        wlmtk_container_pointer_grab(element_ptr->parent_container_ptr,
+                                     element_ptr);
+    } else {
+        wlmtk_container_pointer_grab_release(element_ptr->parent_container_ptr,
+                                             element_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Extends the window container's pointer_accepts_motion: While a window is
+ * moved or resized, the pointer stays with the workspace, also between and
+ * outside windows.
+ */
+bool _wlmtk_workspace_window_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr)
+{
+    wlmtk_workspace_t *workspace_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmtk_workspace_t, window_container.super_element);
+    if (NULL == workspace_ptr->grabbed_window_ptr) {
+        return workspace_ptr->orig_window_super_element_vmt.pointer_accepts_motion(
+            element_ptr, motion_event_ptr);
+    }
+    // Not routed to the windows: The container would blur itself when no
+    // window is under the pointer, and the move would end. The windows need
+    // no motion while one of them is moved or resized.
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Another element took the pointer: The move or resize ends. */
+void _wlmtk_workspace_window_element_pointer_grab_cancel(
+    wlmtk_element_t *element_ptr)
+{
+    wlmtk_workspace_t *workspace_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmtk_workspace_t, window_container.super_element);
+    workspace_ptr->holding_pointer = false;
+    if (NULL != workspace_ptr->orig_window_super_element_vmt.pointer_grab_cancel) {
+        workspace_ptr->orig_window_super_element_vmt.pointer_grab_cancel(element_ptr);
+    }
+    wlmtk_fsm_event(&workspace_ptr->fsm, PFSME_RESET, NULL);
+}
+
+/* ------------------------------------------------------------------------- */
 /** Handles output changes: Updates own extents, updates layers. */
 void _wlmtk_workspace_handle_output_layout_change(
     struct wl_listener *listener_ptr,
@@ -1169,7 +1247,8 @@ void _wlmtk_workspace_emit_move(wlmtk_workspace_t *workspace_ptr, int which)
     };
     wlmtk_desktop_events_t *e = wlmtk_desktop_events(workspace_ptr->desktop_ptr);
     struct wl_signal *s = which == WLMTK_WS_MOVE_BEGIN ? &e->window_move_begin :
-        which == WLMTK_WS_MOVE_MOTION ? &e->window_move_motion : &e->window_move_end;
+        which == WLMTK_WS_MOVE_MOTION ? &e->window_move_motion :
+        which == WLMTK_WS_RESIZE_END ? &e->window_resize_end : &e->window_move_end;
     wl_signal_emit(s, &ev);
 }
 
@@ -1192,6 +1271,7 @@ bool pfsm_move_begin(wlmtk_fsm_t *fsm_ptr, void *ud_ptr)
         &workspace_ptr->initial_y);
 
     workspace_ptr->moving = true;
+    _wlmtk_workspace_hold_pointer(workspace_ptr, true);
     _wlmtk_workspace_emit_move(workspace_ptr, WLMTK_WS_MOVE_BEGIN);
 
     // TODO(kaeser@gubbe.ch): When in move mode, set (and keep) a corresponding
@@ -1250,6 +1330,8 @@ bool pfsm_resize_begin(wlmtk_fsm_t *fsm_ptr, void *ud_ptr)
         workspace_ptr->grabbed_window_ptr,
         workspace_ptr->resize_edges);
 
+    workspace_ptr->resizing = true;
+    _wlmtk_workspace_hold_pointer(workspace_ptr, true);
     return true;
 }
 
@@ -1309,6 +1391,11 @@ bool pfsm_reset(wlmtk_fsm_t *fsm_ptr, __UNUSED__ void *ud_ptr)
         _wlmtk_workspace_emit_move(workspace_ptr, WLMTK_WS_MOVE_END);
         workspace_ptr->moving = false;
     }
+    if (workspace_ptr->resizing) {
+        _wlmtk_workspace_emit_move(workspace_ptr, WLMTK_WS_RESIZE_END);
+        workspace_ptr->resizing = false;
+    }
+    _wlmtk_workspace_hold_pointer(workspace_ptr, false);
     workspace_ptr->grabbed_window_ptr = NULL;
     return true;
 }

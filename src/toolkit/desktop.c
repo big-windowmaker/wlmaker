@@ -253,6 +253,7 @@ wlmtk_desktop_t *wlmtk_desktop_create(
     wl_signal_init(&desktop_ptr->events.window_move_begin);
     wl_signal_init(&desktop_ptr->events.window_move_motion);
     wl_signal_init(&desktop_ptr->events.window_move_end);
+    wl_signal_init(&desktop_ptr->events.window_resize_end);
     return desktop_ptr;
 }
 
