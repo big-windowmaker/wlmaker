@@ -721,7 +721,10 @@ char *wlmaker_dock_launcher_icon_path(
             path_ptr = wlm_util_files_xdg_data_find(files_ptr, p, S_IFREG);
         }
         if (NULL != p) free(p);
-#ifdef WLMAKER_SOURCE_DIR
+// The source tree is a last resort for running from the build directory;
+// an installed package (WLMAKER_INSTALLED_ONLY) must not look there: the
+// path is the builder's, e.g. a /tmp directory anyone could create.
+#if defined(WLMAKER_SOURCE_DIR) && !defined(WLMAKER_INSTALLED_ONLY)
         if (NULL == path_ptr) {
             path_ptr = bs_strdupf(
                 WLMAKER_SOURCE_DIR "/share/wlmaker/icons/%s", icon_ptr);
