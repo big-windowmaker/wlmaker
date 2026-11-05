@@ -284,6 +284,37 @@ bool wlmtk_window_set_title(
 const char *wlmtk_window_get_title(wlmtk_window_t *window_ptr);
 
 /**
+ * Sets the application's identity: The xdg-shell app ID, or for X11 clients
+ * the class and instance of WM_CLASS. Used to match per-application rules;
+ * not shown to the user.
+ *
+ * @param window_ptr
+ * @param app_id_ptr          App ID or WM_CLASS class. May be NULL.
+ * @param instance_ptr        WM_CLASS instance, or the app ID. May be NULL.
+ *
+ * @return true on success.
+ */
+bool wlmtk_window_set_app_id(
+    wlmtk_window_t *window_ptr,
+    const char *app_id_ptr,
+    const char *instance_ptr);
+
+/** @return The app ID (or WM_CLASS class), or NULL if not known. */
+const char *wlmtk_window_get_app_id(wlmtk_window_t *window_ptr);
+
+/** @return The WM_CLASS instance (or the app ID), or NULL if not known. */
+const char *wlmtk_window_get_instance(wlmtk_window_t *window_ptr);
+
+/**
+ * Marks the window as a dialog: It has a parent, is modal, or declares
+ * itself as a dialog. Window organizers leave dialogs alone.
+ */
+void wlmtk_window_set_dialog(wlmtk_window_t *window_ptr, bool dialog);
+
+/** @return Whether the window is a dialog. */
+bool wlmtk_window_is_dialog(wlmtk_window_t *window_ptr);
+
+/**
  * Sets the window as activated, depending on the argument's value.
  *
  * An activated window will have keyboard focus and would have distinct

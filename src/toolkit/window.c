@@ -92,6 +92,12 @@ struct _wlmtk_window_t {
 
     /** The window's title. */
     char                      *title_ptr;
+    /** Application ID (xdg app_id, or the X11 WM_CLASS class). May be NULL. */
+    char                      *app_id_ptr;
+    /** X11 WM_CLASS instance; the app ID for native clients. May be NULL. */
+    char                      *instance_ptr;
+    /** A dialog: has a parent, is modal, or says it is one. */
+    bool                      dialog;
 
     /** Properties of the window. See @ref wlmtk_window_property_t. */
     uint32_t                  properties;
@@ -344,6 +350,10 @@ void wlmtk_window_destroy(wlmtk_window_t *window_ptr)
         free(window_ptr->title_ptr);
         window_ptr->title_ptr = NULL;
     }
+    free(window_ptr->app_id_ptr);
+    window_ptr->app_id_ptr = NULL;
+    free(window_ptr->instance_ptr);
+    window_ptr->instance_ptr = NULL;
 
     if (NULL != window_ptr->style_ref_ptr) {
         wlmtk_window_style_ref_release(window_ptr->style_ref_ptr);
@@ -523,6 +533,54 @@ const char *wlmtk_window_get_title(wlmtk_window_t *window_ptr)
 {
     BS_ASSERT(NULL != window_ptr->title_ptr);
     return window_ptr->title_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Replaces `*dest_ptr_ptr` by a copy of `src_ptr` (NULL or "" clears). */
+static bool _wlmtk_window_set_str(char **dest_ptr_ptr, const char *src_ptr)
+{
+    char *copy_ptr = NULL;
+    if (NULL != src_ptr && '\0' != *src_ptr) {
+        copy_ptr = logged_strdup(src_ptr);
+        if (NULL == copy_ptr) return false;
+    }
+    free(*dest_ptr_ptr);
+    *dest_ptr_ptr = copy_ptr;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_window_set_app_id(
+    wlmtk_window_t *window_ptr,
+    const char *app_id_ptr,
+    const char *instance_ptr)
+{
+    return _wlmtk_window_set_str(&window_ptr->app_id_ptr, app_id_ptr) &&
+        _wlmtk_window_set_str(&window_ptr->instance_ptr, instance_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+const char *wlmtk_window_get_app_id(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->app_id_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+const char *wlmtk_window_get_instance(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->instance_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_set_dialog(wlmtk_window_t *window_ptr, bool dialog)
+{
+    window_ptr->dialog = dialog;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_window_is_dialog(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->dialog;
 }
 
 /* ------------------------------------------------------------------------- */

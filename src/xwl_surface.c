@@ -68,6 +68,8 @@ struct _wlmaker_xwl_surface_t {
 
     /** Listener for the `set_title` signal of `wlr_xwayland_surface`. */
     struct wl_listener        set_title_listener;
+    /** Listener for the `set_class` signal of `wlr_xwayland_surface`. */
+    struct wl_listener        set_class_listener;
     /** Listener for the `set_parent` signal of `wlr_xwayland_surface`. */
     struct wl_listener        set_parent_listener;
     /** Listener for the `set_decorations` signal of `wlr_xwayland_surface`. */
@@ -129,6 +131,10 @@ static void _xwl_surface_handle_dissociate(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
+static void _xwl_surface_handle_set_class(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _xwl_surface_apply_identity(wlmaker_xwl_surface_t *xs_ptr);
 static void _xwl_surface_handle_set_title(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -264,6 +270,10 @@ wlmaker_xwl_surface_t *wlmaker_xwl_surface_create(
         &xwl_surface_ptr->set_title_listener,
         _xwl_surface_handle_set_title);
     wlmtk_util_connect_listener_signal(
+        &wlr_xwayland_surface_ptr->events.set_class,
+        &xwl_surface_ptr->set_class_listener,
+        _xwl_surface_handle_set_class);
+    wlmtk_util_connect_listener_signal(
         &wlr_xwayland_surface_ptr->events.set_parent,
         &xwl_surface_ptr->set_parent_listener,
         _xwl_surface_handle_set_parent);
@@ -292,6 +302,7 @@ void wlmaker_xwl_surface_destroy(wlmaker_xwl_surface_t *xwl_surface_ptr)
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_geometry_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_decorations_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_parent_listener);
+    wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_class_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_title_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->dissociate_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->associate_listener);
@@ -483,6 +494,7 @@ void _xwl_surface_handle_associate(
         wlmtk_window_set_client(xwl_surface_ptr->window_ptr, &client);
         wlmtk_window_set_title(xwl_surface_ptr->window_ptr,
                                 xwl_surface_ptr->title_ptr);
+        _xwl_surface_apply_identity(xwl_surface_ptr);
 
         xwl_surface_ptr->tl_menu_ptr = wlmaker_tl_menu_create(
             xwl_surface_ptr->window_ptr, xwl_surface_ptr->server_ptr);
@@ -578,6 +590,35 @@ void _xwl_surface_handle_dissociate(
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->surface_unmap_listener);
     wlmtk_base_set_content_element(&xwl_surface_ptr->base, NULL);
     xwl_surface_ptr->surface_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Copies WM_CLASS and the dialog state of the X11 window to the window. */
+void _xwl_surface_apply_identity(wlmaker_xwl_surface_t *xs_ptr)
+{
+    if (NULL == xs_ptr->window_ptr) return;
+    struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
+    wlmtk_window_set_app_id(xs_ptr->window_ptr, s->class, s->instance);
+    wlmtk_window_set_dialog(
+        xs_ptr->window_ptr,
+        s->modal || NULL != s->parent ||
+        wlr_xwayland_surface_has_window_type(
+            s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DIALOG) ||
+        wlr_xwayland_surface_has_window_type(
+            s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_SPLASH) ||
+        wlr_xwayland_surface_has_window_type(
+            s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_UTILITY));
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handler for the `set_class` event of `struct wlr_xwayland_surface`. */
+void _xwl_surface_handle_set_class(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, set_class_listener);
+    _xwl_surface_apply_identity(xs_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1019,6 +1060,7 @@ void fake_init_wlr_xwayland_surface(
     wl_signal_init(&wlr_xwayland_surface_ptr->events.associate);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.dissociate);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.set_title);
+    wl_signal_init(&wlr_xwayland_surface_ptr->events.set_class);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.set_parent);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.set_decorations);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.set_geometry);

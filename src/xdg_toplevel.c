@@ -390,6 +390,12 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
             &client.pid, &client.uid, &client.gid);
     }
     wlmtk_window_set_client(wlmaker_xdg_toplevel_ptr->window_ptr, &client);
+    // App ID and parent may already be set before the toplevel is created.
+    wlmtk_window_set_app_id(wlmaker_xdg_toplevel_ptr->window_ptr,
+                            wlr_xdg_toplevel_ptr->app_id,
+                            wlr_xdg_toplevel_ptr->app_id);
+    wlmtk_window_set_dialog(wlmaker_xdg_toplevel_ptr->window_ptr,
+                            NULL != wlr_xdg_toplevel_ptr->parent);
 
     wlmaker_xdg_toplevel_ptr->tracker_handle_ptr =
         wlmaker_toplevel_tracker_handle_create(
@@ -695,7 +701,13 @@ void _wlmaker_xdg_toplevel_handle_set_parent(
     struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr = BS_CONTAINER_OF(
         listener_ptr, struct wlmaker_xdg_toplevel, set_parent_listener);
 
-    bs_log(BS_ERROR, "TODO: set_parent %p", wlmaker_xdg_toplevel_ptr);
+    // A toplevel with a parent is a dialog. wlmaker does not stack it on
+    // the parent yet; window organizers leave it alone.
+    if (NULL != wlmaker_xdg_toplevel_ptr->window_ptr) {
+        wlmtk_window_set_dialog(
+            wlmaker_xdg_toplevel_ptr->window_ptr,
+            NULL != wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->parent);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -727,6 +739,12 @@ void _wlmaker_xdg_toplevel_handle_set_app_id(
     wlmaker_toplevel_tracker_handle_set_app_id(
         wlmaker_xdg_toplevel_ptr->tracker_handle_ptr,
         wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->app_id);
+    if (NULL != wlmaker_xdg_toplevel_ptr->window_ptr) {
+        const char *app_id_ptr =
+            wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->app_id;
+        wlmtk_window_set_app_id(
+            wlmaker_xdg_toplevel_ptr->window_ptr, app_id_ptr, app_id_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
