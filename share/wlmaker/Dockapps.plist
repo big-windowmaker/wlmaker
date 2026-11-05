@@ -150,13 +150,26 @@
       );
     };
 
+    // wmake-zones-wl: Left click switches Zones and Tiling, the middle one
+    // turns the organization off and on again, the wheel changes the
+    // layout; the menu has the rest.
     "wmake-zones-wl" = {
       Actions = (
-        { Title = "Zones On / Off"; Command = "wmake-zones zones toggle"; },
-        { Title = "Auto Tiling On / Off"; Command = "wmake-zones autotile toggle"; },
+        { Title = "Mode: Zones"; Command = "wmake-zones mode zones"; },
+        { Title = "Mode: Tiling"; Command = "wmake-zones mode tiling"; },
+        { Title = "Mode: Off"; Command = "wmake-zones mode off"; },
         { Title = "Next Layout"; Command = "wmake-zones layout next"; },
+        { Title = "Previous Layout"; Command = "wmake-zones layout prev"; },
+        { Title = "Undo"; Command = "wmake-zones undo"; },
+        { Title = "Redo"; Command = "wmake-zones redo"; },
+        { Title = "Restore All Arranged Windows"; Command = "wmake-zones restore-all"; },
+        { Title = "Arrange the Desktop"; Command = "wmake-zones arrange"; },
         { Title = "Edit Zones..."; Command = "wmake-zones-prefs --editor"; },
-        { Title = "Window Organization Preferences..."; Command = "wmake-zones-prefs"; }
+        { Title = "Window Organization Preferences..."; Command = "wmake-zones-prefs"; },
+        { Title = "Shortcuts..."; Command = "wmake-zones-prefs --keys"; },
+        { Title = "Application Rules..."; Command = "wmake-zones-prefs --rules"; },
+        { Title = "Monitors..."; Command = "wmake-zones-prefs --monitors"; },
+        { Title = "About wmake-zones"; Command = "wmake-zones-prefs --about"; }
       );
     };
 
