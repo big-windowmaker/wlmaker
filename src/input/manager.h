@@ -234,6 +234,34 @@ void wlmim_unbind_key(
     wlmim_keybinding_t *keybinding_ptr);
 
 /**
+ * Callback of a keyboard grab, for each key press.
+ *
+ * @param keysym
+ * @param modifiers           See `enum wlr_keyboard_modifiers`.
+ * @param ud_ptr
+ *
+ * @return Ignored: The press is consumed anyway.
+ */
+typedef bool (*wlmim_key_grab_callback_t)(
+    xkb_keysym_t keysym,
+    uint32_t modifiers,
+    void *ud_ptr);
+
+/**
+ * Grabs the keyboard: While set, every key press goes to `callback` and no
+ * key binding runs; clients get no presses. Releases still reach clients,
+ * so that no key stays down for them. A NULL callback ends the grab.
+ *
+ * @param input_manager_ptr
+ * @param callback            May be NULL.
+ * @param ud_ptr
+ */
+void wlmim_set_key_grab(
+    wlmim_t *input_manager_ptr,
+    wlmim_key_grab_callback_t callback,
+    void *ud_ptr);
+
+/**
  * Processes key combo: Call back if a matching binding is found.
  *
  * @param input_manager_ptr

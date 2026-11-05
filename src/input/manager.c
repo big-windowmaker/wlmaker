@@ -53,6 +53,10 @@ struct _wlmim_t {
     bs_dllist_t               devices;
     /** List of all bound keys, see @ref wlmim_keybinding_t::dlnode */
     bs_dllist_t               keybindings;
+    /** Keyboard grab: gets every key press while set. */
+    wlmim_key_grab_callback_t key_grab_callback;
+    /** Argument to @ref _wlmim_t::key_grab_callback. */
+    void                      *key_grab_ud_ptr;
 
     /** Listener for `new_input` signals raised by `wlr_backend`. */
     struct wl_listener        backend_new_input_device_listener;
@@ -485,8 +489,24 @@ bool wlmim_process_key(
         bs_log(BS_DEBUG, "Process key '%s' (sym %d, modifiers %"PRIx32")",
                keysym_name, keysym, modifiers);
     }
+    if (NULL != im_ptr->key_grab_callback) {
+        // A modal part of the compositor (eg. the zone picker) has the
+        // keyboard: Every press is consumed, and no binding runs.
+        im_ptr->key_grab_callback(keysym, modifiers, im_ptr->key_grab_ud_ptr);
+        return true;
+    }
     struct _wlmim_process_arg a = { .keysym = keysym, .modifiers = modifiers };
     return bs_dllist_any(&im_ptr->keybindings, _wlmim_process_keybinding, &a);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_set_key_grab(
+    wlmim_t *im_ptr,
+    wlmim_key_grab_callback_t callback,
+    void *ud_ptr)
+{
+    im_ptr->key_grab_callback = callback;
+    im_ptr->key_grab_ud_ptr = ud_ptr;
 }
 
 /* ------------------------------------------------------------------------- */
