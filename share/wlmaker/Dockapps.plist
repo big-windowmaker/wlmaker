@@ -210,7 +210,14 @@
     "big-wm-tray" = {
       Preferences = (
         { Key = SmallIcons; Title = "Small Icons"; Type = Bool;
-          Default = No; }
+          Default = No; },
+        { Key = IconStyle; Title = "Icon Style"; Default = auto;
+          Choices = (
+            (auto, "Automatic"),
+            (symbolic, "Prefer Symbolic"),
+            (monochrome, "Monochrome"),
+            (original, "Original Colors")
+          ); }
       );
     };
   };
