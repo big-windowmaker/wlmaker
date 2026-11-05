@@ -46,6 +46,7 @@ void wlmaker_zones_command(__UNUSED__ wlmaker_zones_t *zones_ptr,
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <wayland-server-core.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -95,6 +96,8 @@ typedef struct {
 } zones_window_t;
 
 /** State of the zones. */
+struct zones_conn;
+
 struct _wlmaker_zones_t {
     /** Derived from a panel: The overlay, on the overlay layer. */
     wlmtk_panel_t             super_panel;
@@ -155,6 +158,10 @@ struct _wlmaker_zones_t {
     struct wl_event_source    *listen_source_ptr;
     /** Path of the socket. */
     char                      *sock_path_ptr;
+    /** The socket file this instance created (unlink only that one). */
+    struct stat               sock_stat;
+    /** Clients being read, without ever blocking the compositor. */
+    struct zones_conn         *conn_ptr[8];
     /** Timer: Relayout of the tiling, coalesced. */
     struct wl_event_source    *tile_timer_ptr;
     /** Timer: Hides a preview. */
@@ -980,7 +987,11 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
             _out(out_ptr, out_len, "error=layout desconhecido\n");
         }
     } else if (0 == strcmp(buf, "windows")) {
-        // Class (app_id is not kept by the toolkit yet), title and box.
+        // Same columns as on X11: class, instance, title; with "-l" the
+        // output, zone, tiling and box. The toolkit keeps no app_id yet,
+        // so class and instance are empty.
+        bool long_form = NULL != arg_ptr &&
+            (0 == strcmp(arg_ptr, "-l") || 0 == strcmp(arg_ptr, "long"));
         wlmtk_workspace_t *ws_ptr = wlmtk_desktop_get_current_workspace(
             zones_ptr->server_ptr->desktop_ptr);
         bs_dllist_t *list_ptr = wlmtk_workspace_get_windows_dllist(ws_ptr);
@@ -989,9 +1000,18 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
             struct wlr_box b = wlmtk_window_get_bounding_box(window_ptr);
             const char *title_ptr = wlmtk_window_get_title(window_ptr);
             zones_window_t *w = _win(zones_ptr, window_ptr, false);
-            _out(out_ptr, out_len, "\t\t%s\t%d,%d,%d,%d\tzone=%d tiled=%d\n",
-                 NULL != title_ptr ? title_ptr : "", b.x, b.y, b.width, b.height,
-                 NULL != w ? w->zone : -1, NULL != w ? w->tiled : 0);
+            if (long_form) {
+                struct wlr_output *o = wlr_output_layout_output_at(
+                    zones_ptr->server_ptr->wlr_output_layout_ptr,
+                    b.x + b.width / 2.0, b.y + b.height / 2.0);
+                _out(out_ptr, out_len, "%s\tzone=%d\ttiled=%d\t%dx%d%+d%+d\t\t%s\n",
+                     NULL != o ? o->name : "?",
+                     NULL != w ? w->zone : -1, NULL != w ? w->tiled : 0,
+                     b.width, b.height, b.x, b.y,
+                     NULL != title_ptr ? title_ptr : "");
+            } else {
+                _out(out_ptr, out_len, "\t\t%s\n", NULL != title_ptr ? title_ptr : "");
+            }
         }
     } else if (0 == strcmp(buf, "layouts")) {
         for (int i = 0; i < zones_ptr->cfg.nlayouts; ++i) {
@@ -1069,30 +1089,83 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
 
 /* == Socket =============================================================== */
 
-/** A client connected: One command, one reply. */
-static int _wlmaker_zones_handle_listen(int fd, __UNUSED__ uint32_t mask, void *data_ptr)
+/** A client of the control socket, read as its bytes arrive. */
+struct zones_conn {
+    wlmaker_zones_t           *zones_ptr;
+    int                       fd;
+    struct wl_event_source    *source_ptr;
+    size_t                    len;
+    char                      line[WZ_IPC_MAX];
+};
+
+/** Closes a client and forgets it. */
+static void _zones_conn_close(struct zones_conn *conn_ptr)
 {
-    wlmaker_zones_t *zones_ptr = data_ptr;
-    int c = accept4(fd, NULL, NULL, SOCK_CLOEXEC);
-    if (0 > c) return 0;
-    if (!wz_ipc_peer_ok(c)) {
-        close(c);
-        return 0;
+    wlmaker_zones_t *zones_ptr = conn_ptr->zones_ptr;
+    for (size_t i = 0; i < sizeof(zones_ptr->conn_ptr) / sizeof(zones_ptr->conn_ptr[0]); ++i) {
+        if (zones_ptr->conn_ptr[i] == conn_ptr) zones_ptr->conn_ptr[i] = NULL;
     }
-    struct timeval tv = { 0, 300000 };
-    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    char line[WZ_IPC_MAX];
-    ssize_t n = recv(c, line, sizeof(line) - 1, 0);
+    if (NULL != conn_ptr->source_ptr) wl_event_source_remove(conn_ptr->source_ptr);
+    close(conn_ptr->fd);
+    free(conn_ptr);
+}
+
+/** Bytes from a client: once the line is complete, one command, one reply. */
+static int _zones_conn_readable(int fd, __UNUSED__ uint32_t mask, void *data_ptr)
+{
+    struct zones_conn *conn_ptr = data_ptr;
+    ssize_t n = recv(fd, conn_ptr->line + conn_ptr->len,
+                     sizeof(conn_ptr->line) - 1 - conn_ptr->len, MSG_DONTWAIT);
+    if (0 > n && (EAGAIN == errno || EINTR == errno)) return 0;
     if (0 < n) {
-        line[n] = '\0';
+        conn_ptr->len += (size_t)n;
+        conn_ptr->line[conn_ptr->len] = '\0';
+        if (NULL == memchr(conn_ptr->line, '\n', conn_ptr->len) &&
+            conn_ptr->len < sizeof(conn_ptr->line) - 1) {
+            return 0;  // More to come.
+        }
+    }
+    if (0 < conn_ptr->len) {
         static char out[16384];
-        wlmaker_zones_command(zones_ptr, line, out, sizeof(out));
+        wlmaker_zones_command(conn_ptr->zones_ptr, conn_ptr->line, out, sizeof(out));
         size_t l = strlen(out);
         if (0 == l) strcpy(out, "ok\n");
         strncat(out, "\n", sizeof(out) - strlen(out) - 1);
-        (void)!send(c, out, strlen(out), MSG_NOSIGNAL);
+        (void)!send(fd, out, strlen(out), MSG_NOSIGNAL | MSG_DONTWAIT);
     }
-    close(c);
+    _zones_conn_close(conn_ptr);
+    return 0;
+}
+
+/** A client connected: read it from the event loop, never blocking. */
+static int _wlmaker_zones_handle_listen(int fd, __UNUSED__ uint32_t mask, void *data_ptr)
+{
+    wlmaker_zones_t *zones_ptr = data_ptr;
+    int c = accept4(fd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+    if (0 > c) return 0;
+    size_t slot = 0;
+    const size_t max = sizeof(zones_ptr->conn_ptr) / sizeof(zones_ptr->conn_ptr[0]);
+    while (slot < max && NULL != zones_ptr->conn_ptr[slot]) ++slot;
+    if (!wz_ipc_peer_ok(c) || slot >= max) {
+        close(c);
+        return 0;
+    }
+    struct zones_conn *conn_ptr = calloc(1, sizeof(*conn_ptr));
+    if (NULL == conn_ptr) {
+        close(c);
+        return 0;
+    }
+    conn_ptr->zones_ptr = zones_ptr;
+    conn_ptr->fd = c;
+    conn_ptr->source_ptr = wl_event_loop_add_fd(
+        wl_display_get_event_loop(zones_ptr->server_ptr->wl_display_ptr),
+        c, WL_EVENT_READABLE, _zones_conn_readable, conn_ptr);
+    if (NULL == conn_ptr->source_ptr) {
+        close(c);
+        free(conn_ptr);
+        return 0;
+    }
+    zones_ptr->conn_ptr[slot] = conn_ptr;
     return 0;
 }
 
@@ -1163,6 +1236,9 @@ wlmaker_zones_t *wlmaker_zones_create(wlmaker_server_t *server_ptr)
     if (NULL != zones_ptr->sock_path_ptr) {
         zones_ptr->listen_fd = wz_ipc_server(zones_ptr->sock_path_ptr);
         if (0 <= zones_ptr->listen_fd) {
+            if (0 != stat(zones_ptr->sock_path_ptr, &zones_ptr->sock_stat)) {
+                memset(&zones_ptr->sock_stat, 0, sizeof(zones_ptr->sock_stat));
+            }
             zones_ptr->listen_source_ptr = wl_event_loop_add_fd(
                 loop_ptr, zones_ptr->listen_fd, WL_EVENT_READABLE,
                 _wlmaker_zones_handle_listen, zones_ptr);
@@ -1184,12 +1260,17 @@ void wlmaker_zones_destroy(wlmaker_zones_t *zones_ptr)
         wlmim_unbind_key(zones_ptr->server_ptr->input_manager_ptr,
                          zones_ptr->esc_binding_ptr);
     }
+    for (size_t i = 0; i < sizeof(zones_ptr->conn_ptr) / sizeof(zones_ptr->conn_ptr[0]); ++i) {
+        if (NULL != zones_ptr->conn_ptr[i]) _zones_conn_close(zones_ptr->conn_ptr[i]);
+    }
     if (NULL != zones_ptr->listen_source_ptr) {
         wl_event_source_remove(zones_ptr->listen_source_ptr);
     }
     if (0 <= zones_ptr->listen_fd) close(zones_ptr->listen_fd);
     if (NULL != zones_ptr->sock_path_ptr) {
-        if (0 <= zones_ptr->listen_fd) unlink(zones_ptr->sock_path_ptr);
+        if (0 <= zones_ptr->listen_fd) {
+            wz_ipc_unlink(zones_ptr->sock_path_ptr, &zones_ptr->sock_stat);
+        }
         free(zones_ptr->sock_path_ptr);
     }
     if (NULL != zones_ptr->tile_timer_ptr) wl_event_source_remove(zones_ptr->tile_timer_ptr);
