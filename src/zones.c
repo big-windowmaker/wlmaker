@@ -891,9 +891,11 @@ static void _fit_text(cairo_t *cr, char *buf, size_t len, const char *src,
 /** Hint bar of the picker, as a Window Maker menu title. */
 static void _draw_picker_hint(wlmaker_zones_t *zones_ptr, cairo_t *cr)
 {
-    const char *msg_ptr = zones_ptr->cfg.show_numbers || true ?
-        "1\xe2\x80\x93" "9 / \xe2\x86\x90\xe2\x86\x91\xe2\x86\x93\xe2\x86\x92"
-        " \xc2\xb7 Enter \xc2\xb7 Tab \xc2\xb7 Esc" : "";
+    // Words, not arrow glyphs: The cairo toy font has no fallback, and the
+    // common "Sans" fonts may lack the arrows (seen as empty boxes).
+    const char *msg_ptr = wlmaker_i18n(
+        "1-9 or arrows to choose \xc2\xb7 Enter snaps \xc2\xb7 "
+        "Tab changes the layout \xc2\xb7 Esc cancels");
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
                            CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(cr, 13);
