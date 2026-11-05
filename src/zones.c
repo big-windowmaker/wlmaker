@@ -230,15 +230,19 @@ static struct wlr_output *_output_at(wlmaker_zones_t *zones_ptr,
         zones_ptr->server_ptr);
 }
 
-/** @return 1-based index of the current workspace. */
+/**
+ * @return 1-based index of the current workspace, as in the configuration's
+ * [Workspace N]. The toolkit already numbers workspaces from 1 (the index is
+ * the list size once the workspace is added).
+ */
 static int _workspace_number(wlmaker_zones_t *zones_ptr)
 {
     const char *name_ptr;
-    int index = 0;
+    int index = 1;
     wlmtk_workspace_get_details(
         wlmtk_desktop_get_current_workspace(zones_ptr->server_ptr->desktop_ptr),
         &name_ptr, &index);
-    return index + 1;
+    return index < 1 ? 1 : index;
 }
 
 /** Computes the zones of the layout effective on `output_ptr`. */
