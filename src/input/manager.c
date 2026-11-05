@@ -491,9 +491,10 @@ bool wlmim_process_key(
     }
     if (NULL != im_ptr->key_grab_callback) {
         // A modal part of the compositor (eg. the zone picker) has the
-        // keyboard: Every press is consumed, and no binding runs.
-        im_ptr->key_grab_callback(keysym, modifiers, im_ptr->key_grab_ud_ptr);
-        return true;
+        // keyboard: The presses it consumes run no binding. One it declines
+        // goes on as usual.
+        if (im_ptr->key_grab_callback(
+                keysym, modifiers, im_ptr->key_grab_ud_ptr)) return true;
     }
     struct _wlmim_process_arg a = { .keysym = keysym, .modifiers = modifiers };
     return bs_dllist_any(&im_ptr->keybindings, _wlmim_process_keybinding, &a);
@@ -909,6 +910,14 @@ bool _wlmim_test_binding_callback(
     return true;
 }
 
+/** Test helper: A grab that consumes the press if `*ud_ptr` says so. */
+static bool _wlmim_test_grab_callback(
+    __UNUSED__ xkb_keysym_t keysym,
+    __UNUSED__ uint32_t modifiers,
+    void *ud_ptr) {
+    return *(bool*)ud_ptr;
+}
+
 /* ------------------------------------------------------------------------- */
 /** Tests key bindings. */
 void _wlmim_test_bind(bs_test_t *test_ptr)
@@ -958,6 +967,15 @@ void _wlmim_test_bind(bs_test_t *test_ptr)
     BS_TEST_VERIFY_FALSE(
         test_ptr,
         wlmim_process_key(&im, XKB_KEY_B, 0));
+
+    // A grab takes the presses; one it declines goes to the bindings.
+    bool consume = true;
+    wlmim_set_key_grab(&im, _wlmim_test_grab_callback, &consume);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmim_process_key(&im, XKB_KEY_z, 0));
+    consume = false;
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmim_process_key(&im, XKB_KEY_z, 0));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmim_process_key(&im, XKB_KEY_b, 0));
+    wlmim_set_key_grab(&im, NULL, NULL);
 
     wlmim_unbind_key(&im, kb2_ptr);
     wlmim_unbind_key(&im, kb1_ptr);

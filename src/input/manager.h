@@ -240,7 +240,8 @@ void wlmim_unbind_key(
  * @param modifiers           See `enum wlr_keyboard_modifiers`.
  * @param ud_ptr
  *
- * @return Ignored: The press is consumed anyway.
+ * @return Whether the press was consumed. False lets it go on as if there
+ *     were no grab (eg. the grab gave up because the session got locked).
  */
 typedef bool (*wlmim_key_grab_callback_t)(
     xkb_keysym_t keysym,
