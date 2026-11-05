@@ -95,6 +95,8 @@ struct _wlmtk_workspace_t {
     uint32_t                  resize_edges;
     /** Whether the grab is a move (signals @ref wlmtk_desktop_events_t). */
     bool                      moving;
+    /** Whether an interactive resize is going on (for window_resize_end). */
+    bool                      resizing;
 
     /** Top left X coordinate of workspace. */
     int                       x1;
@@ -176,7 +178,9 @@ static struct wlr_box _wlmtk_workspace_usable_area(
     struct wlr_output *wlr_output_ptr);
 
 /** Which window move signal to emit. */
-enum { WLMTK_WS_MOVE_BEGIN, WLMTK_WS_MOVE_MOTION, WLMTK_WS_MOVE_END };
+enum {
+    WLMTK_WS_MOVE_BEGIN, WLMTK_WS_MOVE_MOTION, WLMTK_WS_MOVE_END, WLMTK_WS_RESIZE_END
+};
 static void _wlmtk_workspace_emit_move(wlmtk_workspace_t *workspace_ptr, int which);
 static bool pfsm_move_begin(wlmtk_fsm_t *fsm_ptr, void *ud_ptr);
 static bool pfsm_move_motion(wlmtk_fsm_t *fsm_ptr, void *ud_ptr);
@@ -1262,7 +1266,8 @@ void _wlmtk_workspace_emit_move(wlmtk_workspace_t *workspace_ptr, int which)
     };
     wlmtk_desktop_events_t *e = wlmtk_desktop_events(workspace_ptr->desktop_ptr);
     struct wl_signal *s = which == WLMTK_WS_MOVE_BEGIN ? &e->window_move_begin :
-        which == WLMTK_WS_MOVE_MOTION ? &e->window_move_motion : &e->window_move_end;
+        which == WLMTK_WS_MOVE_MOTION ? &e->window_move_motion :
+        which == WLMTK_WS_RESIZE_END ? &e->window_resize_end : &e->window_move_end;
     wl_signal_emit(s, &ev);
 }
 
@@ -1352,6 +1357,7 @@ bool pfsm_resize_begin(wlmtk_fsm_t *fsm_ptr, void *ud_ptr)
     if (NULL != e->parent_container_ptr) {
         wlmtk_container_pointer_grab(e->parent_container_ptr, e);
     }
+    workspace_ptr->resizing = true;
     return true;
 }
 
@@ -1410,6 +1416,10 @@ bool pfsm_reset(wlmtk_fsm_t *fsm_ptr, __UNUSED__ void *ud_ptr)
     if (workspace_ptr->moving) {
         _wlmtk_workspace_emit_move(workspace_ptr, WLMTK_WS_MOVE_END);
         workspace_ptr->moving = false;
+    }
+    if (workspace_ptr->resizing) {
+        _wlmtk_workspace_emit_move(workspace_ptr, WLMTK_WS_RESIZE_END);
+        workspace_ptr->resizing = false;
     }
     workspace_ptr->grabbed_window_ptr = NULL;
     wlmtk_element_t *e = wlmtk_workspace_window_element(workspace_ptr);

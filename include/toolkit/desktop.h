@@ -74,6 +74,11 @@ typedef struct {
     struct wl_signal          window_move_motion;
     /** See @ref wlmtk_desktop_events_t::window_move_begin. */
     struct wl_signal          window_move_end;
+    /**
+     * An interactive resize ended (the client may still be adopting the
+     * size). Data: @ref wlmtk_window_move_event_t.
+     */
+    struct wl_signal          window_resize_end;
 } wlmtk_desktop_events_t;
 
 /** Data of the window move signals. Coordinates in layout space. */
