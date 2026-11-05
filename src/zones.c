@@ -1220,7 +1220,12 @@ void _picker_apply(wlmaker_zones_t *zones_ptr, int idx)
 static bool _picker_key(xkb_keysym_t keysym, uint32_t modifiers, void *ud_ptr)
 {
     wlmaker_zones_t *zones_ptr = ud_ptr;
-    if (!zones_ptr->picker) return true;
+    if (!zones_ptr->picker) return false;
+    // Locked meanwhile: The keys belong to the lock screen (the password).
+    if (wlmtk_desktop_locked(zones_ptr->server_ptr->desktop_ptr)) {
+        _picker_close(zones_ptr);
+        return false;
+    }
     if (XKB_KEY_1 <= keysym && keysym <= XKB_KEY_9) {
         _picker_apply(zones_ptr, (int)(keysym - XKB_KEY_1));
         return true;
@@ -1278,6 +1283,7 @@ static wlmtk_window_t *_active(wlmaker_zones_t *zones_ptr)
 static void _picker_open(wlmaker_zones_t *zones_ptr)
 {
     if (zones_ptr->picker || NULL != zones_ptr->drag_window_ptr) return;
+    if (wlmtk_desktop_locked(zones_ptr->server_ptr->desktop_ptr)) return;
     wlmtk_window_t *window_ptr = _active(zones_ptr);
     if (!_snappable(zones_ptr, window_ptr)) return;
     zones_ptr->picker = true;
