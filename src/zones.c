@@ -2455,12 +2455,21 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
         _wlmaker_zones_tile_mark(zones_ptr);
         _out(out_ptr, out_len, "autotile=%s\n", v ? "on" : "off");
     } else if (0 == strcmp(buf, "algorithm") && NULL != arg_ptr &&
-               0 <= wz_algo_from_name(arg_ptr)) {
+               (0 <= wz_algo_from_name(arg_ptr) || 0 == strcmp(arg_ptr, "next") ||
+                0 == strcmp(arg_ptr, "prev"))) {
+        // next/prev: the following or the previous algorithm (dock-app
+        // arrows, the wheel in Tiling mode).
+        const char *name_ptr = arg_ptr;
+        if (0 == strcmp(arg_ptr, "next") || 0 == strcmp(arg_ptr, "prev")) {
+            int step = 'n' == arg_ptr[0] ? 1 : WZ_TILE_N - 1;
+            name_ptr = wz_algo_name(
+                (wz_algo)(((int)zones_ptr->cfg.tile.algo + step) % WZ_TILE_N));
+        }
         wz_hist_entry *e = _hist_begin(zones_ptr);
         _hist_add_cfg(zones_ptr, e, "Tiling", "Algorithm");
         wz_history_commit(&zones_ptr->history);
-        zones_ptr->cfg.tile.algo = wz_algo_from_name(arg_ptr);
-        _save(zones_ptr, "Tiling", "Algorithm", arg_ptr);
+        zones_ptr->cfg.tile.algo = wz_algo_from_name(name_ptr);
+        _save(zones_ptr, "Tiling", "Algorithm", name_ptr);
         _wlmaker_zones_tile_mark(zones_ptr);
     } else if (0 == strcmp(buf, "layout") && NULL != arg_ptr) {
         if (0 == strcmp(arg_ptr, "next")) {
