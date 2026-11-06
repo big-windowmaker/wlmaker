@@ -53,6 +53,10 @@
 struct _wlmtk_window_t {
     /** Bordered, wraps around the box. */
     wlmtk_bordered_t          bordered;
+    /** Minimum content width asked by the client; 0: none. */
+    int                       min_width;
+    /** Minimum content height asked by the client; 0: none. */
+    int                       min_height;
     /** Original virtual method table of the window's element superclass. */
     wlmtk_element_vmt_t       orig_super_element_vmt;
 
@@ -428,6 +432,33 @@ void wlmtk_window_request_bounding_box(
         .height = BS_MAX(1, box_ptr->height - (wbox.height - cbox.height)),
     };
     wlmtk_window_request_size(window_ptr, &content);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_set_min_size(
+    wlmtk_window_t *window_ptr,
+    int width,
+    int height)
+{
+    window_ptr->min_width = BS_MAX(0, width);
+    window_ptr->min_height = BS_MAX(0, height);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_get_min_bounding_size(
+    wlmtk_window_t *window_ptr,
+    int *width_ptr,
+    int *height_ptr)
+{
+    // Decorations as in wlmtk_window_request_bounding_box.
+    struct wlr_box wbox = wlmtk_element_get_dimensions_box(
+        wlmtk_bordered_element(&window_ptr->bordered));
+    struct wlr_box cbox = wlmtk_element_get_dimensions_box(
+        window_ptr->content_element_ptr);
+    *width_ptr = 0 < window_ptr->min_width ?
+        window_ptr->min_width + (wbox.width - cbox.width) : 0;
+    *height_ptr = 0 < window_ptr->min_height ?
+        window_ptr->min_height + (wbox.height - cbox.height) : 0;
 }
 
 /* ------------------------------------------------------------------------- */

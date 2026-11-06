@@ -196,6 +196,33 @@ void wlmtk_window_request_bounding_box(
     wlmtk_window_t *window_ptr,
     const struct wlr_box *box_ptr);
 
+/**
+ * Stores the minimum content size the client asks for (xdg_toplevel
+ * min_width/min_height, or the X11 WM_NORMAL_HINTS). 0: No minimum.
+ *
+ * @param window_ptr
+ * @param width
+ * @param height
+ */
+void wlmtk_window_set_min_size(
+    wlmtk_window_t *window_ptr,
+    int width,
+    int height);
+
+/**
+ * Minimum size of the bounding box: The client's minimum content size plus
+ * the decoration. For window organizers, to tell whether a window fits a
+ * cell. Each dimension is 0 when the client sets no minimum for it.
+ *
+ * @param window_ptr
+ * @param width_ptr
+ * @param height_ptr
+ */
+void wlmtk_window_get_min_bounding_size(
+    wlmtk_window_t *window_ptr,
+    int *width_ptr,
+    int *height_ptr);
+
 /** Helper: Indicates that the position has changed. */
 void wlmtk_window_position_changed(wlmtk_window_t *window_ptr);
 
