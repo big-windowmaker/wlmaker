@@ -274,6 +274,10 @@ struct _wlmaker_zones_t {
     struct wl_listener        window_unmapped_listener;
     /** Listener for @ref wlmtk_desktop_events_t::workspace_changed. */
     struct wl_listener        workspace_changed_listener;
+    /** Listener for @ref wlmtk_desktop_events_t::usable_area_changed. */
+    struct wl_listener        usable_area_listener;
+    /** Listener for wlr_output_layout::events.change (hotplug, mode, scale). */
+    struct wl_listener        output_layout_change_listener;
 };
 
 static void _wlmaker_zones_overlay_hide(wlmaker_zones_t *zones_ptr);
@@ -2056,6 +2060,30 @@ static void _wlmaker_zones_handle_window_unmapped(
 }
 
 /** The workspace changed. */
+/**
+ * The usable area changed (the Dock, the Clip or a panel moved, appeared or
+ * went away): the tiling follows it. Before, the cells stayed where they
+ * were, under the Dock or leaving a gap, until "apply again".
+ */
+static void _wlmaker_zones_handle_usable_area(
+    struct wl_listener *listener_ptr, __UNUSED__ void *data_ptr)
+{
+    wlmaker_zones_t *zones_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_zones_t, usable_area_listener);
+    _wlmaker_zones_tile_mark(zones_ptr);
+}
+
+/** An output was added, removed, moved or changed mode or scale. */
+static void _wlmaker_zones_handle_output_layout_change(
+    struct wl_listener *listener_ptr, __UNUSED__ void *data_ptr)
+{
+    wlmaker_zones_t *zones_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_zones_t, output_layout_change_listener);
+    _picker_close(zones_ptr);
+    _wlmaker_zones_overlay_hide(zones_ptr);
+    _wlmaker_zones_tile_mark(zones_ptr);
+}
+
 static void _wlmaker_zones_handle_workspace_changed(
     struct wl_listener *listener_ptr, __UNUSED__ void *data_ptr)
 {
@@ -2766,6 +2794,10 @@ wlmaker_zones_t *wlmaker_zones_create(wlmaker_server_t *server_ptr)
         &zones_ptr->window_unmapped_listener, _wlmaker_zones_handle_window_unmapped);
     wlmtk_util_connect_listener_signal(&e->workspace_changed,
         &zones_ptr->workspace_changed_listener, _wlmaker_zones_handle_workspace_changed);
+    wlmtk_util_connect_listener_signal(&e->usable_area_changed,
+        &zones_ptr->usable_area_listener, _wlmaker_zones_handle_usable_area);
+    wlmtk_util_connect_listener_signal(&server_ptr->wlr_output_layout_ptr->events.change,
+        &zones_ptr->output_layout_change_listener, _wlmaker_zones_handle_output_layout_change);
 
     struct wl_event_loop *loop_ptr = wl_display_get_event_loop(server_ptr->wl_display_ptr);
     zones_ptr->tile_timer_ptr = wl_event_loop_add_timer(
@@ -2831,6 +2863,8 @@ void wlmaker_zones_destroy(wlmaker_zones_t *zones_ptr)
     for (size_t i = 0; i < sizeof(timers) / sizeof(timers[0]); ++i) {
         if (NULL != timers[i]) wl_event_source_remove(timers[i]);
     }
+    wlmtk_util_disconnect_listener(&zones_ptr->output_layout_change_listener);
+    wlmtk_util_disconnect_listener(&zones_ptr->usable_area_listener);
     wlmtk_util_disconnect_listener(&zones_ptr->workspace_changed_listener);
     wlmtk_util_disconnect_listener(&zones_ptr->window_unmapped_listener);
     wlmtk_util_disconnect_listener(&zones_ptr->window_mapped_listener);

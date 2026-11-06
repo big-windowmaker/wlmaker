@@ -79,6 +79,11 @@ typedef struct {
      * size). Data: @ref wlmtk_window_move_event_t.
      */
     struct wl_signal          window_resize_end;
+    /**
+     * The usable area of an output changed (a Dock, Clip or panel with an
+     * exclusive zone moved, appeared or went away). Data: NULL.
+     */
+    struct wl_signal          usable_area_changed;
 } wlmtk_desktop_events_t;
 
 /** Data of the window move signals. Coordinates in layout space. */

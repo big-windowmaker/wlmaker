@@ -176,6 +176,8 @@ wlmtk_desktop_t *wlmtk_desktop_create(
         &desktop_ptr->container.super_element,
         &_wlmtk_desktop_element_vmt);
 
+    // Before the layers: they hold a pointer to it.
+    wl_signal_init(&desktop_ptr->events.usable_area_changed);
     for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
         wlmtk_layer_t *layer_ptr = wlmtk_layer_create(wlr_output_layout_ptr);
         if (NULL == layer_ptr) {
@@ -679,6 +681,7 @@ void _wlmtk_desktop_element_layout(wlmtk_element_t *element_ptr)
         element_ptr, wlmtk_desktop_t, container.super_element);
 
     // Process each output.
+    bool changed = false;
     struct wlr_output_layout_output *wlr_output_layout_output_ptr;
     wl_list_for_each(
         wlr_output_layout_output_ptr,
@@ -698,6 +701,15 @@ void _wlmtk_desktop_element_layout(wlmtk_element_t *element_ptr)
                 &usable_area);
         }
 
+        // Signals usable_area_changed only when the area changed (a panel
+        // without exclusive zone does not change it).
+        if (NULL != desktop_ptr->current_workspace_ptr) {
+            struct wlr_box old_area = wlmtk_workspace_get_maximize_extents(
+                desktop_ptr->current_workspace_ptr,
+                wlr_output_layout_output_ptr->output);
+            if (!wlr_box_equal(&old_area, &usable_area)) changed = true;
+        }
+
         for (bs_dllist_node_t *node_ptr = desktop_ptr->workspaces.head_ptr;
              node_ptr != NULL;
              node_ptr = bs_dllist_node_iterator_forward(node_ptr)) {
@@ -709,6 +721,9 @@ void _wlmtk_desktop_element_layout(wlmtk_element_t *element_ptr)
         }
     }
     desktop_ptr->orig_super_element_vmt.layout(element_ptr);
+    if (changed) {
+        wl_signal_emit(&desktop_ptr->events.usable_area_changed, NULL);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
