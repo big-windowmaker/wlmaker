@@ -111,6 +111,18 @@ typedef struct {
     bool                      rule_float;
     /** Rule: Left alone by zones and tiling. */
     bool                      rule_ignore;
+    /** Did not fit its cell in the last tiling run: floats meanwhile. */
+    bool                      fit_float;
+    /** Same, in the run before (the log line comes once). */
+    bool                      fit_prev;
+    /** Minimum box that did not fit (for "windows -d"). */
+    int                       fit_min_w;
+    /** See @ref zones_window_t::fit_min_w. */
+    int                       fit_min_h;
+    /** The cell it did not fit. */
+    int                       fit_cell_w;
+    /** See @ref zones_window_t::fit_cell_w. */
+    int                       fit_cell_h;
 } zones_window_t;
 
 /** Tiling set: One output on one workspace. */
@@ -1820,6 +1832,64 @@ static void _apply_rules(wlmaker_zones_t *zones_ptr, zones_window_t *w)
     }
 }
 
+/** The window's app ID for the log, "?" when it has none. */
+static const char *_app_id(wlmtk_window_t *window_ptr)
+{
+    const char *a = wlmtk_window_get_app_id(window_ptr);
+    return NULL != a ? a : "?";
+}
+
+/** Cells for the tiling set (output and workspace): `rects` in the order
+ * of `set` (reordered by the BSP leaves). @return how many. */
+static int _tile_compute(zones_tset_t *ts,
+                         const wz_tile_params *p_ptr,
+                         wz_rect area,
+                         zones_window_t **set,
+                         int k,
+                         wz_rect *rects,
+                         wlmtk_window_t *active_ptr)
+{
+    if (WZ_TILE_BSP == p_ptr->algo && NULL != ts) {
+        // Persistent tree: Leaves of windows gone leave; new windows
+        // split the leaf of the active one.
+        long ids[WINDOWS_MAX];
+        wz_rect tmp[WINDOWS_MAX];
+        int m = wz_bsp_compute(&ts->bsp, area, 0, 0, tmp, ids, WINDOWS_MAX);
+        for (int a = 0; a < m; ++a) {
+            bool found = false;
+            for (int j = 0; j < k; ++j) {
+                found |= (long)(uintptr_t)set[j]->window_ptr == ids[a];
+            }
+            if (!found) wz_bsp_remove(&ts->bsp, ids[a]);
+        }
+        for (int j = 0; j < k; ++j) {
+            if (!wz_bsp_has(&ts->bsp, (long)(uintptr_t)set[j]->window_ptr)) {
+                wz_bsp_insert(&ts->bsp, (long)(uintptr_t)set[j]->window_ptr,
+                              (long)(uintptr_t)active_ptr, area);
+            }
+        }
+        int gi = p_ptr->gap_in, go = p_ptr->gap_out;
+        if (p_ptr->smart_gaps && 1 == k) gi = go = 0;
+        m = wz_bsp_compute(&ts->bsp, area, gi, go, tmp, ids, WINDOWS_MAX);
+        zones_window_t *ord[WINDOWS_MAX];
+        int c = 0;
+        for (int a = 0; a < m && c < k; ++a) {
+            for (int j = 0; j < k; ++j) {
+                if ((long)(uintptr_t)set[j]->window_ptr == ids[a]) {
+                    ord[c] = set[j];
+                    rects[c++] = tmp[a];
+                }
+            }
+        }
+        memcpy(set, ord, sizeof(set[0]) * (size_t)c);
+        k = c;
+    } else {
+        int m = wz_tile(p_ptr, area, k, rects, WINDOWS_MAX);
+        k = BS_MAX(0, BS_MIN(k, m));
+    }
+    return k;
+}
+
 /** Tiles the windows of the current workspace, per output. */
 int _wlmaker_zones_tile_run(void *data_ptr)
 {
@@ -1888,43 +1958,79 @@ int _wlmaker_zones_tile_run(void *data_ptr)
             zones_ptr->server_ptr->desktop_ptr, o);
         wz_rect area = { u.x, u.y, u.width, u.height };
         wz_rect rects[WINDOWS_MAX];
-        if (WZ_TILE_BSP == p.algo && NULL != ts) {
-            // Persistent tree: Leaves of windows gone leave; new windows
-            // split the leaf of the active one.
-            long ids[WINDOWS_MAX];
-            wz_rect tmp[WINDOWS_MAX];
-            int m = wz_bsp_compute(&ts->bsp, area, 0, 0, tmp, ids, WINDOWS_MAX);
-            for (int a = 0; a < m; ++a) {
-                bool found = false;
-                for (int j = 0; j < k; ++j) {
-                    found |= (long)(uintptr_t)set[j]->window_ptr == ids[a];
-                }
-                if (!found) wz_bsp_remove(&ts->bsp, ids[a]);
-            }
+        for (int j = 0; j < k; ++j) {
+            set[j]->fit_prev = set[j]->fit_float;
+            set[j]->fit_float = false;
+        }
+        // Who does not fit its cell (GTK4/libadwaita ask for large minimum
+        // sizes: 760 wide for Pamac) floats, one at a time, the one
+        // farthest from fitting first; with one window less the cells grow.
+        // A single one that does not fit first swaps places with another
+        // window when both fit then. Same as wmake-zones on X11.
+        for (int pass = 0; pass < 16; ++pass) {
+            k = _tile_compute(ts, &p, area, set, k, rects, active_ptr);
+            int conflicts = 0, worst = -1;
+            long worst_def = 0;
             for (int j = 0; j < k; ++j) {
-                if (!wz_bsp_has(&ts->bsp, (long)(uintptr_t)set[j]->window_ptr)) {
-                    wz_bsp_insert(&ts->bsp, (long)(uintptr_t)set[j]->window_ptr,
-                                  (long)(uintptr_t)active_ptr, area);
+                int mw, mh;
+                wlmtk_window_get_min_bounding_size(set[j]->window_ptr, &mw, &mh);
+                long def = (long)BS_MAX(0, mw - rects[j].w) + BS_MAX(0, mh - rects[j].h);
+                if (0 >= def) continue;
+                conflicts++;
+                if (0 > worst || def > worst_def) {
+                    worst = j;
+                    worst_def = def;
                 }
             }
-            int gi = p.gap_in, go = p.gap_out;
-            if (p.smart_gaps && 1 == k) gi = go = 0;
-            m = wz_bsp_compute(&ts->bsp, area, gi, go, tmp, ids, WINDOWS_MAX);
-            zones_window_t *ord[WINDOWS_MAX];
-            int c = 0;
-            for (int a = 0; a < m && c < k; ++a) {
-                for (int j = 0; j < k; ++j) {
-                    if ((long)(uintptr_t)set[j]->window_ptr == ids[a]) {
-                        ord[c] = set[j];
-                        rects[c++] = tmp[a];
-                    }
+            if (0 == conflicts) break;
+            bool swapped = false;
+            for (int j = 0; 1 == conflicts && j < k && !swapped; ++j) {
+                if (j == worst) continue;
+                int aw, ah, bw, bh;
+                wlmtk_window_get_min_bounding_size(set[worst]->window_ptr, &aw, &ah);
+                wlmtk_window_get_min_bounding_size(set[j]->window_ptr, &bw, &bh);
+                if (aw > rects[j].w || ah > rects[j].h ||
+                    bw > rects[worst].w || bh > rects[worst].h) continue;
+                long o = set[worst]->order;
+                set[worst]->order = set[j]->order;
+                set[j]->order = o;
+                if (NULL != ts) {
+                    wz_bsp_swap(&ts->bsp, (long)(uintptr_t)set[worst]->window_ptr,
+                                (long)(uintptr_t)set[j]->window_ptr);
+                }
+                zones_window_t *t = set[worst];
+                set[worst] = set[j];
+                set[j] = t;
+                bs_log(BS_INFO, "zones: Tiling: %s swaps places to fit (minimum %dx%d)",
+                       _app_id(set[j]->window_ptr), aw, ah);
+                swapped = true;
+            }
+            if (swapped) continue;
+            zones_window_t *w = set[worst];
+            int mw, mh;
+            wlmtk_window_get_min_bounding_size(w->window_ptr, &mw, &mh);
+            w->fit_float = true;
+            w->fit_min_w = mw;
+            w->fit_min_h = mh;
+            w->fit_cell_w = rects[worst].w;
+            w->fit_cell_h = rects[worst].h;
+            if (!w->fit_prev) {
+                bs_log(BS_INFO, "zones: Tiling: %s does not fit the cell %dx%d "
+                       "(minimum %dx%d), floats", _app_id(w->window_ptr),
+                       rects[worst].w, rects[worst].h, mw, mh);
+            }
+            if (w->tiled) {
+                w->tiled = false;
+                _tsets_forget(zones_ptr, w->window_ptr);
+                memset(&w->expect, 0, sizeof(w->expect));
+                if (w->has_restore) {
+                    wlmtk_window_request_bounding_box(w->window_ptr, &w->restore);
+                    w->has_restore = false;
+                    w->zone = -1;
                 }
             }
-            memcpy(set, ord, sizeof(set[0]) * (size_t)c);
-            k = c;
-        } else {
-            int m = wz_tile(&p, area, k, rects, WINDOWS_MAX);
-            k = BS_MAX(0, BS_MIN(k, m));
+            memmove(&set[worst], &set[worst + 1], sizeof(set[0]) * (size_t)(k - worst - 1));
+            k--;
         }
         for (int j = 0; j < k; ++j) {
             zones_window_t *w = set[j];
@@ -2488,6 +2594,9 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
         // output, zone, tiling, box, class and title.
         bool long_form = NULL != arg_ptr &&
             (0 == strcmp(arg_ptr, "-l") || 0 == strcmp(arg_ptr, "long"));
+        // "-d": why each window is (or is not) tiled.
+        bool why_form = NULL != arg_ptr &&
+            (0 == strcmp(arg_ptr, "-d") || 0 == strcmp(arg_ptr, "why"));
         wlmtk_workspace_t *ws_ptr = wlmtk_desktop_get_current_workspace(
             zones_ptr->server_ptr->desktop_ptr);
         bs_dllist_t *list_ptr = wlmtk_workspace_get_windows_dllist(ws_ptr);
@@ -2499,7 +2608,40 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
             _field(wlmtk_window_get_app_id(window_ptr), cls, sizeof(cls));
             _field(wlmtk_window_get_instance(window_ptr), ins, sizeof(ins));
             _field(wlmtk_window_get_title(window_ptr), title, sizeof(title));
-            if (long_form) {
+            if (why_form) {
+                char why[160];
+                if (NULL != w && w->tiled) {
+                    snprintf(why, sizeof(why), "mosaico");
+                } else if (NULL != w && w->rule_ignore) {
+                    snprintf(why, sizeof(why), "regra: ignorar");
+                } else if (wlmtk_window_is_dialog(window_ptr)) {
+                    snprintf(why, sizeof(why), "diálogo");
+                } else if (!(wlmtk_window_get_properties(window_ptr) &
+                             WLMTK_WINDOW_PROPERTY_RESIZABLE)) {
+                    snprintf(why, sizeof(why), "tamanho fixo");
+                } else if (wlmtk_window_is_fullscreen(window_ptr)) {
+                    snprintf(why, sizeof(why), "tela cheia");
+                } else if (wlmtk_window_is_minimized(window_ptr)) {
+                    snprintf(why, sizeof(why), "minimizada");
+                } else if (NULL != w && w->user_float) {
+                    snprintf(why, sizeof(why), "flutuante por escolha do usuário");
+                } else if (NULL != w && w->rule_float) {
+                    snprintf(why, sizeof(why), "regra: flutuante");
+                } else if (NULL != w && w->fit_float) {
+                    snprintf(why, sizeof(why), "não cabe: mínimo %dx%d, célula %dx%d",
+                             w->fit_min_w, w->fit_min_h, w->fit_cell_w, w->fit_cell_h);
+                } else {
+                    snprintf(why, sizeof(why), "mosaico desligado ou aguardando");
+                }
+                int mw, mh;
+                wlmtk_window_get_min_bounding_size(window_ptr, &mw, &mh);
+                if ((0 < mw || 0 < mh) && (NULL == w || !w->fit_float)) {
+                    size_t l = strlen(why);
+                    snprintf(why + l, sizeof(why) - l, " (mínimo %dx%d)", mw, mh);
+                }
+                _out(out_ptr, out_len, "%s\ttiled=%d\t%s\t%s\n", cls,
+                     NULL != w ? w->tiled : 0, why, title);
+            } else if (long_form) {
                 struct wlr_output *o = wlr_output_layout_output_at(
                     zones_ptr->server_ptr->wlr_output_layout_ptr,
                     b.x + b.width / 2.0, b.y + b.height / 2.0);

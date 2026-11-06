@@ -823,6 +823,12 @@ void _wlmaker_xdg_toplevel_handle_surface_commit(
     }
     wlmtk_window_commit_size(
         wxt_ptr->window_ptr, geo.width - geo.x, geo.height - geo.y);
+    // The client's minimum (GTK4/libadwaita ask for large ones): Tiling
+    // checks it before putting the window into a cell.
+    wlmtk_window_set_min_size(
+        wxt_ptr->window_ptr,
+        wxt_ptr->wlr_xdg_toplevel_ptr->current.min_width,
+        wxt_ptr->wlr_xdg_toplevel_ptr->current.min_height);
 
     if (0 != wxt_ptr->pending.properties) {
         _wlmaker_xdg_toplevel_flush_properties(wxt_ptr);

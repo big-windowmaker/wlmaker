@@ -777,6 +777,12 @@ void _xwl_surface_map_window(wlmaker_xwl_surface_t *xwl_surface_ptr)
     wlmtk_window_placement_hint_t hint = {};
     if (NULL != xws_ptr->size_hints) {
         uint32_t flags = xws_ptr->size_hints->flags;
+        if (flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) {
+            wlmtk_window_set_min_size(
+                xwl_surface_ptr->window_ptr,
+                xws_ptr->size_hints->min_width,
+                xws_ptr->size_hints->min_height);
+        }
         if ((flags & XCB_ICCCM_SIZE_HINT_US_POSITION) ||
             ((flags & XCB_ICCCM_SIZE_HINT_P_POSITION) &&
              (0 != xws_ptr->x || 0 != xws_ptr->y))) {
