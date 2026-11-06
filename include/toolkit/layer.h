@@ -107,6 +107,18 @@ void wlmtk_layer_reconfigure(wlmtk_layer_t *layer_ptr);
  *
  * @param layer_output_ptr
  */
+/**
+ * Sets the signal raised (data: NULL) whenever the usable area of an output
+ * changes: a panel with an exclusive zone (Dock, Clip, tray) was added,
+ * moved, resized or removed. For window organizers that follow it.
+ *
+ * @param layer_ptr
+ * @param signal_ptr          May be NULL.
+ */
+void wlmtk_layer_set_usable_area_signal(
+    wlmtk_layer_t *layer_ptr,
+    struct wl_signal *signal_ptr);
+
 void wlmtk_layer_output_reconfigure(wlmtk_layer_output_t *layer_output_ptr);
 
 /**

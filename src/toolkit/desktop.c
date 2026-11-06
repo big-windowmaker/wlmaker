@@ -170,6 +170,8 @@ wlmtk_desktop_t *wlmtk_desktop_create(
         &desktop_ptr->container.super_element,
         &_wlmtk_desktop_element_vmt);
 
+    // Before the layers: they hold a pointer to it.
+    wl_signal_init(&desktop_ptr->events.usable_area_changed);
     for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
         wlmtk_layer_t *layer_ptr = wlmtk_layer_create(wlr_output_layout_ptr);
         if (NULL == layer_ptr) {
@@ -180,6 +182,8 @@ wlmtk_desktop_t *wlmtk_desktop_create(
         wlmtk_container_add_element(
             &desktop_ptr->container, wlmtk_layer_element(layer_ptr));
         desktop_ptr->layer_ptrs[i] = layer_ptr;
+        wlmtk_layer_set_usable_area_signal(
+            layer_ptr, &desktop_ptr->events.usable_area_changed);
     }
 
     if (!wlmtk_container_init(&desktop_ptr->workspace_window_container)) {
