@@ -746,6 +746,19 @@ void wlmaker_clip_dock_surface_changed(wlmaker_server_t *server_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+/** @return Whether `name_ptr` is in `names_ptr`, after index `i`. */
+static bool _wlmaker_clip_name_after(
+    bspl_array_t *names_ptr, size_t i, const char *name_ptr)
+{
+    if (NULL == name_ptr) return false;
+    for (size_t j = i + 1; j < bspl_array_size(names_ptr); ++j) {
+        const char *n = bspl_array_string_value_at(names_ptr, j);
+        if (NULL != n && 0 == strcmp(n, name_ptr)) return true;
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
 bool wlmaker_clip_add_dockapp(
     wlmaker_server_t *server_ptr,
     wlmtk_tile_t *tile_ptr,
@@ -784,9 +797,21 @@ bool wlmaker_clip_add_dockapp(
         const char *n = bspl_array_string_value_at(
             clip_ptr->dock_default_dockapps_ptr, i);
         if (NULL == n || 0 != strcmp(n, name_ptr)) continue;
+        // In the order of `Dock.Dockapps`, whichever starts first: Before
+        // the first placed one that comes later there.
+        size_t index = wlmaker_dockapps_size(clip_ptr->dock_dockapps_ptr);
+        for (size_t k = 0; k < index; ++k) {
+            const char *placed_ptr = wlmaker_dockapps_name(
+                clip_ptr->dock_dockapps_ptr,
+                wlmaker_dockapps_tile_at(clip_ptr->dock_dockapps_ptr, k));
+            if (_wlmaker_clip_name_after(
+                    clip_ptr->dock_default_dockapps_ptr, i, placed_ptr)) {
+                index = k;
+                break;
+            }
+        }
         bool rv = wlmaker_dockapps_insert(
-            clip_ptr->dock_dockapps_ptr, tile_ptr, name_ptr,
-            wlmaker_dockapps_size(clip_ptr->dock_dockapps_ptr));
+            clip_ptr->dock_dockapps_ptr, tile_ptr, name_ptr, index);
         _wlmaker_clip_publish_dock_tiles(clip_ptr);
         return rv;
     }
