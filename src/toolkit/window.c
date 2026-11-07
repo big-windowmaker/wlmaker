@@ -250,6 +250,7 @@ wlmtk_window_t *wlmtk_window_create(
     window_ptr->menu_style_ref_ptr = menu_style_ref_ptr;
     wlmtk_menu_style_ref_retain(menu_style_ref_ptr);
     wl_signal_init(&window_ptr->events.state_changed);
+    wl_signal_init(&window_ptr->events.position_changed);
     wl_signal_init(&window_ptr->events.request_close);
     wl_signal_init(&window_ptr->events.set_activated);
     wl_signal_init(&window_ptr->events.request_size);
@@ -464,6 +465,7 @@ void wlmtk_window_get_min_bounding_size(
 /* ------------------------------------------------------------------------- */
 void wlmtk_window_position_changed(wlmtk_window_t *window_ptr)
 {
+    wl_signal_emit(&window_ptr->events.position_changed, window_ptr);
     if (window_ptr->inorganic_sizing) return;
     wlmtk_element_get_position(
         wlmtk_window_element(window_ptr),
@@ -1215,9 +1217,15 @@ void _wlmtk_window_element_layout(
         y += window_ptr->old_box.height - new_box.height;
     }
     // TODO: Should we rather use wlmtk_workspace_set_window_position ?
+    int old_x, old_y;
+    wlmtk_element_get_position(
+        wlmtk_bordered_element(&window_ptr->bordered), &old_x, &old_y);
     wlmtk_element_set_position(
         wlmtk_bordered_element(&window_ptr->bordered), x, y);
     window_ptr->old_box = new_box;
+    if (old_x != x || old_y != y) {
+        wl_signal_emit(&window_ptr->events.position_changed, window_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */

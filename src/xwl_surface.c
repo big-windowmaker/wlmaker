@@ -101,6 +101,16 @@ struct _wlmaker_xwl_surface_t {
     struct wl_listener        set_decorations_listener;
     /** Listener for the `set_geometry` signal of `wlr_xwayland_surface`. */
     struct wl_listener        set_geometry_listener;
+    /** Listener for `request_move` (_NET_WM_MOVERESIZE, move). */
+    struct wl_listener        request_move_listener;
+    /** Listener for `request_resize` (_NET_WM_MOVERESIZE, an edge). */
+    struct wl_listener        request_resize_listener;
+    /** Listener for `request_maximize` (_NET_WM_STATE). */
+    struct wl_listener        request_maximize_listener;
+    /** Listener for `request_fullscreen` (_NET_WM_STATE). */
+    struct wl_listener        request_fullscreen_listener;
+    /** Listener for `request_activate` (_NET_ACTIVE_WINDOW). */
+    struct wl_listener        request_activate_listener;
     /** Listener for the `map` signal of `wlr_xwayland_surface`. */
     struct wl_listener        surface_map_listener;
     /** Listener for the `unmap` signal of `wlr_xwayland_surface`. */
@@ -114,6 +124,8 @@ struct _wlmaker_xwl_surface_t {
     struct wl_listener        window_set_activated_listener;
     /** Listener for @ref wlmtk_window_events_t::request_size. */
     struct wl_listener        window_request_size_listener;
+    /** Listener for @ref wlmtk_window_events_t::position_changed. */
+    struct wl_listener        window_position_changed_listener;
     /** Listener for @ref wlmtk_window_events_t::request_fullscreen. */
     struct wl_listener        window_request_fullscreen_listener;
     /** Listener for @ref wlmtk_window_events_t::request_maximized. */
@@ -233,6 +245,11 @@ static void _wlmaker_xwl_surface_handle_window_request_close(
 static void _wlmaker_xwl_surface_handle_window_set_activated(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static void _wlmaker_xwl_surface_handle_window_position_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static bool _xwl_surface_content_position(
+    wlmaker_xwl_surface_t *xs_ptr, int *x_ptr, int *y_ptr);
 static void _wlmaker_xwl_surface_handle_window_request_size(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -267,6 +284,87 @@ static const wlmtk_element_vmt_t _wlmaker_xwl_surface_base_element_vmt = {
  * @param listener_ptr
  * @param data_ptr            Points to struct wlr_xwayland_minimize_event.
  */
+/* ------------------------------------------------------------------------- */
+/**
+ * The X client asks to be moved (_NET_WM_MOVERESIZE): Programs that draw
+ * their own title bar (Steam, Chromium and Electron with their own frame,
+ * SDL hit-tests) are dragged by the compositor, as by the title bar.
+ */
+static void _xwl_surface_handle_request_move(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, request_move_listener);
+    if (NULL == xs_ptr->window_ptr) return;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+        xs_ptr->window_ptr);
+    if (NULL == workspace_ptr) return;
+    wlmtk_workspace_begin_window_move(workspace_ptr, xs_ptr->window_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** The X client asks to be resized at an edge (_NET_WM_MOVERESIZE). */
+static void _xwl_surface_handle_request_resize(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, request_resize_listener);
+    struct wlr_xwayland_resize_event *event_ptr = data_ptr;
+    if (NULL == xs_ptr->window_ptr || 0 == event_ptr->edges) return;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+        xs_ptr->window_ptr);
+    if (NULL == workspace_ptr) return;
+    wlmtk_workspace_begin_window_resize(
+        workspace_ptr, xs_ptr->window_ptr, event_ptr->edges);
+}
+
+/* ------------------------------------------------------------------------- */
+/** The X client asks to be (un)maximized: Its own maximize button. */
+static void _xwl_surface_handle_request_maximize(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, request_maximize_listener);
+    if (NULL == xs_ptr->window_ptr) return;
+    struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
+    wlmtk_window_request_maximized(
+        xs_ptr->window_ptr, s->maximized_vert || s->maximized_horz);
+}
+
+/* ------------------------------------------------------------------------- */
+/** The X client asks to be (not) fullscreen. */
+static void _xwl_surface_handle_request_fullscreen(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, request_fullscreen_listener);
+    if (NULL == xs_ptr->window_ptr) return;
+    wlmtk_window_request_fullscreen(
+        xs_ptr->window_ptr, xs_ptr->wlr_xwayland_surface_ptr->fullscreen);
+}
+
+/* ------------------------------------------------------------------------- */
+/** The X client asks to be activated (_NET_ACTIVE_WINDOW, eg. from a tray). */
+static void _xwl_surface_handle_request_activate(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, request_activate_listener);
+    if (NULL == xs_ptr->window_ptr) return;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+        xs_ptr->window_ptr);
+    if (NULL == workspace_ptr) return;
+    // Raising also restores a minimized window.
+    wlmtk_workspace_raise_window(workspace_ptr, xs_ptr->window_ptr);
+    wlmtk_workspace_activate_window(workspace_ptr, xs_ptr->window_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 void _xwl_surface_handle_request_minimize(
     struct wl_listener *listener_ptr,
     void *data_ptr)
@@ -326,6 +424,26 @@ wlmaker_xwl_surface_t *wlmaker_xwl_surface_create(
         &xwl_surface_ptr->request_minimize_listener,
         _xwl_surface_handle_request_minimize);
     wlmtk_util_connect_listener_signal(
+        &wlr_xwayland_surface_ptr->events.request_move,
+        &xwl_surface_ptr->request_move_listener,
+        _xwl_surface_handle_request_move);
+    wlmtk_util_connect_listener_signal(
+        &wlr_xwayland_surface_ptr->events.request_resize,
+        &xwl_surface_ptr->request_resize_listener,
+        _xwl_surface_handle_request_resize);
+    wlmtk_util_connect_listener_signal(
+        &wlr_xwayland_surface_ptr->events.request_maximize,
+        &xwl_surface_ptr->request_maximize_listener,
+        _xwl_surface_handle_request_maximize);
+    wlmtk_util_connect_listener_signal(
+        &wlr_xwayland_surface_ptr->events.request_fullscreen,
+        &xwl_surface_ptr->request_fullscreen_listener,
+        _xwl_surface_handle_request_fullscreen);
+    wlmtk_util_connect_listener_signal(
+        &wlr_xwayland_surface_ptr->events.request_activate,
+        &xwl_surface_ptr->request_activate_listener,
+        _xwl_surface_handle_request_activate);
+    wlmtk_util_connect_listener_signal(
         &wlr_xwayland_surface_ptr->events.map_request,
         &xwl_surface_ptr->map_request_listener,
         _xwl_surface_handle_map_request);
@@ -377,6 +495,11 @@ void wlmaker_xwl_surface_destroy(wlmaker_xwl_surface_t *xwl_surface_ptr)
         wl_list_remove(&xwl_surface_ptr->link);
     }
 
+    wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_activate_listener);
+    wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_fullscreen_listener);
+    wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_maximize_listener);
+    wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_resize_listener);
+    wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_move_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_geometry_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_decorations_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_parent_listener);
@@ -828,11 +951,13 @@ void _xwl_surface_handle_request_configure(
         return;
     }
 
-    // It appears this needs to be ACKed with a surface_configure.
+    // It appears this needs to be ACKed with a surface_configure. A window
+    // on the workspace stays where it is: X learns its real position.
+    int x = cfg_event_ptr->x, y = cfg_event_ptr->y;
+    _xwl_surface_content_position(xwl_surface_ptr, &x, &y);
     wlr_xwayland_surface_configure(
         xwl_surface_ptr->wlr_xwayland_surface_ptr,
-        cfg_event_ptr->x, cfg_event_ptr->y,
-        cfg_event_ptr->width, cfg_event_ptr->height);
+        x, y, cfg_event_ptr->width, cfg_event_ptr->height);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -990,6 +1115,10 @@ void _xwl_surface_handle_associate(
             &xwl_surface_ptr->window_request_size_listener,
             _wlmaker_xwl_surface_handle_window_request_size);
         wlmtk_util_connect_listener_signal(
+            &wlmtk_window_events(xwl_surface_ptr->window_ptr)->position_changed,
+            &xwl_surface_ptr->window_position_changed_listener,
+            _wlmaker_xwl_surface_handle_window_position_changed);
+        wlmtk_util_connect_listener_signal(
             &wlmtk_window_events(xwl_surface_ptr->window_ptr)->request_fullscreen,
             &xwl_surface_ptr->window_request_fullscreen_listener,
             _wlmaker_xwl_surface_handle_window_request_fullscreen);
@@ -1045,6 +1174,8 @@ void _xwl_surface_handle_dissociate(
             &xwl_surface_ptr->window_set_activated_listener);
         wlmtk_util_disconnect_listener(
             &xwl_surface_ptr->window_request_size_listener);
+        wlmtk_util_disconnect_listener(
+            &xwl_surface_ptr->window_position_changed_listener);
         wlmtk_util_disconnect_listener(
             &xwl_surface_ptr->window_request_fullscreen_listener);
         wlmtk_util_disconnect_listener(
@@ -1421,9 +1552,43 @@ void _wlmaker_xwl_surface_handle_window_request_size(
         listener_ptr, wlmaker_xwl_surface_t, window_request_size_listener);
     const struct wlr_box *box_ptr = data_ptr;
 
+    // The X window where it is on screen: The client places its popups
+    // (menus, lists, tooltips) in root coordinates.
+    int x = 0, y = 0;
+    _xwl_surface_content_position(xwl_surface_ptr, &x, &y);
     wlr_xwayland_surface_configure(
         xwl_surface_ptr->wlr_xwayland_surface_ptr,
-        0, 0, box_ptr->width, box_ptr->height);
+        x, y, box_ptr->width, box_ptr->height);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Absolute position of the window's content (the X window), if mapped. */
+bool _xwl_surface_content_position(
+    wlmaker_xwl_surface_t *xs_ptr, int *x_ptr, int *y_ptr)
+{
+    if (NULL == xs_ptr->surface_ptr || NULL == xs_ptr->window_ptr ||
+        NULL == wlmtk_window_get_workspace(xs_ptr->window_ptr)) return false;
+    wlmtk_element_get_absolute_position(
+        wlmtk_surface_element(xs_ptr->surface_ptr), x_ptr, y_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * The window moved: Tells the X server, so X knows where the window is (as
+ * on X11). Without, a moved window's menus open at its old place.
+ */
+void _wlmaker_xwl_surface_handle_window_position_changed(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, window_position_changed_listener);
+    struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
+    int x, y;
+    if (!_xwl_surface_content_position(xs_ptr, &x, &y)) return;
+    if (x == s->x && y == s->y) return;
+    wlr_xwayland_surface_configure(s, x, y, s->width, s->height);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1821,6 +1986,11 @@ void fake_init_wlr_xwayland_surface(
     wl_signal_init(&wlr_xwayland_surface_ptr->events.destroy);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.request_configure);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.request_minimize);
+    wl_signal_init(&wlr_xwayland_surface_ptr->events.request_move);
+    wl_signal_init(&wlr_xwayland_surface_ptr->events.request_resize);
+    wl_signal_init(&wlr_xwayland_surface_ptr->events.request_maximize);
+    wl_signal_init(&wlr_xwayland_surface_ptr->events.request_fullscreen);
+    wl_signal_init(&wlr_xwayland_surface_ptr->events.request_activate);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.map_request);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.associate);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.dissociate);
