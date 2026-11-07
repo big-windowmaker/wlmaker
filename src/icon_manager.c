@@ -86,6 +86,8 @@ struct _wlmaker_icon_manager_t {
      * the first popup.
      */
     wlmtk_dock_t              *popup_dock_ptr;
+    /** Adopted X11 icon windows. @see wlmaker_toplevel_icon_t::xwl_link. */
+    struct wl_list            xwl_icons;
 };
 
 /** State of a toplevel icon. */
@@ -180,6 +182,8 @@ struct _wlmaker_toplevel_icon_t {
     int                       xwl_width;
     /** See @ref wlmaker_toplevel_icon_t::xwl_width. */
     int                       xwl_height;
+    /** Node in @ref wlmaker_icon_manager_t::xwl_icons. */
+    struct wl_list            xwl_link;
     /** Shape of the X11 icon window: The rectangles shown. None: All. */
     struct wlr_box            *xwl_shape_ptr;
     /** Number of rectangles at @ref wlmaker_toplevel_icon_t::xwl_shape_ptr. */
@@ -326,6 +330,7 @@ wlmaker_icon_manager_t *wlmaker_icon_manager_create(
     if (NULL == icon_manager_ptr) return NULL;
     icon_manager_ptr->server_ptr = server_ptr;
     icon_manager_ptr->wl_display_ptr = wl_display_ptr;
+    wl_list_init(&icon_manager_ptr->xwl_icons);
 
     icon_manager_ptr->wl_global_ptr = wl_global_create(
         wl_display_ptr,
@@ -644,6 +649,10 @@ void wlmaker_toplevel_icon_destroy(
     wlmtk_tile_fini(&toplevel_icon_ptr->super_tile);
     if (NULL != toplevel_icon_ptr->xwl_name_ptr) {
         free(toplevel_icon_ptr->xwl_name_ptr);
+    }
+    if (NULL != toplevel_icon_ptr->xwl_link.prev) {
+        wl_list_remove(&toplevel_icon_ptr->xwl_link);
+        toplevel_icon_ptr->xwl_link.prev = NULL;
     }
     _wlmaker_toplevel_icon_xwl_forget_shape_trees(toplevel_icon_ptr);
     if (NULL != toplevel_icon_ptr->xwl_shape_ptr) {
@@ -1210,6 +1219,27 @@ bool _wlmaker_toplevel_icon_element_pointer_accepts_motion(
         element_ptr, wlmaker_toplevel_icon_t,
         super_tile.super_container.super_element);
     wlmaker_server_t *server_ptr = toplevel_icon_ptr->icon_manager_ptr->server_ptr;
+#if defined(WLMAKER_HAVE_XWAYLAND)
+    // An X11 dock-app: The X server gives the pointer to the topmost X window
+    // at its position. Another dock-app's icon window, left where its tile
+    // was before the tiles moved, could be there: This one is where its
+    // tile is, and on top, before the pointer comes.
+    if (NULL != toplevel_icon_ptr->wlr_xwayland_surface_ptr &&
+        !element_ptr->pointer_inside) {
+        wlmaker_toplevel_icon_t *i_ptr;
+        wl_list_for_each(i_ptr, &toplevel_icon_ptr->icon_manager_ptr->xwl_icons,
+                         xwl_link) {
+            _wlmaker_toplevel_icon_xwl_sync_position(i_ptr);
+        }
+        // Only a managed window can be restacked (an icon window may be
+        // override-redirect, eg. wmshutdown's).
+        if (!toplevel_icon_ptr->wlr_xwayland_surface_ptr->override_redirect) {
+            wlr_xwayland_surface_restack(
+                toplevel_icon_ptr->wlr_xwayland_surface_ptr, NULL,
+                XCB_STACK_MODE_ABOVE);
+        }
+    }
+#endif  // defined(WLMAKER_HAVE_XWAYLAND)
     if (toplevel_icon_ptr->dragging) {
         struct wlr_cursor *c = wlmim_wlr_cursor(server_ptr->input_manager_ptr);
         if (NULL == toplevel_icon_ptr->tile_drag_ptr) {
@@ -1504,6 +1534,7 @@ wlmaker_toplevel_icon_t *wlmaker_icon_manager_adopt_xwayland_surface(
     toplevel_icon_ptr->server_ptr = server_ptr;
     toplevel_icon_ptr->wlr_surface_ptr = wlr_xwayland_surface_ptr->surface;
     toplevel_icon_ptr->wlr_xwayland_surface_ptr = wlr_xwayland_surface_ptr;
+    wl_list_insert(&icon_manager_ptr->xwl_icons, &toplevel_icon_ptr->xwl_link);
     toplevel_icon_ptr->xwl_pid = pid;
     toplevel_icon_ptr->xwl_x = INT32_MIN;
     toplevel_icon_ptr->xwl_y = INT32_MIN;
