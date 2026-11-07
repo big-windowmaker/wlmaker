@@ -210,6 +210,7 @@ wlmtk_menu_t *wlmtk_menu_create(wlmtk_menu_style_ref_t *style_ref_ptr)
     wl_signal_init(&menu_ptr->events.open_changed);
     wl_signal_init(&menu_ptr->events.request_close);
     wl_signal_init(&menu_ptr->events.destroy);
+    wl_signal_init(&menu_ptr->events.outside_press);
     return menu_ptr;
 }
 
@@ -746,7 +747,15 @@ bool _wlmtk_menu_sticky_pointer_button(
 
     if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
         !element_ptr->pointer_inside) {
-        wl_signal_emit(&menu_ptr->events.request_close, NULL);
+        wlmtk_menu_outside_press_t press = {
+            .button_event_ptr = button_event_ptr,
+            .x = element_ptr->last_pointer_motion_event.x,
+            .y = element_ptr->last_pointer_motion_event.y,
+        };
+        wl_signal_emit(&menu_ptr->events.outside_press, &press);
+        if (!press.claimed) {
+            wl_signal_emit(&menu_ptr->events.request_close, NULL);
+        }
         return true;
     }
 

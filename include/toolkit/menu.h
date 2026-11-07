@@ -77,7 +77,27 @@ typedef struct {
     struct wl_signal          request_close;
     /** The dtor has been called. */
     struct wl_signal          destroy;
+    /**
+     * A right-click menu that stays open (opened by a click) got a press
+     * outside of it. The argument is a @ref wlmtk_menu_outside_press_t: A
+     * listener that takes the press (eg. on the menu window's title bar, to
+     * pin the menu, as Window Maker does) sets `claimed`. Else, the menu
+     * closes.
+     */
+    struct wl_signal          outside_press;
 } wlmtk_menu_events_t;
+
+/** Argument of @ref wlmtk_menu_events_t::outside_press. */
+typedef struct {
+    /** The button event. */
+    const wlmtk_button_event_t *button_event_ptr;
+    /** Pointer position, relative to the menu element. */
+    double                    x;
+    /** Pointer position, relative to the menu element. */
+    double                    y;
+    /** Set by a listener that took the press: The menu stays open. */
+    bool                      claimed;
+} wlmtk_menu_outside_press_t;
 
 /**
  * Creates a menu.
