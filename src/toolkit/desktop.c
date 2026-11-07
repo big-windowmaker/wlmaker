@@ -694,11 +694,18 @@ void _wlmtk_desktop_element_layout(wlmtk_element_t *element_ptr)
         wlr_output_layout_get_box(
             desktop_ptr->wlr_output_layout_ptr,
             wlr_output_layout_output_ptr->output, &usable_area);
-        for (int i = 0; i < WLMTK_DESKTOP_LAYER_OVERLAY + 1; ++i) {
-            wlmtk_layer_reconfigure_output(
-                desktop_ptr->layer_ptrs[i],
-                wlr_output_layout_output_ptr->output,
-                &usable_area);
+        // As within a layer, first the panels that span a full edge, in all
+        // layers: Their exclusive zones count for the other panels of every
+        // layer (eg. the appicons, in the bottom layer, stay above a shelf
+        // across the bottom in the top layer).
+        for (int pass = 0; pass < 2; ++pass) {
+            for (int i = 0; i < WLMTK_DESKTOP_LAYER_OVERLAY + 1; ++i) {
+                wlmtk_layer_reconfigure_output_pass(
+                    desktop_ptr->layer_ptrs[i],
+                    wlr_output_layout_output_ptr->output,
+                    &usable_area,
+                    0 == pass);
+            }
         }
 
         // Signals usable_area_changed only when the area changed (a panel

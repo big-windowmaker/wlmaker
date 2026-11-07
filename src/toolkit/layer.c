@@ -194,6 +194,22 @@ void wlmtk_layer_reconfigure_output(
     struct wlr_output *wlr_output_ptr,
     struct wlr_box *usable_area_ptr)
 {
+    // Two passes, like Window Maker: First the panels spanning a full edge
+    // of the output with an exclusive zone (eg. a shelf across the bottom),
+    // then the others (eg. the Clip and Dock), within what remains.
+    wlmtk_layer_reconfigure_output_pass(
+        layer_ptr, wlr_output_ptr, usable_area_ptr, true);
+    wlmtk_layer_reconfigure_output_pass(
+        layer_ptr, wlr_output_ptr, usable_area_ptr, false);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_layer_reconfigure_output_pass(
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *usable_area_ptr,
+    bool full_edge)
+{
     wlmtk_layer_output_t *layer_output_ptr = wlmtk_output_tracker_get_output(
         layer_ptr->output_tracker_ptr,
         wlr_output_ptr);
@@ -209,40 +225,32 @@ void wlmtk_layer_reconfigure_output(
         wlr_output_ptr,
         &full_extents);
 
-    // Two passes, like Window Maker: First the panels spanning a full edge
-    // of the output with an exclusive zone (eg. a shelf across the bottom),
-    // then the others (eg. the Clip and Dock), within what remains. In the
-    // order they were added, within each pass. So the result does not depend
-    // on which client mapped first.
-    for (int pass = 0; pass < 2; ++pass) {
-        for (bs_dllist_node_t *dlnode_ptr = layer_output_ptr->panels.head_ptr;
-             dlnode_ptr != NULL;
-             dlnode_ptr = dlnode_ptr->next_ptr) {
-            wlmtk_panel_t *panel_ptr = wlmtk_panel_from_dlnode(dlnode_ptr);
-            if (wlmtk_panel_spans_full_edge(panel_ptr) != (0 == pass)) {
-                continue;
-            }
+    // In the order the panels were added: The result does not depend on
+    // which client mapped first.
+    for (bs_dllist_node_t *dlnode_ptr = layer_output_ptr->panels.head_ptr;
+         dlnode_ptr != NULL;
+         dlnode_ptr = dlnode_ptr->next_ptr) {
+        wlmtk_panel_t *panel_ptr = wlmtk_panel_from_dlnode(dlnode_ptr);
+        if (wlmtk_panel_spans_full_edge(panel_ptr) != full_edge) continue;
 
-            struct wlr_box new_usable_area = *usable_area_ptr;
-            struct wlr_box panel_dimensions = wlmtk_panel_compute_dimensions(
-                panel_ptr, &full_extents, &new_usable_area);
+        struct wlr_box new_usable_area = *usable_area_ptr;
+        struct wlr_box panel_dimensions = wlmtk_panel_compute_dimensions(
+            panel_ptr, &full_extents, &new_usable_area);
 
-            if (wlmtk_panel_element(panel_ptr)->visible) {
-                *usable_area_ptr = new_usable_area;
-            }
-
-            wlmtk_panel_request_size(
-                panel_ptr,
-                panel_dimensions.width,
-                panel_dimensions.height);
-            wlmtk_element_set_position(
-                wlmtk_panel_element(panel_ptr),
-                panel_dimensions.x,
-                panel_dimensions.y);
+        if (wlmtk_panel_element(panel_ptr)->visible) {
+            *usable_area_ptr = new_usable_area;
         }
+
+        wlmtk_panel_request_size(
+            panel_ptr,
+            panel_dimensions.width,
+            panel_dimensions.height);
+        wlmtk_element_set_position(
+            wlmtk_panel_element(panel_ptr),
+            panel_dimensions.x,
+            panel_dimensions.y);
     }
 }
-
 
 /* ------------------------------------------------------------------------- */
 // TODO(kaeser@gubbe.ch): Remove.
