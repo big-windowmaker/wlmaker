@@ -778,6 +778,7 @@ bool wlmaker_action_theme_load_from_file(
             wlmaker_root_menu_window(server_ptr->root_menu_ptr),
             wlmtk_window_style_to_ref(server_ptr->style_ptr->window_style_ptr),
             wlmtk_menu_style_to_ref(server_ptr->style_ptr->menu_style_ptr));
+        wlmaker_root_menu_restyle(server_ptr->root_menu_ptr);
     }
 
     rv &= wlmim_set_style(
