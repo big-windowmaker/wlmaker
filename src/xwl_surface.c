@@ -31,9 +31,15 @@
 #include <wayland-server-core.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_seat.h>
+#include <wlr/util/box.h>
+#include <wlr/util/edges.h>
 #include <wlr/xwayland/xwayland.h>
 #undef WLR_USE_UNSTABLE
 
+#include <xcb/shape.h>
 #include <xcb/xcb.h>
 
 #include "icon_manager.h"
@@ -64,6 +70,10 @@ struct _wlmaker_xwl_surface_t {
     bool                      dockapp_leader;
     /** An X11 dock-app's icon window, adopted as the tile's content. */
     wlmaker_toplevel_icon_t   *dockapp_icon_ptr;
+    /** Commits of the icon window left to read its shape again. */
+    int                       dockapp_shape_checks;
+    /** Listener for commits of the icon window: Its shape, once set. */
+    struct wl_listener        dockapp_commit_listener;
 
     /** Listener for the `destroy` signal of `wlr_xwayland_surface`. */
     struct wl_listener        destroy_listener;
@@ -121,6 +131,21 @@ struct _wlmaker_xwl_surface_t {
 
     /** The XWL surface's title. May be set before window is created. */
     char                      *title_ptr;
+
+    /**
+     * A parent-less override-redirect window (eg. the menu of a dock-app, or
+     * a tooltip): Not a window, but on top of everything (the docks, too),
+     * where it placed itself. As on X11.
+     */
+    bool                      overlay;
+    /** Holds @ref wlmaker_xwl_surface_t::base for an overlay. */
+    wlmtk_panel_t             overlay_panel;
+    /** The output the overlay is on, while in the overlay layer. */
+    struct wlr_output         *overlay_output_ptr;
+    /** Original virtual methods of the overlay panel's element. */
+    wlmtk_element_vmt_t       overlay_orig_vmt;
+    /** A menu holds the pointer, as with its grab on X11. */
+    bool                      overlay_grab;
 };
 
 static void _xwl_surface_handle_destroy(
@@ -133,6 +158,20 @@ static void _xwl_surface_handle_request_minimize(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _xwl_surface_map_window(wlmaker_xwl_surface_t *xwl_surface_ptr);
+static bool _xwl_surface_overlay_associate(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_dockapp_shape(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_handle_dockapp_commit(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _xwl_surface_overlay_update(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_overlay_unmap(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_overlay_grab(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_overlay_ungrab(wlmaker_xwl_surface_t *xs_ptr);
+static uint32_t _xwl_surface_overlay_request_size(
+    wlmtk_panel_t *panel_ptr, int width, int height);
+static bool _xwl_surface_overlay_pointer_button(
+    wlmtk_element_t *element_ptr,
+    const wlmtk_button_event_t *button_event_ptr);
 /** All XWL surfaces, see @ref wlmaker_xwl_surface_t::link. */
 static struct wl_list _xwl_surfaces = { &_xwl_surfaces, &_xwl_surfaces };
 static bool _xwl_surface_handle_dockapp(wlmaker_xwl_surface_t *xs_ptr);
@@ -347,6 +386,10 @@ void wlmaker_xwl_surface_destroy(wlmaker_xwl_surface_t *xwl_surface_ptr)
     }
 
     wlmtk_base_fini(&xwl_surface_ptr->base);
+    if (xwl_surface_ptr->overlay) {
+        wlmtk_panel_fini(&xwl_surface_ptr->overlay_panel);
+        xwl_surface_ptr->overlay = false;
+    }
     xwl_surface_ptr->surface_ptr = NULL;
     free(xwl_surface_ptr);
 }
@@ -495,6 +538,73 @@ void _xwl_dockapp_forget(xcb_window_t window_id)
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Passes the shape of a dock-app's icon window (X Shape extension, eg. the
+ * round corners of wmclock, wmcliphist, wmix) to its tile: Window Maker shows
+ * the tile around the shape. Without a shape (one rectangle covering the
+ * window), the whole window.
+ *
+ * @param xs_ptr
+ */
+void _xwl_surface_dockapp_shape(wlmaker_xwl_surface_t *xs_ptr)
+{
+    struct wlr_xwayland_surface *xws_ptr = xs_ptr->wlr_xwayland_surface_ptr;
+    xcb_connection_t *c_ptr = wlr_xwayland_get_xwm_connection(
+        wlmaker_xwl_wlr_xwayland(xs_ptr->xwl_ptr));
+    if (NULL == c_ptr) return;
+    const xcb_query_extension_reply_t *ext_ptr = xcb_get_extension_data(
+        c_ptr, &xcb_shape_id);
+    if (NULL == ext_ptr || !ext_ptr->present) return;
+
+    xcb_shape_get_rectangles_reply_t *r_ptr = xcb_shape_get_rectangles_reply(
+        c_ptr,
+        xcb_shape_get_rectangles(c_ptr, xws_ptr->window_id,
+                                 XCB_SHAPE_SK_BOUNDING),
+        NULL);
+    if (NULL == r_ptr) return;
+    int n = xcb_shape_get_rectangles_rectangles_length(r_ptr);
+    xcb_rectangle_t *rects_ptr = xcb_shape_get_rectangles_rectangles(r_ptr);
+    // Many rectangles (a shape of single pixels): The whole window instead.
+    struct wlr_box boxes[256];
+    size_t boxes_n = 0;
+    struct wlr_box window = { .width = xws_ptr->width,
+                              .height = xws_ptr->height };
+    bool whole = (0 >= n || n > (int)(sizeof(boxes) / sizeof(boxes[0])));
+    for (int i = 0; !whole && i < n; ++i) {
+        struct wlr_box b = { .x = rects_ptr[i].x, .y = rects_ptr[i].y,
+                             .width = rects_ptr[i].width,
+                             .height = rects_ptr[i].height };
+        if (!wlr_box_intersection(&b, &b, &window)) continue;
+        if (wlr_box_equal(&b, &window)) whole = true;
+        boxes[boxes_n++] = b;
+    }
+    free(r_ptr);
+    if (whole || 0 == boxes_n) {
+        wlmaker_icon_manager_set_xwayland_shape(xs_ptr->dockapp_icon_ptr,
+                                                NULL, 0);
+        return;
+    }
+    bs_log(BS_INFO, "X11 dock-app icon window 0x%"PRIx32": Shaped, %zu "
+           "rectangles.", xws_ptr->window_id, boxes_n);
+    wlmaker_icon_manager_set_xwayland_shape(xs_ptr->dockapp_icon_ptr,
+                                            boxes, boxes_n);
+}
+
+/* ------------------------------------------------------------------------- */
+/** A commit of a dock-app's icon window: Reads its shape, the first times. */
+void _xwl_surface_handle_dockapp_commit(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, dockapp_commit_listener);
+    if (NULL != xs_ptr->dockapp_icon_ptr) _xwl_surface_dockapp_shape(xs_ptr);
+    if (0 >= --xs_ptr->dockapp_shape_checks) {
+        wlmtk_util_disconnect_listener(&xs_ptr->dockapp_commit_listener);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Handles an associated surface of an X11 dock-app.
  *
  * @return true if it is one (leader or icon window): No window for it.
@@ -512,7 +622,16 @@ bool _xwl_surface_handle_dockapp(wlmaker_xwl_surface_t *xs_ptr)
         xs_ptr->dockapp_icon_ptr = wlmaker_icon_manager_adopt_xwayland_surface(
             server_ptr->icon_manager_ptr, xws_ptr,
             '\0' != d_ptr->name[0] ? d_ptr->name : NULL, d_ptr->pid);
-        return NULL != xs_ptr->dockapp_icon_ptr;
+        if (NULL == xs_ptr->dockapp_icon_ptr) return false;
+        _xwl_surface_dockapp_shape(xs_ptr);
+        // GTK (wmcliphist) shapes the window once it is mapped: Again with
+        // the first few commits.
+        xs_ptr->dockapp_shape_checks = 5;
+        wlmtk_util_connect_listener_signal(
+            &xws_ptr->surface->events.commit,
+            &xs_ptr->dockapp_commit_listener,
+            _xwl_surface_handle_dockapp_commit);
+        return true;
     }
 
     // A leader (its surface, if it draws in its window): No window.
@@ -783,6 +902,11 @@ void _xwl_surface_handle_associate(
         &xwl_surface_ptr->base,
         wlmtk_surface_element(xwl_surface_ptr->surface_ptr));
 
+    if (_xwl_surface_overlay_associate(xwl_surface_ptr)) {
+        _xwl_surface_overlay_update(xwl_surface_ptr);
+        return;
+    }
+
     // Currently we treat parent-less windows AND modal windows as toplevel.
     // Modal windows should actually be child wlmtk_window_t, but that isn't
     // supported yet.
@@ -879,6 +1003,8 @@ void _xwl_surface_handle_dissociate(
            xwl_surface_ptr, xwl_surface_ptr->wlr_xwayland_surface_ptr->surface);
 
     if (NULL != xwl_surface_ptr->dockapp_icon_ptr) {
+        wlmtk_util_disconnect_listener(
+            &xwl_surface_ptr->dockapp_commit_listener);
         wlmaker_icon_manager_release_xwayland_icon(
             xwl_surface_ptr->dockapp_icon_ptr);
         xwl_surface_ptr->dockapp_icon_ptr = NULL;
@@ -908,6 +1034,15 @@ void _xwl_surface_handle_dissociate(
         }
         wlmtk_window_destroy(xwl_surface_ptr->window_ptr);
         xwl_surface_ptr->window_ptr = NULL;
+    }
+
+    if (xwl_surface_ptr->overlay) {
+        _xwl_surface_overlay_unmap(xwl_surface_ptr);
+        wlmtk_element_t *e_ptr = wlmtk_base_element(&xwl_surface_ptr->base);
+        if (NULL != e_ptr->parent_container_ptr) {
+            wlmtk_container_remove_element(
+                &xwl_surface_ptr->overlay_panel.super_container, e_ptr);
+        }
     }
 
     if (NULL != xwl_surface_ptr->parent_surface_ptr) {
@@ -1059,6 +1194,11 @@ void _xwl_surface_handle_set_geometry(
     wlmaker_xwl_surface_t *xwl_surface_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_xwl_surface_t, set_geometry_listener);
 
+    if (xwl_surface_ptr->overlay) {
+        _xwl_surface_overlay_update(xwl_surface_ptr);
+        return;
+    }
+
     // For XWayland, the surface's position is given relative to the "root"
     // of the specified surface. For @ref wlmtk_element_t, the position is
     // just relative to the parent @ref wlmtk_container_t. So we need to
@@ -1080,6 +1220,10 @@ void _xwl_surface_handle_surface_map(
     wlmaker_xwl_surface_t *xwl_surface_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_xwl_surface_t, surface_map_listener);
 
+    if (xwl_surface_ptr->overlay) {
+        _xwl_surface_overlay_update(xwl_surface_ptr);
+        return;
+    }
     if (NULL == xwl_surface_ptr->window_ptr) return;
 
     // The surface is mapped while committing, before the toolkit surface
@@ -1123,6 +1267,12 @@ void _xwl_surface_map_window(wlmaker_xwl_surface_t *xwl_surface_ptr)
             hint.y = xws_ptr->y;
         }
     }
+    // An override-redirect window places itself, wherever it is.
+    if (xws_ptr->override_redirect) {
+        hint.has_position = true;
+        hint.x = xws_ptr->x;
+        hint.y = xws_ptr->y;
+    }
     if (NULL != xws_ptr->parent && NULL != xws_ptr->parent->data) {
         wlmaker_xwl_surface_t *parent_ptr = xws_ptr->parent->data;
         if (NULL != parent_ptr->window_ptr &&
@@ -1144,6 +1294,10 @@ void _xwl_surface_handle_surface_unmap(
         listener_ptr, wlmaker_xwl_surface_t, surface_unmap_listener);
 
     xwl_surface_ptr->map_pending = false;
+    if (xwl_surface_ptr->overlay) {
+        _xwl_surface_overlay_unmap(xwl_surface_ptr);
+        return;
+    }
     if (NULL == xwl_surface_ptr->window_ptr ||
         NULL == wlmtk_window_get_workspace(xwl_surface_ptr->window_ptr)) return;
 
@@ -1161,6 +1315,10 @@ void _xwl_surface_handle_surface_commit(
     wlmaker_xwl_surface_t *xwl_surface_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_xwl_surface_t, surface_commit_listener);
 
+    if (xwl_surface_ptr->overlay) {
+        _xwl_surface_overlay_update(xwl_surface_ptr);
+        return;
+    }
     if (NULL == xwl_surface_ptr->window_ptr) return;
 
     wlmtk_window_commit_size(
@@ -1266,6 +1424,214 @@ void _wlmaker_xwl_surface_handle_window_request_maximized(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Puts a parent-less override-redirect surface into its overlay panel.
+ *
+ * @param xs_ptr
+ *
+ * @return true if the surface is such an overlay. Then it is no window.
+ */
+bool _xwl_surface_overlay_associate(wlmaker_xwl_surface_t *xs_ptr)
+{
+    struct wlr_xwayland_surface *xws_ptr = xs_ptr->wlr_xwayland_surface_ptr;
+    if (!xws_ptr->override_redirect || NULL != xws_ptr->parent) return false;
+
+    if (!xs_ptr->overlay) {
+        static const wlmtk_panel_vmt_t vmt = {
+            .request_size = _xwl_surface_overlay_request_size,
+        };
+        wlmtk_panel_positioning_t pos = {
+            .anchor = WLR_EDGE_TOP | WLR_EDGE_LEFT,
+            .exclusive_zone = -1,
+        };
+        if (!wlmtk_panel_init(&xs_ptr->overlay_panel, &pos)) {
+            bs_log(BS_WARNING, "Failed wlmtk_panel_init for XWL surface %p",
+                   xs_ptr);
+            return false;
+        }
+        wlmtk_panel_extend(&xs_ptr->overlay_panel, &vmt);
+        static const wlmtk_element_vmt_t element_vmt = {
+            .pointer_button = _xwl_surface_overlay_pointer_button,
+        };
+        xs_ptr->overlay_orig_vmt = wlmtk_element_extend(
+            wlmtk_panel_element(&xs_ptr->overlay_panel), &element_vmt);
+        wlmtk_element_set_visible(
+            wlmtk_panel_element(&xs_ptr->overlay_panel), true);
+        xs_ptr->overlay = true;
+    }
+    wlmtk_element_t *e_ptr = wlmtk_base_element(&xs_ptr->base);
+    wlmtk_element_set_position(e_ptr, 0, 0);
+    wlmtk_element_set_visible(e_ptr, true);
+    wlmtk_container_add_element(&xs_ptr->overlay_panel.super_container, e_ptr);
+    bs_log(BS_INFO, "XWL surface %p: Override-redirect, without parent, at "
+           "%d, %d: Shown on top, as an overlay.", xs_ptr, xws_ptr->x,
+           xws_ptr->y);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Places the overlay where the X11 window is, with its size; and shows it
+ * (in the overlay layer, of the output at that position) once it is mapped.
+ *
+ * @param xs_ptr
+ */
+void _xwl_surface_overlay_update(wlmaker_xwl_surface_t *xs_ptr)
+{
+    struct wlr_xwayland_surface *xws_ptr = xs_ptr->wlr_xwayland_surface_ptr;
+    if (NULL == xs_ptr->surface_ptr || NULL == xws_ptr->surface) return;
+    int w = xws_ptr->surface->current.width;
+    int h = xws_ptr->surface->current.height;
+    if (!xws_ptr->surface->mapped || 0 >= w || 0 >= h) {
+        _xwl_surface_overlay_unmap(xs_ptr);
+        return;
+    }
+
+    struct wlr_output_layout *layout_ptr =
+        xs_ptr->server_ptr->wlr_output_layout_ptr;
+    struct wlr_output *output_ptr = wlr_output_layout_output_at(
+        layout_ptr, xws_ptr->x, xws_ptr->y);
+    if (NULL == output_ptr) {
+        output_ptr = wlmaker_server_get_output_at_cursor(xs_ptr->server_ptr);
+    }
+    if (NULL == output_ptr) return;
+    struct wlr_box box;
+    wlr_output_layout_get_box(layout_ptr, output_ptr, &box);
+
+    wlmtk_panel_positioning_t pos = {
+        .desired_width = w,
+        .desired_height = h,
+        .anchor = WLR_EDGE_TOP | WLR_EDGE_LEFT,
+        .margin_left = xws_ptr->x - box.x,
+        .margin_top = xws_ptr->y - box.y,
+        .exclusive_zone = -1,
+    };
+    if (output_ptr != xs_ptr->overlay_output_ptr) {
+        _xwl_surface_overlay_unmap(xs_ptr);
+    }
+    wlmtk_panel_commit(&xs_ptr->overlay_panel, 0, &pos);
+    if (NULL == wlmtk_panel_get_layer(&xs_ptr->overlay_panel)) {
+        wlmtk_layer_t *layer_ptr = wlmtk_desktop_get_layer(
+            xs_ptr->server_ptr->desktop_ptr, WLMTK_DESKTOP_LAYER_OVERLAY);
+        if (wlmtk_layer_add_panel(
+                layer_ptr, &xs_ptr->overlay_panel, output_ptr)) {
+            xs_ptr->overlay_output_ptr = output_ptr;
+            _xwl_surface_overlay_grab(xs_ptr);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * A menu (of a program without a window, eg. a dock-app's) grabs the pointer
+ * on X11: A click anywhere else closes it. Here, the X server only learns of
+ * clicks on X11 surfaces. So the pointer stays with the menu, and a click
+ * outside of it goes to the X11 client that holds the grab (and to no one
+ * else), once: As on X11.
+ *
+ * @param xs_ptr
+ */
+void _xwl_surface_overlay_grab(wlmaker_xwl_surface_t *xs_ptr)
+{
+    struct wlr_xwayland_surface *xws_ptr = xs_ptr->wlr_xwayland_surface_ptr;
+    if (!wlr_xwayland_surface_has_window_type(
+            xws_ptr, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_POPUP_MENU) &&
+        !wlr_xwayland_surface_has_window_type(
+            xws_ptr, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DROPDOWN_MENU) &&
+        !wlr_xwayland_surface_has_window_type(
+            xws_ptr, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_MENU) &&
+        !wlr_xwayland_surface_has_window_type(
+            xws_ptr, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_COMBO)) return;
+    wlmtk_element_t *e_ptr = wlmtk_panel_element(&xs_ptr->overlay_panel);
+    if (NULL == e_ptr->parent_container_ptr) return;
+    wlmtk_container_pointer_grab(e_ptr->parent_container_ptr, e_ptr);
+    xs_ptr->overlay_grab = true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Ends the pointer grab of a menu. */
+void _xwl_surface_overlay_ungrab(wlmaker_xwl_surface_t *xs_ptr)
+{
+    if (!xs_ptr->overlay_grab) return;
+    xs_ptr->overlay_grab = false;
+    wlmtk_element_t *e_ptr = wlmtk_panel_element(&xs_ptr->overlay_panel);
+    if (NULL == e_ptr->parent_container_ptr) return;
+    wlmtk_container_pointer_grab_release(e_ptr->parent_container_ptr, e_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::pointer_button for the overlay. Over
+ * the X11 window: As usual. Outside, while a menu holds the pointer: The
+ * button goes to that X11 client (at the position outside of its window, as
+ * the X server tells a grabbing client), and the grab ends on release.
+ *
+ * @param element_ptr
+ * @param button_event_ptr
+ *
+ * @return true.
+ */
+bool _xwl_surface_overlay_pointer_button(
+    wlmtk_element_t *element_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmaker_xwl_surface_t,
+        overlay_panel.super_container.super_element);
+    struct wlr_xwayland_surface *xws_ptr = xs_ptr->wlr_xwayland_surface_ptr;
+    struct wlr_cursor *c_ptr = wlmim_wlr_cursor(
+        xs_ptr->server_ptr->input_manager_ptr);
+    struct wlr_surface *s_ptr = xws_ptr->surface;
+    bool inside = NULL != s_ptr &&
+        c_ptr->x >= xws_ptr->x && c_ptr->y >= xws_ptr->y &&
+        c_ptr->x < xws_ptr->x + s_ptr->current.width &&
+        c_ptr->y < xws_ptr->y + s_ptr->current.height;
+    if (inside || !xs_ptr->overlay_grab) {
+        return xs_ptr->overlay_orig_vmt.pointer_button(
+            element_ptr, button_event_ptr);
+    }
+
+    struct wlr_seat *seat_ptr = xs_ptr->server_ptr->wlr_seat_ptr;
+    if (NULL != s_ptr && (WLMTK_BUTTON_DOWN == button_event_ptr->type ||
+                          WLMTK_BUTTON_UP == button_event_ptr->type)) {
+        wlr_seat_pointer_notify_enter(
+            seat_ptr, s_ptr, c_ptr->x - xws_ptr->x, c_ptr->y - xws_ptr->y);
+        wlr_seat_pointer_notify_button(
+            seat_ptr, button_event_ptr->time_msec, button_event_ptr->button,
+            WLMTK_BUTTON_DOWN == button_event_ptr->type ?
+            WL_POINTER_BUTTON_STATE_PRESSED :
+            WL_POINTER_BUTTON_STATE_RELEASED);
+    }
+    if (WLMTK_BUTTON_UP == button_event_ptr->type) {
+        _xwl_surface_overlay_ungrab(xs_ptr);
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Takes the overlay off its layer. */
+void _xwl_surface_overlay_unmap(wlmaker_xwl_surface_t *xs_ptr)
+{
+    if (!xs_ptr->overlay) return;
+    _xwl_surface_overlay_ungrab(xs_ptr);
+    wlmtk_layer_t *layer_ptr = wlmtk_panel_get_layer(&xs_ptr->overlay_panel);
+    if (NULL != layer_ptr) {
+        wlmtk_layer_remove_panel(layer_ptr, &xs_ptr->overlay_panel);
+    }
+    xs_ptr->overlay_output_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** The overlay keeps the size the X11 client gave it. */
+uint32_t _xwl_surface_overlay_request_size(
+    __UNUSED__ wlmtk_panel_t *panel_ptr,
+    __UNUSED__ int width,
+    __UNUSED__ int height)
+{
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Sets whether this window should be server-side-decorated.
  *
  * @param xwl_surface_ptr
@@ -1278,7 +1644,10 @@ void _xwl_surface_apply_decorations(wlmaker_xwl_surface_t *xwl_surface_ptr)
     if (NULL == xwl_surface_ptr->window_ptr) return;
 
     // TODO(kaeser@gubbe.ch): Adapt whether NO_BORDER or NO_TITLE was set.
-    if (xwl_surface_ptr->wlr_xwayland_surface_ptr->decorations ==
+    // Override-redirect windows (menus, tooltips of programs without a parent
+    // window, eg. the menu of a dock-app) are never decorated, as on X11.
+    if (!xwl_surface_ptr->wlr_xwayland_surface_ptr->override_redirect &&
+        xwl_surface_ptr->wlr_xwayland_surface_ptr->decorations ==
         WLR_XWAYLAND_SURFACE_DECORATIONS_ALL &&
         !xwl_is_window_type(
             xwl_surface_ptr->xwl_ptr,

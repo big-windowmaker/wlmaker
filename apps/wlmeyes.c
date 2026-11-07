@@ -60,6 +60,8 @@ double                        icon_pointer_y;
 uint32_t                      toplevel_width;
 /** Desired height of the toplevel, in pixels. */
 uint32_t                      toplevel_height;
+/** Only the tile, as the dock-app wmeyes: No window. */
+static bool                   arg_dockapp = false;
 
 /** Commandline arguments. */
 static const bs_arg_t _wlmeyes_args[] = {
@@ -77,6 +79,13 @@ static const bs_arg_t _wlmeyes_args[] = {
         1,
         INT32_MAX,
         &toplevel_height),
+    BS_ARG_BOOL(
+        "dockapp",
+        "Optional: Only the tile on the Dock or the Clip, without a window, "
+        "with the look of the X11 dock-app wmeyes. The eyes follow the "
+        "pointer anywhere on the screen.",
+        false,
+        &arg_dockapp),
     BS_ARG_SENTINEL(),
 };
 
@@ -218,9 +227,93 @@ static void _position_callback(double x, double y, __UNUSED__ void *ud_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * The eye of wmeyes, on its 64x64 tile: The first pixel of each row, from
+ * row @ref _wmeyes_top; the row is symmetric around @ref _wmeyes_cx.
+ */
+static const int _wmeyes_row_start[] = {
+    14, 13, 12, 11, 10, 10, 9, 9, 9, 8, 8, 8, 8,
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+    8, 8, 8, 8, 9, 9, 10, 10, 11, 12, 13, 14 };
+/** Top row of the eyes. */
+static const int _wmeyes_top = 13;
+/** Center of the left eye; the right one is 30 pixels further. */
+static const double _wmeyes_cx = 17.0, _wmeyes_cy = 32.0;
+/** Width of the pupil's rows, from its top. Its size: 6x8. */
+static const int _wmeyes_pupil_row[] = { 2, 4, 6, 6, 6, 6, 4, 2 };
+
+/* ------------------------------------------------------------------------- */
+/** Fills one rectangle of pixels, `argb`, clipped to the buffer. */
+static void _wmeyes_fill(bs_gfxbuf_t *gfxbuf_ptr, int x, int y, int w,
+                         uint32_t argb)
+{
+    if (0 > y || (int)gfxbuf_ptr->height <= y) return;
+    for (int i = BS_MAX(0, x); i < BS_MIN((int)gfxbuf_ptr->width, x + w); ++i) {
+        gfxbuf_ptr->data_ptr[y * gfxbuf_ptr->pixels_per_line + i] = argb;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Draws the X11 dock-app wmeyes, pixel by pixel as it is: Two white eyes on
+ * the tile (wmeyes is shaped to them), green pupils that look at the
+ * pointer (in pixels of the tile).
+ */
+static void _wmeyes_draw(bs_gfxbuf_t *gfxbuf_ptr, double px, double py)
+{
+    bs_gfxbuf_clear(gfxbuf_ptr, 0);
+    // The tile may be larger or smaller than 64x64: Centered.
+    int ox = ((int)gfxbuf_ptr->width - 64) / 2;
+    int oy = ((int)gfxbuf_ptr->height - 64) / 2;
+    for (int eye = 0; eye < 2; ++eye) {
+        int dx = ox + 30 * eye;
+        const size_t rows =
+            sizeof(_wmeyes_row_start) / sizeof(_wmeyes_row_start[0]);
+        // The black outline of wmeyes' shape: Two pixels around the eye.
+        for (int r = -2; r <= (int)rows + 1; ++r) {
+            int s = 64;
+            for (int k = r - 2; k <= r + 2; ++k) {
+                if (0 <= k && k < (int)rows) {
+                    s = BS_MIN(s, _wmeyes_row_start[k]);
+                }
+            }
+            _wmeyes_fill(gfxbuf_ptr, dx + s - 2, oy + _wmeyes_top + r,
+                         38 - 2 * s, 0xff000000);
+        }
+        for (size_t r = 0; r < rows; ++r) {
+            int s = _wmeyes_row_start[r];
+            _wmeyes_fill(gfxbuf_ptr, dx + s, oy + _wmeyes_top + (int)r,
+                         34 - 2 * s, 0xffffffff);
+        }
+        // The pupil looks at the pointer: At most this far from the center.
+        double cx = dx + _wmeyes_cx, cy = oy + _wmeyes_cy;
+        double rx = px - cx, ry = py - cy;
+        double ratio = sqr(rx / 7.0) + sqr(ry / 15.0);
+        if (ratio > 1.0) {
+            rx /= sqrt(ratio);
+            ry /= sqrt(ratio);
+        }
+        int x = (int)lround(cx + rx) - 3, y = (int)lround(cy + ry) - 4;
+        const size_t pupil_rows =
+            sizeof(_wmeyes_pupil_row) / sizeof(_wmeyes_pupil_row[0]);
+        for (size_t r = 0; r < pupil_rows; ++r) {
+            int w = _wmeyes_pupil_row[r];
+            _wmeyes_fill(gfxbuf_ptr, x + (6 - w) / 2, y + (int)r, w,
+                         0xff009966);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 /** Called when the icon is ready to refresh. */
 static bool _icon_callback(bs_gfxbuf_t *gfxbuf_ptr, __UNUSED__ void *ud_ptr)
 {
+    if (arg_dockapp) {
+        _wmeyes_draw(gfxbuf_ptr,
+                     icon_pointer_x * gfxbuf_ptr->width,
+                     icon_pointer_y * gfxbuf_ptr->height);
+        return true;
+    }
     bs_gfxbuf_clear(gfxbuf_ptr, 0);
 
     cairo_t *cairo_ptr = cairo_create_from_bs_gfxbuf(gfxbuf_ptr);
@@ -284,6 +377,12 @@ static void _handle_icon_configure(void *ud_ptr, uint32_t width, uint32_t height
     if (NULL != icon_dblbuf_ptr) {
         wlmcl_dblbuf_destroy(icon_dblbuf_ptr);
     }
+    if (arg_dockapp) {
+        // wmeyes is a 64x64 icon window, on the whole tile (its shape lets
+        // the tile show around the eyes): The same size here.
+        width = BS_MAX(width, 64u);
+        height = BS_MAX(height, 64u);
+    }
     icon_dblbuf_ptr = wlmcl_dblbuf_create(
         wlmcl_client_attributes(wlclient_ptr)->app_id_ptr,
         wlmcl_icon_wl_surface(icon_ptr),
@@ -322,7 +421,27 @@ int main(int argc, const char **argv)
         wlmcl_client_attributes(wlclient_ptr)->wl_display_ptr);
     wl_display_roundtrip(
         wlmcl_client_attributes(wlclient_ptr)->wl_display_ptr);
-     if (wlmcl_xdg_supported(wlclient_ptr)) {
+    if (arg_dockapp) {
+        // The dock-app: Only the tile, as wlmclock.
+        wlmcl_icon_t *icon_ptr = NULL;
+        if (wlmcl_icon_supported(wlclient_ptr)) {
+            icon_ptr = wlmcl_icon_create(wlclient_ptr);
+        }
+        if (NULL == icon_ptr) {
+            bs_log(BS_ERROR, "icon protocol is not supported.");
+        } else {
+            wlmcl_icon_register_configure_callback(
+                icon_ptr, _handle_icon_configure, icon_ptr);
+            wlmcl_icon_register_position_callback(
+                icon_ptr, _icon_position_callback, icon_ptr);
+            wlmcl_client_run(wlclient_ptr);
+            wlmcl_icon_destroy(icon_ptr);
+            if (NULL != icon_dblbuf_ptr) {
+                wlmcl_dblbuf_destroy(icon_dblbuf_ptr);
+                icon_dblbuf_ptr = NULL;
+            }
+        }
+    } else if (wlmcl_xdg_supported(wlclient_ptr)) {
         wlmcl_xdg_toplevel_t *toplevel_ptr = wlmcl_xdg_toplevel_create(
             wlclient_ptr,
             "wlmaker Toplevel Example",

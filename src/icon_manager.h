@@ -29,10 +29,12 @@ typedef struct _wlmaker_icon_manager_t wlmaker_icon_manager_t;
 /** Forward declaration: Toplevel icon handle. */
 typedef struct _wlmaker_toplevel_icon_t wlmaker_toplevel_icon_t;
 
+#include <stddef.h>
 #include <sys/types.h>
 
 #include "task_list.h"
 
+struct wlr_box;
 struct wlr_layer_surface_v1;
 
 #ifdef __cplusplus
@@ -103,6 +105,20 @@ wlmaker_toplevel_icon_t *wlmaker_icon_manager_adopt_xwayland_surface(
     struct wlr_xwayland_surface *wlr_xwayland_surface_ptr,
     const char *name_ptr,
     pid_t pid);
+
+/**
+ * Sets the shape of an adopted X11 icon window: Only these rectangles of
+ * it (in its coordinates) are shown, the tile shows around them; as Window
+ * Maker shows a shaped icon window (X Shape extension). NULL or none: All.
+ *
+ * @param toplevel_icon_ptr
+ * @param rects_ptr
+ * @param rects
+ */
+void wlmaker_icon_manager_set_xwayland_shape(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr,
+    const struct wlr_box *rects_ptr,
+    size_t rects);
 
 /** Releases what @ref wlmaker_icon_manager_adopt_xwayland_surface adopted. */
 void wlmaker_icon_manager_release_xwayland_icon(

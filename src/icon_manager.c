@@ -39,6 +39,8 @@
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_scene.h>
+#include <wlr/util/box.h>
 #include <wlr/util/edges.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #if defined(WLMAKER_HAVE_XWAYLAND)
@@ -174,6 +176,22 @@ struct _wlmaker_toplevel_icon_t {
     int                       xwl_x;
     /** See @ref wlmaker_toplevel_icon_t::xwl_x. */
     int                       xwl_y;
+    /** Size of the X11 icon window's surface, as last centered on the tile. */
+    int                       xwl_width;
+    /** See @ref wlmaker_toplevel_icon_t::xwl_width. */
+    int                       xwl_height;
+    /** Shape of the X11 icon window: The rectangles shown. None: All. */
+    struct wlr_box            *xwl_shape_ptr;
+    /** Number of rectangles at @ref wlmaker_toplevel_icon_t::xwl_shape_ptr. */
+    size_t                    xwl_shape_rects;
+    /** Scene node of the content that the shape is applied to. */
+    struct wlr_scene_node     *xwl_shaped_node_ptr;
+    /** Listener for the destroy signal of the shaped scene node. */
+    struct wl_listener        xwl_shaped_node_destroy_listener;
+    /** Copies of the surface, one per rectangle after the first. */
+    struct wlr_scene_tree     **xwl_shape_trees_ptr;
+    /** Number of copies, at `xwl_shape_trees_ptr`. */
+    size_t                    xwl_shape_trees;
 };
 
 static wlmaker_icon_manager_t *icon_manager_from_resource(
@@ -257,6 +275,11 @@ static void _wlmaker_toplevel_icon_handle_layer_new_popup(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmaker_toplevel_icon_xwl_sync_position(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr);
+static void _wlmaker_toplevel_icon_xwl_apply_shape(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr,
+    bool force);
+static void _wlmaker_toplevel_icon_xwl_forget_shape_trees(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr);
 static bool _wlmaker_toplevel_icon_content_has_pointer(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr);
@@ -622,6 +645,11 @@ void wlmaker_toplevel_icon_destroy(
     if (NULL != toplevel_icon_ptr->xwl_name_ptr) {
         free(toplevel_icon_ptr->xwl_name_ptr);
     }
+    _wlmaker_toplevel_icon_xwl_forget_shape_trees(toplevel_icon_ptr);
+    if (NULL != toplevel_icon_ptr->xwl_shape_ptr) {
+        free(toplevel_icon_ptr->xwl_shape_ptr);
+        toplevel_icon_ptr->xwl_shape_ptr = NULL;
+    }
 
     // Note: Not destroying toplevel_icon_ptr->resource, since that causes
     // cycles...
@@ -696,9 +724,18 @@ void handle_surface_commit(
         if (NULL == wlr_surface_ptr->buffer) return;
         wlmtk_element_t *e = wlmtk_surface_element(
             toplevel_icon_ptr->content_surface_ptr);
-        if (NULL == e->parent_container_ptr) {
+        // Centered on the tile with its current size: The first buffer may
+        // be smaller than the icon window (eg. wmcpuload's).
+        int w = wlr_surface_ptr->current.width;
+        int h = wlr_surface_ptr->current.height;
+        if (NULL == e->parent_container_ptr ||
+            w != toplevel_icon_ptr->xwl_width ||
+            h != toplevel_icon_ptr->xwl_height) {
+            toplevel_icon_ptr->xwl_width = w;
+            toplevel_icon_ptr->xwl_height = h;
             wlmtk_tile_set_content(&toplevel_icon_ptr->super_tile, e);
         }
+        _wlmaker_toplevel_icon_xwl_apply_shape(toplevel_icon_ptr, false);
         _wlmaker_toplevel_icon_xwl_sync_position(toplevel_icon_ptr);
         return;
     }
@@ -770,6 +807,7 @@ void _wlmaker_toplevel_icon_element_destroy(wlmtk_element_t *element_ptr)
             &toplevel_icon_ptr->surface_commit_listener);
 
         wlmtk_tile_set_content(&toplevel_icon_ptr->super_tile, NULL);
+        _wlmaker_toplevel_icon_xwl_forget_shape_trees(toplevel_icon_ptr);
         wlmtk_surface_destroy(toplevel_icon_ptr->content_surface_ptr);
         toplevel_icon_ptr->content_surface_ptr = NULL;
     }
@@ -1543,6 +1581,122 @@ void wlmaker_icon_manager_release_xwayland_icon(
 {
     if (NULL == toplevel_icon_ptr) return;
     wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_icon_manager_set_xwayland_shape(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr,
+    const struct wlr_box *rects_ptr,
+    size_t rects)
+{
+    if (NULL == toplevel_icon_ptr) return;
+    if (NULL != toplevel_icon_ptr->xwl_shape_ptr) {
+        free(toplevel_icon_ptr->xwl_shape_ptr);
+        toplevel_icon_ptr->xwl_shape_ptr = NULL;
+    }
+    toplevel_icon_ptr->xwl_shape_rects = 0;
+    if (NULL != rects_ptr && 0 < rects) {
+        toplevel_icon_ptr->xwl_shape_ptr = logged_calloc(
+            rects, sizeof(struct wlr_box));
+        if (NULL != toplevel_icon_ptr->xwl_shape_ptr) {
+            memcpy(toplevel_icon_ptr->xwl_shape_ptr, rects_ptr,
+                   rects * sizeof(struct wlr_box));
+            toplevel_icon_ptr->xwl_shape_rects = rects;
+        }
+    }
+    _wlmaker_toplevel_icon_xwl_apply_shape(toplevel_icon_ptr, true);
+}
+
+/* ------------------------------------------------------------------------- */
+/** The shaped scene node goes (and the copies with it, as its children). */
+static void _wlmaker_toplevel_icon_handle_shaped_node_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_toplevel_icon_t,
+        xwl_shaped_node_destroy_listener);
+    wlmtk_util_disconnect_listener(
+        &toplevel_icon_ptr->xwl_shaped_node_destroy_listener);
+    if (NULL != toplevel_icon_ptr->xwl_shape_trees_ptr) {
+        free(toplevel_icon_ptr->xwl_shape_trees_ptr);
+        toplevel_icon_ptr->xwl_shape_trees_ptr = NULL;
+    }
+    toplevel_icon_ptr->xwl_shape_trees = 0;
+    toplevel_icon_ptr->xwl_shaped_node_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Destroys the copies of the surface, and forgets the shaped node. */
+void _wlmaker_toplevel_icon_xwl_forget_shape_trees(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    for (size_t i = 0; i < toplevel_icon_ptr->xwl_shape_trees; ++i) {
+        if (NULL != toplevel_icon_ptr->xwl_shape_trees_ptr[i]) {
+            wlr_scene_node_destroy(
+                &toplevel_icon_ptr->xwl_shape_trees_ptr[i]->node);
+        }
+    }
+    if (NULL != toplevel_icon_ptr->xwl_shaped_node_ptr) {
+        wlmtk_util_disconnect_listener(
+            &toplevel_icon_ptr->xwl_shaped_node_destroy_listener);
+    }
+    if (NULL != toplevel_icon_ptr->xwl_shape_trees_ptr) {
+        free(toplevel_icon_ptr->xwl_shape_trees_ptr);
+        toplevel_icon_ptr->xwl_shape_trees_ptr = NULL;
+    }
+    toplevel_icon_ptr->xwl_shape_trees = 0;
+    toplevel_icon_ptr->xwl_shaped_node_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Shows only the shape of the X11 icon window, as Window Maker does: The
+ * surface clipped to its first rectangle, and one more copy of it for each
+ * further rectangle, clipped to that one. Again whenever the content gets a
+ * new scene node (eg. moved to another dock).
+ *
+ * @param toplevel_icon_ptr
+ * @param force               Also if applied to this scene node already.
+ */
+void _wlmaker_toplevel_icon_xwl_apply_shape(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr,
+    bool force)
+{
+    if (NULL == toplevel_icon_ptr->content_surface_ptr ||
+        NULL == toplevel_icon_ptr->wlr_xwayland_surface_ptr) return;
+    struct wlr_scene_node *node_ptr = wlmtk_surface_element(
+        toplevel_icon_ptr->content_surface_ptr)->wlr_scene_node_ptr;
+    if (NULL == node_ptr) return;
+    if (node_ptr == toplevel_icon_ptr->xwl_shaped_node_ptr && !force) return;
+    if (0 == toplevel_icon_ptr->xwl_shape_rects &&
+        NULL == toplevel_icon_ptr->xwl_shaped_node_ptr && !force) return;
+
+    _wlmaker_toplevel_icon_xwl_forget_shape_trees(toplevel_icon_ptr);
+    toplevel_icon_ptr->xwl_shaped_node_ptr = node_ptr;
+    wlmtk_util_connect_listener_signal(
+        &node_ptr->events.destroy,
+        &toplevel_icon_ptr->xwl_shaped_node_destroy_listener,
+        _wlmaker_toplevel_icon_handle_shaped_node_destroy);
+
+    size_t n = toplevel_icon_ptr->xwl_shape_rects;
+    wlr_scene_subsurface_tree_set_clip(
+        node_ptr, 0 < n ? &toplevel_icon_ptr->xwl_shape_ptr[0] : NULL);
+    if (1 >= n) return;
+
+    toplevel_icon_ptr->xwl_shape_trees_ptr = logged_calloc(
+        n - 1, sizeof(struct wlr_scene_tree *));
+    if (NULL == toplevel_icon_ptr->xwl_shape_trees_ptr) return;
+    toplevel_icon_ptr->xwl_shape_trees = n - 1;
+    struct wlr_scene_tree *parent_ptr = wlr_scene_tree_from_node(node_ptr);
+    for (size_t i = 1; i < n; ++i) {
+        struct wlr_scene_tree *t_ptr = wlr_scene_subsurface_tree_create(
+            parent_ptr, toplevel_icon_ptr->wlr_surface_ptr);
+        toplevel_icon_ptr->xwl_shape_trees_ptr[i - 1] = t_ptr;
+        if (NULL == t_ptr) continue;
+        wlr_scene_subsurface_tree_set_clip(
+            &t_ptr->node, &toplevel_icon_ptr->xwl_shape_ptr[i]);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
