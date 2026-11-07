@@ -52,8 +52,10 @@ static const wlmaker_i18n_entry_t _wlmaker_i18n_pt_br[] = {
     { "Kill", "Terminar" },
     { "Remove", "Remover" },
     // Window Maker's menu of docked icons, as its Portuguese catalog (pt.po)
-    // has them. "Dock position", "Normal", "Auto raise & lower", "Add a
-    // drawer" and "Autoraise" are untranslated there, and stay so.
+    // has them. "Normal", "Auto raise & lower", "Add a drawer" and
+    // "Autoraise" are untranslated there, and stay so. "Dock position" as
+    // the Brazilian catalog (pt_BR.po) has it: The X11 session shows that.
+    { "Dock position", "Posição do Dock" },
     { "Bring Here", "Trazer aqui" },
     { "Unhide Here", "Mostrar Aqui" },
     { "Hide", "Esconder" },
@@ -263,8 +265,10 @@ void test_translate(bs_test_t *test_ptr)
     wlmaker_i18n_set_locale("pt");
     BS_TEST_VERIFY_STREQ(test_ptr, "Executar", wlmaker_i18n("Launch"));
     BS_TEST_VERIFY_STREQ(test_ptr, "Trazer aqui", wlmaker_i18n("Bring Here"));
-    BS_TEST_VERIFY_STREQ(test_ptr, "Dock position",
+    BS_TEST_VERIFY_STREQ(test_ptr, "Posição do Dock",
                          wlmaker_i18n("Dock position"));
+    BS_TEST_VERIFY_STREQ(test_ptr, "Add a drawer",
+                         wlmaker_i18n("Add a drawer"));
 
     wlmaker_i18n_set_locale("en_US.UTF-8");
     BS_TEST_VERIFY_STREQ(test_ptr, "Move Up", wlmaker_i18n("Move Up"));
