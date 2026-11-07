@@ -183,6 +183,8 @@ static bool _xwl_surface_overlay_pointer_button(
 static struct wl_list _xwl_surfaces = { &_xwl_surfaces, &_xwl_surfaces };
 static bool _xwl_surface_handle_dockapp(wlmaker_xwl_surface_t *xs_ptr);
 static bool _xwl_surface_dockapp_leader(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_update_window_properties(
+    wlmaker_xwl_surface_t *xs_ptr);
 static void _xwl_surface_handle_map_request(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -817,6 +819,15 @@ void _xwl_surface_handle_request_configure(
     // -> if we have surface: check what that means, with respect to
     //    the surface::commit handler.
 
+    // A hidden dock-app leader stays off-screen: Over a tile, it would take
+    // the tile's clicks (X stacking).
+    if (xwl_surface_ptr->dockapp_leader) {
+        wlr_xwayland_surface_configure(
+            xwl_surface_ptr->wlr_xwayland_surface_ptr, -32000, -32000,
+            cfg_event_ptr->width, cfg_event_ptr->height);
+        return;
+    }
+
     // It appears this needs to be ACKed with a surface_configure.
     wlr_xwayland_surface_configure(
         xwl_surface_ptr->wlr_xwayland_surface_ptr,
@@ -1081,7 +1092,24 @@ void _xwl_surface_apply_identity(wlmaker_xwl_surface_t *xs_ptr)
     if (NULL == xs_ptr->window_ptr) return;
     struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
     wlmtk_window_set_app_id(xs_ptr->window_ptr, s->class, s->instance);
-    // Window Maker's window attributes, and no resize bar at fixed size.
+    _xwl_surface_update_window_properties(xs_ptr);
+    wlmtk_window_set_dialog(
+        xs_ptr->window_ptr,
+        s->modal || NULL != s->parent ||
+        wlr_xwayland_surface_has_window_type(
+            s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DIALOG) ||
+        wlr_xwayland_surface_has_window_type(
+            s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_SPLASH) ||
+        wlr_xwayland_surface_has_window_type(
+            s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_UTILITY));
+}
+
+/* ------------------------------------------------------------------------- */
+/** Window Maker's window attributes, and no resize bar at fixed size. */
+void _xwl_surface_update_window_properties(wlmaker_xwl_surface_t *xs_ptr)
+{
+    if (NULL == xs_ptr->window_ptr) return;
+    struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
     const xcb_size_hints_t *h = s->size_hints;
     bool fixed = NULL != h &&
         (h->flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) &&
@@ -1092,15 +1120,6 @@ void _xwl_surface_apply_identity(wlmaker_xwl_surface_t *xs_ptr)
         xs_ptr->window_ptr,
         wlmaker_window_attributes_properties(
             xs_ptr->server_ptr->config_dict_ptr, s->class, s->instance, fixed));
-    wlmtk_window_set_dialog(
-        xs_ptr->window_ptr,
-        s->modal || NULL != s->parent ||
-        wlr_xwayland_surface_has_window_type(
-            s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DIALOG) ||
-        wlr_xwayland_surface_has_window_type(
-            s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_SPLASH) ||
-        wlr_xwayland_surface_has_window_type(
-            s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_UTILITY));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1346,6 +1365,8 @@ void _xwl_surface_handle_surface_commit(
         return;
     }
     if (NULL == xwl_surface_ptr->window_ptr) return;
+    // Size hints and the configuration (SIGHUP) may have changed.
+    _xwl_surface_update_window_properties(xwl_surface_ptr);
 
     wlmtk_window_commit_size(
         xwl_surface_ptr->window_ptr,
