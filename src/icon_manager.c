@@ -270,6 +270,7 @@ static void _wlmaker_toplevel_icon_element_destroy(
 static bool _wlmaker_toplevel_icon_tile_set_content_size(
     wlmtk_tile_t *tile_ptr,
     uint64_t content_size);
+static uint64_t _wlmaker_toplevel_icon_dockapp_size(uint64_t tile_size);
 static void _wlmaker_toplevel_icon_layer_commit(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr);
 static void _wlmaker_toplevel_icon_handle_layer_destroy(
@@ -753,10 +754,10 @@ void handle_surface_commit(
         // respond with a `configure` event.
         toplevel_icon_ptr->pending_serial = wl_display_next_serial(
             toplevel_icon_ptr->icon_manager_ptr->wl_display_ptr);
+        uint64_t s = _wlmaker_toplevel_icon_dockapp_size(
+            toplevel_icon_ptr->super_tile.style.size);
         zwlmaker_toplevel_icon_v1_send_configure(
-            toplevel_icon_ptr->wl_resource_ptr,
-            toplevel_icon_ptr->super_tile.style.content_size,
-            toplevel_icon_ptr->super_tile.style.content_size,
+            toplevel_icon_ptr->wl_resource_ptr, s, s,
             toplevel_icon_ptr->pending_serial);
         return;
     }
@@ -1402,10 +1403,22 @@ char *_wlmaker_toplevel_icon_cmdline(pid_t pid)
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * The size of a dock-app on its tile: As the X11 dock-apps of Window Maker
+ * (wmcpuload, wmmemload: 58x58 on a 64x64 tile), a thin bevel around, not
+ * the content size of the launchers' icons (48: a wide frame, a narrow
+ * dock-app).
+ */
+uint64_t _wlmaker_toplevel_icon_dockapp_size(uint64_t tile_size)
+{
+    return 6 < tile_size ? tile_size - 6 : tile_size;
+}
+
+/* ------------------------------------------------------------------------- */
 /** Implements wlmtk_tile_vmt_t::set_content_size. Updates the content size. */
 bool _wlmaker_toplevel_icon_tile_set_content_size(
     wlmtk_tile_t *tile_ptr,
-    uint64_t content_size)
+    __UNUSED__ uint64_t content_size)
 {
     wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
         tile_ptr, wlmaker_toplevel_icon_t, super_tile);
@@ -1416,10 +1429,9 @@ bool _wlmaker_toplevel_icon_tile_set_content_size(
 
     toplevel_icon_ptr->pending_serial = wl_display_next_serial(
         toplevel_icon_ptr->icon_manager_ptr->wl_display_ptr);
+    uint64_t s = _wlmaker_toplevel_icon_dockapp_size(tile_ptr->style.size);
     zwlmaker_toplevel_icon_v1_send_configure(
-        toplevel_icon_ptr->wl_resource_ptr,
-        content_size,
-        content_size,
+        toplevel_icon_ptr->wl_resource_ptr, s, s,
         toplevel_icon_ptr->pending_serial);
 
     // TODO(kaeser@gubbe.ch): Constrain image size to the content size.
