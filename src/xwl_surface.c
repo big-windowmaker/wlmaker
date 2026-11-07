@@ -146,6 +146,11 @@ struct _wlmaker_xwl_surface_t {
     wlmtk_element_vmt_t       overlay_orig_vmt;
     /** A menu holds the pointer, as with its grab on X11. */
     bool                      overlay_grab;
+    /**
+     * A press outside of the menu while it holds the pointer: Its release
+     * ends the grab. Not the release of the click that opened the menu.
+     */
+    bool                      overlay_outside_press;
 };
 
 static void _xwl_surface_handle_destroy(
@@ -1545,6 +1550,7 @@ void _xwl_surface_overlay_grab(wlmaker_xwl_surface_t *xs_ptr)
     if (NULL == e_ptr->parent_container_ptr) return;
     wlmtk_container_pointer_grab(e_ptr->parent_container_ptr, e_ptr);
     xs_ptr->overlay_grab = true;
+    xs_ptr->overlay_outside_press = false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1586,6 +1592,9 @@ bool _xwl_surface_overlay_pointer_button(
         c_ptr->x < xws_ptr->x + s_ptr->current.width &&
         c_ptr->y < xws_ptr->y + s_ptr->current.height;
     if (inside || !xs_ptr->overlay_grab) {
+        if (inside && WLMTK_BUTTON_UP == button_event_ptr->type) {
+            xs_ptr->overlay_outside_press = false;
+        }
         return xs_ptr->overlay_orig_vmt.pointer_button(
             element_ptr, button_event_ptr);
     }
@@ -1601,7 +1610,13 @@ bool _xwl_surface_overlay_pointer_button(
             WL_POINTER_BUTTON_STATE_PRESSED :
             WL_POINTER_BUTTON_STATE_RELEASED);
     }
-    if (WLMTK_BUTTON_UP == button_event_ptr->type) {
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type) {
+        xs_ptr->overlay_outside_press = true;
+    } else if (WLMTK_BUTTON_UP == button_event_ptr->type &&
+               xs_ptr->overlay_outside_press) {
+        // The release of an outside press: Done. (The release of the click
+        // that opened the menu, outside of it, keeps the grab.)
+        xs_ptr->overlay_outside_press = false;
         _xwl_surface_overlay_ungrab(xs_ptr);
     }
     return true;

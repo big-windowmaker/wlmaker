@@ -823,7 +823,10 @@ int handle_client_signal(int fd, uint32_t mask, void *data_ptr)
             sigaddset(&set, SIGUSR1);
             sigprocmask(SIG_UNBLOCK, &set, NULL);
             execv("/proc/self/exe", _wlmdock_argv);
+            // Failed: Carry on with the old theme, still taking the signals
+            // through the signalfd.
             bs_log(BS_ERROR | BS_ERRNO, "Failed execv(/proc/self/exe)");
+            sigprocmask(SIG_BLOCK, &set, NULL);
         } else if (rd == sizeof(siginfo)) {
             bs_log(BS_INFO, "wlmdock: Signal %d caught, exiting loop.",
                    siginfo.ssi_signo);

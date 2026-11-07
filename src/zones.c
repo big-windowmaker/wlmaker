@@ -1918,6 +1918,10 @@ int _wlmaker_zones_tile_run(void *data_ptr)
         zones_window_t *w = _win(zones_ptr, window_ptr, on);
         if (NULL == w) continue;
         if (!on || !_tileable(zones_ptr, window_ptr)) {
+            // Out of the mosaic: No longer "does not fit" (`windows -d`), and
+            // back in it, it starts afresh.
+            w->fit_float = false;
+            w->fit_prev = false;
             if (w->tiled) {
                 w->tiled = false;
                 _tsets_forget(zones_ptr, window_ptr);
@@ -2119,7 +2123,10 @@ static void _wlmaker_zones_untile_all(wlmaker_zones_t *zones_ptr)
 {
     for (int i = 0; i < WINDOWS_MAX; ++i) {
         zones_window_t *w = &zones_ptr->windows[i];
-        if (NULL == w->window_ptr || !w->tiled) continue;
+        if (NULL == w->window_ptr) continue;
+        w->fit_float = false;
+        w->fit_prev = false;
+        if (!w->tiled) continue;
         w->tiled = false;
         memset(&w->expect, 0, sizeof(w->expect));
         if (w->has_restore) {
