@@ -204,6 +204,8 @@ static wlmdock_t *_wlmdock_create(
     wlmaker_config_style_t *style_ptr);
 static void _wlmdock_destroy(wlmdock_t *dock_ptr);
 static int handle_client_signal(int fd, uint32_t mask, void *data_ptr);
+/** The program's arguments, for starting over (SIGHUP). */
+static char **_wlmdock_argv;
 static void _wlmdock_handle_backend_destroy(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -333,6 +335,11 @@ const bspl_desc_t _wlmdock_plist_desc[] = {
 /** The dock's main program. */
 int main(int argc, const char **argv)
 {
+    // For starting over with a new theme (SIGHUP): The arguments as given.
+    _wlmdock_argv = calloc(argc + 1, sizeof(char *));
+    for (int i = 0; NULL != _wlmdock_argv && i < argc; ++i) {
+        _wlmdock_argv[i] = strdup(argv[i]);
+    }
     if (!wlm_util_backtrace_setup(argv[0]) ||
         // Ideally: xdgStateHome. But: libxdg-basedir is using FreeDesktop
         // specification v0.7, and XDG_STATE_HOME was added with v0.8 only.
@@ -534,6 +541,11 @@ wlmdock_t *_wlmdock_create(
     dock_ptr->remote_display_ptr = attrs->wl_display_ptr;
     // SIGUSR1: The compositor moved the Dock (or Clip). Re-read the state.
     if (!wlmcl_client_add_signal(dock_ptr->client_ptr, SIGUSR1)) {
+        _wlmdock_destroy(dock_ptr);
+        return NULL;
+    }
+    // SIGHUP: The compositor loaded another theme (eg. the dark mode).
+    if (!wlmcl_client_add_signal(dock_ptr->client_ptr, SIGHUP)) {
         _wlmdock_destroy(dock_ptr);
         return NULL;
     }
@@ -800,6 +812,18 @@ int handle_client_signal(int fd, uint32_t mask, void *data_ptr)
                 "Launchers");
             if (NULL != a) _wlmdock_set_launchers(dock_ptr, a);
             bspl_dict_unref(state_dict_ptr);
+        } else if (rd == sizeof(siginfo) && SIGHUP == siginfo.ssi_signo &&
+                   NULL != _wlmdock_argv) {
+            // A new theme: Start over with it (the same arguments). Every
+            // tile, the menus and the balloons take it.
+            bs_log(BS_INFO, "wlmdock: New theme, restarting.");
+            sigset_t set;
+            sigemptyset(&set);
+            sigaddset(&set, SIGHUP);
+            sigaddset(&set, SIGUSR1);
+            sigprocmask(SIG_UNBLOCK, &set, NULL);
+            execv("/proc/self/exe", _wlmdock_argv);
+            bs_log(BS_ERROR | BS_ERRNO, "Failed execv(/proc/self/exe)");
         } else if (rd == sizeof(siginfo)) {
             bs_log(BS_INFO, "wlmdock: Signal %d caught, exiting loop.",
                    siginfo.ssi_signo);
