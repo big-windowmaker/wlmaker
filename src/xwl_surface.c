@@ -23,6 +23,8 @@
 
 #include "xwl_surface.h"
 
+#include "window_attributes.h"
+
 #include <inttypes.h>
 #include <libbase/libbase.h>
 #include <stdbool.h>
@@ -948,6 +950,7 @@ void _xwl_surface_handle_associate(
             WLMTK_WINDOW_PROPERTY_RESIZABLE |
             WLMTK_WINDOW_PROPERTY_ICONIFIABLE |
             WLMTK_WINDOW_PROPERTY_CLOSABLE);
+        // Then the window attributes (WM_CLASS) and size hints, below.
         wlmtk_util_client_t client = {
             .pid = xwl_surface_ptr->wlr_xwayland_surface_ptr->pid
         };
@@ -1078,6 +1081,17 @@ void _xwl_surface_apply_identity(wlmaker_xwl_surface_t *xs_ptr)
     if (NULL == xs_ptr->window_ptr) return;
     struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
     wlmtk_window_set_app_id(xs_ptr->window_ptr, s->class, s->instance);
+    // Window Maker's window attributes, and no resize bar at fixed size.
+    const xcb_size_hints_t *h = s->size_hints;
+    bool fixed = NULL != h &&
+        (h->flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE) &&
+        (h->flags & XCB_ICCCM_SIZE_HINT_P_MAX_SIZE) &&
+        0 < h->min_width && 0 < h->min_height &&
+        h->min_width == h->max_width && h->min_height == h->max_height;
+    wlmtk_window_set_properties(
+        xs_ptr->window_ptr,
+        wlmaker_window_attributes_properties(
+            xs_ptr->server_ptr->config_dict_ptr, s->class, s->instance, fixed));
     wlmtk_window_set_dialog(
         xs_ptr->window_ptr,
         s->modal || NULL != s->parent ||

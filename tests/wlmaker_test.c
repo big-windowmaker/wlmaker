@@ -35,6 +35,7 @@
 #include "dock_launchers.h"
 #include "dock_menu.h"
 #include "dock_position.h"
+#include "window_attributes.h"
 #include "dockapp_prefs.h"
 #include "i18n.h"
 #include "dockapps.h"
@@ -86,6 +87,7 @@ int main(int argc, const char **argv)
         &wlmaker_tile_drag_test_set,
         &wlmaker_toplevel_tracker_test_set,
         &wlmaker_xdg_decoration_test_set,
+        &wlmaker_window_attributes_test_set,
         &wlmaker_xdg_toplevel_test_set,
 #if defined(WLMAKER_HAVE_XWAYLAND)
         &wlmaker_xwl_surface_test_set,

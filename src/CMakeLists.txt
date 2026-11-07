@@ -44,6 +44,7 @@ set(public_header_files
   dock_launchers.h
   dock_menu.h
   dock_position.h
+  window_attributes.h
   dockapp_prefs.h
   i18n.h
   dockapps.h
@@ -82,6 +83,7 @@ target_sources(wlmaker_lib PRIVATE
   dock_launchers.c
   dock_menu.c
   dock_position.c
+  window_attributes.c
   dockapp_prefs.c
   i18n.c
   dockapps.c

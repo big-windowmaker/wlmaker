@@ -21,6 +21,8 @@
 
 #include "xdg_toplevel.h"
 
+#include "window_attributes.h"
+
 #include <libbase/libbase.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -163,6 +165,8 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
     uint32_t (*_set_size)(struct wlr_xdg_toplevel *, int32_t, int32_t),
     uint32_t (*_set_activated)(struct wlr_xdg_toplevel *, bool),
     void (*_get_extents)(struct wlr_surface *, struct wlr_box *));
+static void _wlmaker_xdg_toplevel_update_window_properties(
+    struct wlmaker_xdg_toplevel *wxt_ptr);
 static void _wlmaker_xdg_toplevel_flush_properties(
     struct wlmaker_xdg_toplevel *wxt_ptr);
 static void _wlmaker_xdg_toplevel_try_map(
@@ -378,11 +382,7 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
             wlmim_cursor_options(
                 server_ptr->input_manager_ptr)->move_window_modifier);
     }
-    wlmtk_window_set_properties(
-        wlmaker_xdg_toplevel_ptr->window_ptr,
-        WLMTK_WINDOW_PROPERTY_RESIZABLE |
-        WLMTK_WINDOW_PROPERTY_ICONIFIABLE |
-        WLMTK_WINDOW_PROPERTY_CLOSABLE);
+    _wlmaker_xdg_toplevel_update_window_properties(wlmaker_xdg_toplevel_ptr);
     wlmtk_util_client_t client = {};
     if (NULL != wlr_xdg_toplevel_ptr->resource) {
         wl_client_get_credentials(
@@ -744,7 +744,29 @@ void _wlmaker_xdg_toplevel_handle_set_app_id(
             wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->app_id;
         wlmtk_window_set_app_id(
             wlmaker_xdg_toplevel_ptr->window_ptr, app_id_ptr, app_id_ptr);
+        _wlmaker_xdg_toplevel_update_window_properties(
+            wlmaker_xdg_toplevel_ptr);
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/** The window's buttons and resize bar: Window attributes and fixed size. */
+void _wlmaker_xdg_toplevel_update_window_properties(
+    struct wlmaker_xdg_toplevel *wxt_ptr)
+{
+    if (NULL == wxt_ptr->window_ptr) return;
+    const struct wlr_xdg_toplevel_state *s_ptr =
+        &wxt_ptr->wlr_xdg_toplevel_ptr->current;
+    bool fixed = 0 < s_ptr->min_width && 0 < s_ptr->min_height &&
+        s_ptr->min_width == s_ptr->max_width &&
+        s_ptr->min_height == s_ptr->max_height;
+    const char *app_id_ptr = wxt_ptr->wlr_xdg_toplevel_ptr->app_id;
+    wlmtk_window_set_properties(
+        wxt_ptr->window_ptr,
+        wlmaker_window_attributes_properties(
+            NULL != wxt_ptr->server_ptr ?
+            wxt_ptr->server_ptr->config_dict_ptr : NULL,
+            app_id_ptr, app_id_ptr, fixed));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -829,6 +851,7 @@ void _wlmaker_xdg_toplevel_handle_surface_commit(
         wxt_ptr->window_ptr,
         wxt_ptr->wlr_xdg_toplevel_ptr->current.min_width,
         wxt_ptr->wlr_xdg_toplevel_ptr->current.min_height);
+    _wlmaker_xdg_toplevel_update_window_properties(wxt_ptr);
 
     if (0 != wxt_ptr->pending.properties) {
         _wlmaker_xdg_toplevel_flush_properties(wxt_ptr);
