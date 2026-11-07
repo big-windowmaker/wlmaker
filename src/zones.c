@@ -2660,6 +2660,22 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
                 _out(out_ptr, out_len, "%s\t%s\t%s\n", cls, ins, title);
             }
         }
+    } else if (0 == strcmp(buf, "active")) {
+        // The activated window: Its box (decorations included) and title.
+        // For screenshot tools (big-wm-kwin-screenshot: "active window").
+        wlmtk_workspace_t *ws_ptr = wlmtk_desktop_get_current_workspace(
+            zones_ptr->server_ptr->desktop_ptr);
+        wlmtk_window_t *window_ptr = NULL != ws_ptr ?
+            wlmtk_workspace_get_activated_window(ws_ptr) : NULL;
+        if (NULL == window_ptr) {
+            _out(out_ptr, out_len, "error=nenhuma janela ativa\n");
+        } else {
+            struct wlr_box b = wlmtk_window_get_bounding_box(window_ptr);
+            char title[256];
+            _field(wlmtk_window_get_title(window_ptr), title, sizeof(title));
+            _out(out_ptr, out_len, "%dx%d%+d%+d\t%s\n",
+                 b.width, b.height, b.x, b.y, title);
+        }
     } else if (0 == strcmp(buf, "layouts")) {
         for (int i = 0; i < zones_ptr->cfg.nlayouts; ++i) {
             const wz_layout_def *l = &zones_ptr->cfg.layouts[i];

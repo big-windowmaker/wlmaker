@@ -42,6 +42,8 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_activation_v1.h>
+#include <wlr/types/wlr_xdg_dialog_v1.h>
+#include <wlr/types/wlr_xdg_toplevel_tag_v1.h>
 #undef WLR_USE_UNSTABLE
 
 #include "action.h"
@@ -321,6 +323,17 @@ wlmaker_server_t *wlmaker_server_create(
                server_ptr->config_dict_ptr);
         wlmaker_server_destroy(server_ptr);
         return NULL;
+    }
+
+    // Toplevel tags and dialog hints: Offered, not used yet. KDE's window
+    // system plugin (KF6) takes them for granted and crashed without them
+    // (Spectacle, as it shows its window).
+    if (NULL == wlr_xdg_toplevel_tag_manager_v1_create(
+            server_ptr->wl_display_ptr, 1)) {
+        bs_log(BS_WARNING, "Failed wlr_xdg_toplevel_tag_manager_v1_create()");
+    }
+    if (NULL == wlr_xdg_wm_dialog_v1_create(server_ptr->wl_display_ptr, 1)) {
+        bs_log(BS_WARNING, "Failed wlr_xdg_wm_dialog_v1_create()");
     }
 
     server_ptr->wlr_xdg_activation_v1_ptr = wlr_xdg_activation_v1_create(
