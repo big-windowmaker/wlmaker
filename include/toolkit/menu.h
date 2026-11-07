@@ -156,6 +156,24 @@ void wlmtk_menu_set_open(wlmtk_menu_t *menu_ptr, bool opened);
 bool wlmtk_menu_is_open(wlmtk_menu_t *menu_ptr);
 
 /**
+ * Window Maker's `ViKeyMenus`: h, j, k and l work as the arrow keys in all
+ * menus.
+ *
+ * @param enabled
+ */
+void wlmtk_menu_set_vi_keys(bool enabled);
+
+/**
+ * Right-click mode: The menu was opened by `button` (eg. BTN_LEFT, by
+ * Window Maker's mouse actions), which then works as the right button.
+ * Call after opening; opening resets it to BTN_RIGHT.
+ *
+ * @param menu_ptr
+ * @param button
+ */
+void wlmtk_menu_set_open_button(wlmtk_menu_t *menu_ptr, uint32_t button);
+
+/**
  * Sets the mode of the menu.
  *
  * @param menu_ptr
