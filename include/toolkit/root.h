@@ -45,6 +45,8 @@ extern "C" {
 typedef struct {
     /** An unclaimed button event. Arg: @ref wlmtk_button_event_t. */
     struct wl_signal          unclaimed_button_event;
+    /** An unclaimed axis (wheel) event. Arg: struct wlr_pointer_axis_event. */
+    struct wl_signal          unclaimed_axis_event;
 } wlmtk_root_events_t;
 
 /**

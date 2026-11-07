@@ -102,6 +102,16 @@ bool wlmaker_root_menu_pinned(wlmaker_root_menu_t *root_menu_ptr);
 void wlmaker_root_menu_open(wlmaker_root_menu_t *root_menu_ptr,
                             enum wlmtk_menu_mode mode);
 
+/**
+ * Opens the root menu at the cursor, by a press of `button`: Held, its
+ * release over an item runs it; a click leaves the menu open (Window Maker).
+ *
+ * @param root_menu_ptr
+ * @param button              BTN_RIGHT, BTN_LEFT...
+ */
+void wlmaker_root_menu_open_by_button(wlmaker_root_menu_t *root_menu_ptr,
+                                      uint32_t button);
+
 /** Unit test set. */
 extern const bs_test_set_t wlmaker_root_menu_test_set;
 

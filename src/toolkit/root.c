@@ -97,6 +97,7 @@ wlmtk_root_t *wlmtk_root_create(
     root_ptr->wlr_output_layout_ptr = wlr_output_layout_ptr;
 
     wl_signal_init(&root_ptr->events.unclaimed_button_event);
+    wl_signal_init(&root_ptr->events.unclaimed_axis_event);
 
     root_ptr->output_tracker_ptr = wlmtk_output_tracker_create(
         wlr_output_layout_ptr,
@@ -202,9 +203,14 @@ bool wlmtk_root_pointer_axis(
     wlmtk_root_t *root_ptr,
     struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr)
 {
-    return wlmtk_element_pointer_axis(
+    bool rv = wlmtk_element_pointer_axis(
         root_ptr->element_ptr,
         wlr_pointer_axis_event_ptr);
+    if (!rv) {
+        wl_signal_emit(&root_ptr->events.unclaimed_axis_event,
+                       wlr_pointer_axis_event_ptr);
+    }
+    return rv;
 }
 
 /* == Local (static) methods =============================================== */

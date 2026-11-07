@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <string.h>
 #include <unistd.h>
 #include <linux/input-event-codes.h>
@@ -483,6 +484,14 @@ void wlmaker_root_menu_open(wlmaker_root_menu_t *root_menu_ptr,
     wlmtk_menu_set_open(root_menu_ptr->menu_ptr, true);
 }
 
+/* ------------------------------------------------------------------------- */
+void wlmaker_root_menu_open_by_button(wlmaker_root_menu_t *root_menu_ptr,
+                                      uint32_t button)
+{
+    wlmaker_root_menu_open(root_menu_ptr, WLMTK_MENU_MODE_RIGHTCLICK);
+    wlmtk_menu_set_open_button(root_menu_ptr->menu_ptr, button);
+}
+
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -856,21 +865,25 @@ void _wlmaker_root_menu_handle_outside_press(
     wlmtk_element_t *e = wlmtk_menu_element(root_menu_ptr->menu_ptr);
     int width = 0;
     wlmtk_element_get_dimensions(e, NULL, NULL, &width, NULL);
-    // Window Maker: A right-click elsewhere on the desktop opens the menu
-    // there at once (over a window, it just closes).
-    if (BTN_RIGHT == press_ptr->button_event_ptr->button &&
+    uint32_t button = press_ptr->button_event_ptr->button;
+    // The title bar is right above the menu.
+    bool on_title = BTN_LEFT == button && press_ptr->y < 0 &&
+        press_ptr->y >= -_wlmaker_root_menu_titlebar_reach &&
+        press_ptr->x >= 0 && press_ptr->x < width;
+    // Window Maker: The menu's button (right, unless changed in WPrefs)
+    // elsewhere on the desktop opens the menu there at once (over a window,
+    // it just closes).
+    if (!on_title &&
         !root_menu_ptr->pinned &&
+        0 == strcasecmp("ApplicationsMenu", wlmaker_server_root_button_action(
+                            root_menu_ptr->server_ptr, button)) &&
         !_wlmaker_root_menu_window_at_cursor(root_menu_ptr)) {
         press_ptr->claimed = true;
         wlmtk_menu_set_open(root_menu_ptr->menu_ptr, false);
-        wlmaker_root_menu_open(root_menu_ptr, WLMTK_MENU_MODE_RIGHTCLICK);
+        wlmaker_root_menu_open_by_button(root_menu_ptr, button);
         return;
     }
-    // The title bar is right above the menu.
-    if (BTN_LEFT != press_ptr->button_event_ptr->button ||
-        press_ptr->y >= 0 ||
-        press_ptr->y < -_wlmaker_root_menu_titlebar_reach ||
-        press_ptr->x < 0 || press_ptr->x >= width) return;
+    if (!on_title) return;
     wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
         root_menu_ptr->window_ptr);
     if (NULL == workspace_ptr) return;

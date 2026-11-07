@@ -59,6 +59,9 @@
 /** Name of the "seat". */
 static const char             *seat_name_ptr = "seat0";
 
+static void _wlmaker_server_unclaimed_axis_event_handler(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 static void _wlmaker_server_unclaimed_button_event_handler(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -210,6 +213,10 @@ wlmaker_server_t *wlmaker_server_create(
         &wlmtk_root_events(server_ptr->root_ptr)->unclaimed_button_event,
         &server_ptr->unclaimed_button_event_listener,
         _wlmaker_server_unclaimed_button_event_handler);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_root_events(server_ptr->root_ptr)->unclaimed_axis_event,
+        &server_ptr->unclaimed_axis_event_listener,
+        _wlmaker_server_unclaimed_axis_event_handler);
 
     // Effects of Dock and Clip: Above the desktop.
     server_ptr->dock_fx_ptr = wlmaker_dock_fx_create(
@@ -499,6 +506,13 @@ void wlmaker_server_configure_desktop(
     }
     wlmtk_desktop_set_window_placement(server_ptr->desktop_ptr, placement);
 
+    // Window Maker's ViKeyMenus (WPrefs > Teclado).
+    const char *vi_ptr = bspl_dict_get_string_value(
+        config_dict_ptr, "ViKeyMenus");
+    wlmtk_menu_set_vi_keys(
+        NULL != vi_ptr && (0 == strcasecmp(vi_ptr, "Yes") ||
+                           0 == strcasecmp(vi_ptr, "True")));
+
     const char *focus_ptr = bspl_dict_get_string_value(
         config_dict_ptr, "FocusMode");
     bool follows = false;
@@ -626,6 +640,8 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
     if (NULL != server_ptr->root_ptr) {
         wlmtk_util_disconnect_listener(
             &server_ptr->unclaimed_button_event_listener);
+        wlmtk_util_disconnect_listener(
+            &server_ptr->unclaimed_axis_event_listener);
         wlmtk_root_destroy(server_ptr->root_ptr);
         server_ptr->root_ptr = NULL;
     }
@@ -705,14 +721,126 @@ void _wlmaker_server_unclaimed_button_event_handler(
             button_event_ptr->button, WL_POINTER_BUTTON_STATE_RELEASED);
     }
 
-    if (BTN_RIGHT == button_event_ptr->button &&
-        WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+    // WPrefs > Mouse: The button's action on the root window.
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
         NULL != server_ptr->root_menu_ptr &&
+        0 == strcasecmp("ApplicationsMenu", wlmaker_server_root_button_action(
+                            server_ptr, button_event_ptr->button)) &&
         // TODO(kaeser@gubbe.ch): Clean up.
         !wlmtk_menu_is_open(
             wlmaker_root_menu_menu(server_ptr->root_menu_ptr))) {
-        wlmaker_root_menu_open(server_ptr->root_menu_ptr,
-                               WLMTK_MENU_MODE_RIGHTCLICK);
+        wlmaker_root_menu_open_by_button(server_ptr->root_menu_ptr,
+                                         button_event_ptr->button);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+const char *wlmaker_server_root_mouse_action(
+    wlmaker_server_t *server_ptr,
+    const char *key_ptr)
+{
+    // Window Maker's defaults (WindowMaker domain).
+    static const struct { const char *key_ptr; const char *value_ptr; }
+    defaults[] = {
+        { "LeftButton", "SelectWindows" },
+        { "MiddleButton", "WindowListMenu" },
+        { "RightButton", "ApplicationsMenu" },
+        { "BackwardButton", "None" },
+        { "ForwardButton", "None" },
+        { "Wheel", "None" },
+        { "WheelTilt", "None" },
+    };
+    bspl_dict_t *dict_ptr = bspl_dict_get_dict(
+        server_ptr->config_dict_ptr, "RootMouse");
+    if (NULL != dict_ptr) {
+        const char *d_ptr = bspl_dict_get_string_value(
+            dict_ptr, "DisableActions");
+        if (NULL != d_ptr && (0 == strcasecmp(d_ptr, "Yes") ||
+                              0 == strcasecmp(d_ptr, "True"))) {
+            return "None";
+        }
+        const char *v_ptr = bspl_dict_get_string_value(dict_ptr, key_ptr);
+        if (NULL != v_ptr) return v_ptr;
+    }
+    for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); ++i) {
+        if (0 == strcmp(defaults[i].key_ptr, key_ptr)) {
+            return defaults[i].value_ptr;
+        }
+    }
+    return "None";
+}
+
+/* ------------------------------------------------------------------------- */
+const char *wlmaker_server_root_button_action(
+    wlmaker_server_t *server_ptr,
+    uint32_t button)
+{
+    switch (button) {
+    case BTN_LEFT: return wlmaker_server_root_mouse_action(
+            server_ptr, "LeftButton");
+    case BTN_MIDDLE: return wlmaker_server_root_mouse_action(
+            server_ptr, "MiddleButton");
+    case BTN_RIGHT: return wlmaker_server_root_mouse_action(
+            server_ptr, "RightButton");
+    case BTN_SIDE: return wlmaker_server_root_mouse_action(
+            server_ptr, "BackwardButton");
+    case BTN_EXTRA: return wlmaker_server_root_mouse_action(
+            server_ptr, "ForwardButton");
+    default: return "None";
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles unclaimed axis events: The wheel on the root window, as Window
+ * Maker's `MouseWheelAction` / `MouseWheelTiltAction`: Up (tilt right) to
+ * the next workspace or window, down (tilt left) to the previous one.
+ */
+void _wlmaker_server_unclaimed_axis_event_handler(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_server_t *server_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_server_t, unclaimed_axis_event_listener);
+    struct wlr_pointer_axis_event *ev_ptr = data_ptr;
+    bool vertical = WL_POINTER_AXIS_VERTICAL_SCROLL == ev_ptr->orientation;
+    const char *action_ptr = wlmaker_server_root_mouse_action(
+        server_ptr, vertical ? "Wheel" : "WheelTilt");
+    bool workspaces = 0 == strcasecmp(action_ptr, "SwitchWorkspaces");
+    bool windows = 0 == strcasecmp(action_ptr, "SwitchWindows");
+    if (!workspaces && !windows) return;
+
+    // One step per notch; without notches (touchpad), per 15 units.
+    double *acc_ptr = &server_ptr->root_axis_accumulated[vertical ? 0 : 1];
+    int steps = 0;
+    if (0 != ev_ptr->delta_discrete) {
+        *acc_ptr = 0;
+        steps = ev_ptr->delta_discrete > 0 ? 1 : -1;
+    } else {
+        *acc_ptr += ev_ptr->delta;
+        if (*acc_ptr >= 15.0 || *acc_ptr <= -15.0) {
+            steps = *acc_ptr > 0 ? 1 : -1;
+            *acc_ptr = 0;
+        }
+    }
+    if (0 == steps) return;
+    // Up (negative) is Window Maker's Button4: next. Tilt right is next.
+    bool next = vertical ? steps < 0 : steps > 0;
+
+    if (workspaces) {
+        if (next) {
+            wlmtk_desktop_switch_to_next_workspace(server_ptr->desktop_ptr);
+        } else {
+            wlmtk_desktop_switch_to_previous_workspace(server_ptr->desktop_ptr);
+        }
+        return;
+    }
+    wlmtk_workspace_t *workspace_ptr =
+        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr);
+    if (next) {
+        wlmtk_workspace_activate_next_window(workspace_ptr);
+    } else {
+        wlmtk_workspace_activate_previous_window(workspace_ptr);
     }
 }
 

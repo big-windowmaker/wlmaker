@@ -85,6 +85,11 @@ struct _wlmtk_menu_t {
      * button press outside the menu closes it.
      */
     bool                      sticky;
+    /**
+     * Right-click mode: The button that opened the menu (BTN_RIGHT, unless
+     * set by @ref wlmtk_menu_set_open_button). It acts as the right one.
+     */
+    uint32_t                  open_button;
 };
 
 /** Type-safe holder for the menu style's reference counter. */
@@ -129,6 +134,9 @@ static bool _wlmtk_menu_sticky_pointer_button(
 static wlmtk_menu_item_t *_wlmtk_menu_leaf_item_under_pointer(
     wlmtk_menu_t *menu_ptr);
 static void _wlmtk_menu_reset_rightclick(wlmtk_menu_t *menu_ptr);
+
+/** Window Maker's ViKeyMenus: h j k l move in the menus. */
+static bool _wlmtk_menu_vi_keys = false;
 static bool _wlmtk_menu_element_keyboard_sym(
     wlmtk_element_t *element_ptr,
     xkb_keysym_t keysym,
@@ -658,6 +666,21 @@ bool _wlmtk_menu_element_pointer_button(
     wlmtk_menu_t *menu_ptr = BS_CONTAINER_OF(
         element_ptr, wlmtk_menu_t, base.super_container.super_element);
 
+    // Opened by another button (Window Maker's mouse actions): Until the
+    // menu sticks, that button works as the right one: Held, its release
+    // over an item triggers it; released where pressed, the menu stays.
+    wlmtk_button_event_t remapped;
+    if (WLMTK_MENU_MODE_RIGHTCLICK == menu_ptr->mode &&
+        NULL == menu_ptr->parent_menu_item_ptr &&
+        !menu_ptr->sticky &&
+        0 != menu_ptr->open_button &&
+        BTN_RIGHT != menu_ptr->open_button &&
+        menu_ptr->open_button == button_event_ptr->button) {
+        remapped = *button_event_ptr;
+        remapped.button = BTN_RIGHT;
+        button_event_ptr = &remapped;
+    }
+
     // Only the top-level menu tracks whether it was opened by a click: It
     // receives all pointer events also for its submenus.
     if (WLMTK_MENU_MODE_RIGHTCLICK == menu_ptr->mode &&
@@ -818,6 +841,19 @@ void _wlmtk_menu_reset_rightclick(wlmtk_menu_t *menu_ptr)
     menu_ptr->rightclick_has_position = false;
     menu_ptr->rightclick_moved = false;
     menu_ptr->sticky = false;
+    menu_ptr->open_button = BTN_RIGHT;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_menu_set_vi_keys(bool enabled)
+{
+    _wlmtk_menu_vi_keys = enabled;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_menu_set_open_button(wlmtk_menu_t *menu_ptr, uint32_t button)
+{
+    menu_ptr->open_button = button;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -830,6 +866,16 @@ bool _wlmtk_menu_element_keyboard_sym(
 {
     wlmtk_menu_t *menu_ptr = BS_CONTAINER_OF(
         element_ptr, wlmtk_menu_t, base.super_container.super_element);
+    // Window Maker's ViKeyMenus: h j k l as the arrows.
+    if (_wlmtk_menu_vi_keys) {
+        switch (keysym) {
+        case XKB_KEY_h: keysym = XKB_KEY_Left; break;
+        case XKB_KEY_j: keysym = XKB_KEY_Down; break;
+        case XKB_KEY_k: keysym = XKB_KEY_Up; break;
+        case XKB_KEY_l: keysym = XKB_KEY_Right; break;
+        default: break;
+        }
+    }
     bs_dllist_node_t *dlnode_ptr = wlmtk_dlnode_from_menu_item(
         menu_ptr->highlighted_menu_item_ptr);
     bs_dllist_node_iterator_t node_iterator;

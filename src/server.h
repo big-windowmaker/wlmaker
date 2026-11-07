@@ -225,6 +225,10 @@ struct _wlmaker_server_t {
     bspl_array_t            *root_menu_array_ptr;
     /** Listener for `unclaimed_button_event` signal raised by `wlmtk_root`. */
     struct wl_listener        unclaimed_button_event_listener;
+    /** Listener for `unclaimed_axis_event` signal raised by `wlmtk_root`. */
+    struct wl_listener        unclaimed_axis_event_listener;
+    /** Wheel motion without notches (touchpad), towards the next notch. */
+    double                    root_axis_accumulated[2];
 
     /** The current configuration style. */
     wlmaker_config_style_t    *style_ptr;
@@ -271,6 +275,31 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr);
  * @return true if everything was reloaded.
  */
 bool wlmaker_server_reload(wlmaker_server_t *server_ptr);
+
+/**
+ * Window Maker's mouse action on the root window (WPrefs > Mouse), from
+ * the `RootMouse` dict of the configuration (`DisableActions`,
+ * `LeftButton`, `MiddleButton`, `RightButton`, `BackwardButton`,
+ * `ForwardButton`, `Wheel`, `WheelTilt`).
+ *
+ * @param server_ptr
+ * @param key_ptr             Eg. "RightButton".
+ *
+ * @return The action, eg. "ApplicationsMenu", "SwitchWorkspaces" or "None".
+ */
+const char *wlmaker_server_root_mouse_action(
+    wlmaker_server_t *server_ptr,
+    const char *key_ptr);
+
+/**
+ * @return The root mouse action for the button `button` (BTN_LEFT...).
+ *
+ * @param server_ptr
+ * @param button
+ */
+const char *wlmaker_server_root_button_action(
+    wlmaker_server_t *server_ptr,
+    uint32_t button);
 
 /**
  * Applies the desktop's settings from the configuration: 'WindowPlacement'
