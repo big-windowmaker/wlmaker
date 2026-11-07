@@ -122,6 +122,43 @@ void wlmtk_layer_set_usable_area_signal(
 void wlmtk_layer_output_reconfigure(wlmtk_layer_output_t *layer_output_ptr);
 
 /**
+ * Gives the area of `wlr_output_ptr` that the exclusive zones of the layers
+ * other than `layer_ptr` leave. See @ref wlmtk_layer_set_area_func.
+ *
+ * @return false if there is none to apply.
+ */
+typedef bool (*wlmtk_layer_area_func_t)(
+    void *ud_ptr,
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *area_ptr);
+
+/**
+ * Sets how the layer learns the other layers' exclusive zones: Its panels
+ * without a full edge are placed within what those leave (layer shell:
+ * exclusive zones count for all layers).
+ *
+ * @param layer_ptr
+ * @param func                May be NULL.
+ * @param ud_ptr
+ */
+void wlmtk_layer_set_area_func(
+    wlmtk_layer_t *layer_ptr,
+    wlmtk_layer_area_func_t func,
+    void *ud_ptr);
+
+/**
+ * Retrieves the area of `wlr_output_ptr` that this layer's full-edge
+ * panels with an exclusive zone leave.
+ *
+ * @return false if the layer does not track `wlr_output_ptr`.
+ */
+bool wlmtk_layer_get_exclusive_area(
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *area_ptr);
+
+/**
  * Retrieves the usable area of `wlr_output_ptr` in this layer: The output's
  * extents, minus the exclusive zones of the layer's panels on that output.
  *

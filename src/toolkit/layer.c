@@ -48,6 +48,10 @@ struct _wlmtk_layer_t {
     struct wlr_output_layout  *wlr_output_layout_ptr;
     /** Raised when the usable area of an output changes. May be NULL. */
     struct wl_signal          *usable_area_changed_ptr;
+    /** Gives the area the other layers' exclusive zones leave. May be NULL. */
+    wlmtk_layer_area_func_t   area_func;
+    /** Argument of @ref wlmtk_layer_t::area_func. */
+    void                      *area_func_ud_ptr;
 };
 
 /** State of the layer on the given output. */
@@ -56,6 +60,13 @@ struct _wlmtk_layer_output_t {
     struct wlr_box            extents;
     /** Extents minus the exclusive zones of the panels on this output. */
     struct wlr_box            usable_area;
+    /**
+     * Extents minus the exclusive zones of the panels spanning a full edge
+     * (eg. a shelf across the bottom): What the other layers' panels avoid.
+     */
+    struct wlr_box            exclusive_area;
+    /** The output. */
+    struct wlr_output         *wlr_output_ptr;
     /** Panels. Holds nodes at @ref wlmtk_panel_t::dlnode. */
     bs_dllist_t               panels;
     /** The layer this belongs to. */
@@ -183,6 +194,24 @@ void wlmtk_layer_output_reconfigure(
     // order they were added, within each pass. So the result does not depend
     // on which client mapped first.
     for (int pass = 0; pass < 2; ++pass) {
+        if (1 == pass) {
+            // The full-edge panels of this layer are placed: What they leave
+            // is what the other layers' panels avoid. The others here avoid
+            // those of all layers (layer shell: exclusive zones count for
+            // all layers; eg. the appicons, below, above a shelf on top).
+            layer_output_ptr->exclusive_area = usable_area;
+            wlmtk_layer_t *l = layer_output_ptr->layer_ptr;
+            struct wlr_box others;
+            if (NULL != l && NULL != l->area_func &&
+                NULL != layer_output_ptr->wlr_output_ptr &&
+                l->area_func(l->area_func_ud_ptr, l,
+                             layer_output_ptr->wlr_output_ptr, &others)) {
+                struct wlr_box both;
+                if (wlr_box_intersection(&both, &usable_area, &others)) {
+                    usable_area = both;
+                }
+            }
+        }
         for (bs_dllist_node_t *dlnode_ptr = layer_output_ptr->panels.head_ptr;
              dlnode_ptr != NULL;
              dlnode_ptr = dlnode_ptr->next_ptr) {
@@ -224,6 +253,48 @@ void wlmtk_layer_set_usable_area_signal(
     struct wl_signal *signal_ptr)
 {
     layer_ptr->usable_area_changed_ptr = signal_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_layer_set_area_func(
+    wlmtk_layer_t *layer_ptr,
+    wlmtk_layer_area_func_t func,
+    void *ud_ptr)
+{
+    layer_ptr->area_func = func;
+    layer_ptr->area_func_ud_ptr = ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_layer_get_exclusive_area(
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *area_ptr)
+{
+    wlmtk_layer_output_t *layer_output_ptr = wlmtk_output_tracker_get_output(
+        layer_ptr->output_tracker_ptr, wlr_output_ptr);
+    if (NULL == layer_output_ptr) return false;
+    *area_ptr = layer_output_ptr->exclusive_area;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Reconfigures one output of the layer (for_each callback). */
+static void _wlmtk_layer_reconfigure_output(
+    __UNUSED__ struct wlr_output *wlr_output_ptr,
+    __UNUSED__ void *ud_ptr,
+    void *output_ptr,
+    __UNUSED__ void *arg_ptr)
+{
+    wlmtk_layer_output_reconfigure(output_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_layer_reconfigure(wlmtk_layer_t *layer_ptr)
+{
+    if (NULL == layer_ptr->output_tracker_ptr) return;
+    wlmtk_output_tracker_for_each(
+        layer_ptr->output_tracker_ptr, _wlmtk_layer_reconfigure_output, NULL);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -293,12 +364,14 @@ void *_wlmtk_layer_output_create(
         1, sizeof(wlmtk_layer_output_t));
     if (NULL == layer_output_ptr) return NULL;
     layer_output_ptr->layer_ptr = layer_ptr;
+    layer_output_ptr->wlr_output_ptr = wlr_output_ptr;
 
     wlr_output_layout_get_box(
         wlr_output_layout_ptr,
         wlr_output_ptr,
         &layer_output_ptr->extents);
     layer_output_ptr->usable_area = layer_output_ptr->extents;
+    layer_output_ptr->exclusive_area = layer_output_ptr->extents;
 
     return layer_output_ptr;
 }
@@ -347,6 +420,7 @@ static void test_multi_output(bs_test_t *test_ptr);
 static void test_layout(bs_test_t *test_ptr);
 static void test_full_edge(bs_test_t *test_ptr);
 static void test_usable_area_signal(bs_test_t *test_ptr);
+static void test_other_layers(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_layer_test_cases[] = {
@@ -354,6 +428,7 @@ static const bs_test_case_t _wlmtk_layer_test_cases[] = {
     { 1, "layout", test_layout },
     { 1, "full_edge", test_full_edge },
     { 1, "usable_area_signal", test_usable_area_signal },
+    { 1, "other_layers", test_other_layers },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -568,7 +643,7 @@ void test_full_edge(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&clip_ptr->panel)->x);
     BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&clip_ptr->panel)->y);
     BS_TEST_VERIFY_EQ(test_ptr, 1216, wlmtk_panel_element(&dock_ptr->panel)->x);
-    struct wlr_box area;
+    struct wlr_box area = {};
     BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_layer_get_usable_area(
                             layer_ptr, &output, &area));
     BS_TEST_VERIFY_EQ(test_ptr, 64, area.x);
@@ -658,6 +733,69 @@ void test_usable_area_signal(bs_test_t *test_ptr)
     wlmtk_fake_panel_destroy(dock_ptr);
     wl_list_remove(&counter.listener.link);
     wlmtk_layer_destroy(layer_ptr);
+    wlr_output_layout_remove(wlr_output_layout_ptr, &output);
+    wlr_output_layout_destroy(wlr_output_layout_ptr);
+    wl_display_destroy(display_ptr);
+}
+
+
+/* ------------------------------------------------------------------------- */
+/** For @ref test_other_layers: The exclusive area of the layer in `ud_ptr`. */
+static bool _test_other_area(void *ud_ptr, __UNUSED__ wlmtk_layer_t *layer_ptr,
+                             struct wlr_output *wlr_output_ptr,
+                             struct wlr_box *area_ptr)
+{
+    return wlmtk_layer_get_exclusive_area(ud_ptr, wlr_output_ptr, area_ptr);
+}
+
+/** A panel without exclusive zone in one layer avoids the exclusive zone of
+ * a shelf in another layer (eg. the appicons above a dock across the
+ * bottom). */
+void test_other_layers(bs_test_t *test_ptr)
+{
+    struct wl_display *display_ptr = wl_display_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, display_ptr);
+    struct wlr_output_layout *wlr_output_layout_ptr =
+        wlr_output_layout_create(display_ptr);
+    struct wlr_output output = { .width = 1280, .height = 800, .scale = 1 };
+    wlmtk_test_wlr_output_init(&output);
+    wlr_output_layout_add(wlr_output_layout_ptr, &output, 0, 0);
+    wlmtk_layer_t *top_ptr = wlmtk_layer_create(wlr_output_layout_ptr);
+    wlmtk_layer_t *bottom_ptr = wlmtk_layer_create(wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, top_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, bottom_ptr);
+    wlmtk_layer_set_area_func(bottom_ptr, _test_other_area, top_ptr);
+
+    wlmtk_panel_positioning_t shelf_pos = {
+        .desired_width = 0, .desired_height = 48, .exclusive_zone = 48,
+        .anchor = WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT };
+    wlmtk_fake_panel_t *shelf_ptr = wlmtk_fake_panel_create(&shelf_pos);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, shelf_ptr);
+    wlmtk_element_set_visible(wlmtk_panel_element(&shelf_ptr->panel), true);
+    wlmtk_layer_add_panel(top_ptr, &shelf_ptr->panel, &output);
+
+    wlmtk_panel_positioning_t row_pos = {
+        .desired_width = 128, .desired_height = 64,
+        .anchor = WLR_EDGE_BOTTOM | WLR_EDGE_LEFT };
+    wlmtk_fake_panel_t *row_ptr = wlmtk_fake_panel_create(&row_pos);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, row_ptr);
+    wlmtk_element_set_visible(wlmtk_panel_element(&row_ptr->panel), true);
+    wlmtk_layer_add_panel(bottom_ptr, &row_ptr->panel, &output);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&row_ptr->panel)->x);
+    BS_TEST_VERIFY_EQ(test_ptr, 800 - 48 - 64,
+                      wlmtk_panel_element(&row_ptr->panel)->y);
+
+    // The shelf goes: The row goes down, once the bottom layer rearranges.
+    wlmtk_layer_remove_panel(top_ptr, &shelf_ptr->panel);
+    wlmtk_layer_reconfigure(bottom_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, 800 - 64,
+                      wlmtk_panel_element(&row_ptr->panel)->y);
+
+    wlmtk_fake_panel_destroy(shelf_ptr);
+    wlmtk_layer_remove_panel(bottom_ptr, &row_ptr->panel);
+    wlmtk_fake_panel_destroy(row_ptr);
+    wlmtk_layer_destroy(bottom_ptr);
+    wlmtk_layer_destroy(top_ptr);
     wlr_output_layout_remove(wlr_output_layout_ptr, &output);
     wlr_output_layout_destroy(wlr_output_layout_ptr);
     wl_display_destroy(display_ptr);

@@ -83,6 +83,10 @@ struct _wlmtk_desktop_t {
 
     /** The wlr layers available in this desktop. */
     wlmtk_layer_t            *layer_ptrs[WLMTK_DESKTOP_LAYER_OVERLAY + 1];
+    /** Listener for the own `usable_area_changed`: Rearranges the layers. */
+    struct wl_listener        usable_area_changed_listener;
+    /** Rearranging the layers: A change from that does not start over. */
+    bool                      rearranging_layers;
 
     // Elements below not owned by wlmtk_desktop_t.
     /** wlroots output layout. */
@@ -139,6 +143,15 @@ struct _wlmtk_desktop_set_style_arg {
     wlmtk_menu_style_ref_t    *menu_style_ref_ptr;
 };
 
+static bool _wlmtk_desktop_other_layers_area(
+    void *ud_ptr,
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *area_ptr);
+static void _wlmtk_desktop_handle_usable_area_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -184,7 +197,13 @@ wlmtk_desktop_t *wlmtk_desktop_create(
         desktop_ptr->layer_ptrs[i] = layer_ptr;
         wlmtk_layer_set_usable_area_signal(
             layer_ptr, &desktop_ptr->events.usable_area_changed);
+        wlmtk_layer_set_area_func(
+            layer_ptr, _wlmtk_desktop_other_layers_area, desktop_ptr);
     }
+    wlmtk_util_connect_listener_signal(
+        &desktop_ptr->events.usable_area_changed,
+        &desktop_ptr->usable_area_changed_listener,
+        _wlmtk_desktop_handle_usable_area_changed);
 
     if (!wlmtk_container_init(&desktop_ptr->workspace_window_container)) {
         wlmtk_desktop_destroy(desktop_ptr);
@@ -266,6 +285,13 @@ void wlmtk_desktop_destroy(wlmtk_desktop_t *desktop_ptr)
 {
     wlmtk_util_disconnect_listener(
         &desktop_ptr->output_layout_change_listener);
+    wlmtk_util_disconnect_listener(
+        &desktop_ptr->usable_area_changed_listener);
+    for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
+        if (NULL != desktop_ptr->layer_ptrs[i]) {
+            wlmtk_layer_set_area_func(desktop_ptr->layer_ptrs[i], NULL, NULL);
+        }
+    }
 
     bs_dllist_for_each(
         &desktop_ptr->workspaces,
@@ -620,6 +646,52 @@ struct wlr_box wlmtk_desktop_get_usable_area(
         area = intersection;
     }
     return area;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_layer_area_func_t: What the full-edge exclusive
+ * panels of the other layers leave on the output.
+ */
+bool _wlmtk_desktop_other_layers_area(
+    void *ud_ptr,
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *area_ptr)
+{
+    wlmtk_desktop_t *desktop_ptr = ud_ptr;
+    bool any = false;
+    for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
+        wlmtk_layer_t *l = desktop_ptr->layer_ptrs[i];
+        struct wlr_box b;
+        if (NULL == l || l == layer_ptr ||
+            !wlmtk_layer_get_exclusive_area(l, wlr_output_ptr, &b)) continue;
+        if (!any) {
+            *area_ptr = b;
+            any = true;
+        } else if (!wlr_box_intersection(area_ptr, area_ptr, &b)) {
+            *area_ptr = (struct wlr_box){};
+        }
+    }
+    return any;
+}
+
+/* ------------------------------------------------------------------------- */
+/** A layer's usable area changed: The others place their panels again. */
+void _wlmtk_desktop_handle_usable_area_changed(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmtk_desktop_t *desktop_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmtk_desktop_t, usable_area_changed_listener);
+    if (desktop_ptr->rearranging_layers) return;
+    desktop_ptr->rearranging_layers = true;
+    for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
+        if (NULL != desktop_ptr->layer_ptrs[i]) {
+            wlmtk_layer_reconfigure(desktop_ptr->layer_ptrs[i]);
+        }
+    }
+    desktop_ptr->rearranging_layers = false;
 }
 
 /* ------------------------------------------------------------------------- */
