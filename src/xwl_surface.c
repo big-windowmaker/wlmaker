@@ -741,6 +741,13 @@ bool _xwl_surface_dockapp_leader(wlmaker_xwl_surface_t *xs_ptr)
         return false;
     }
     xs_ptr->dockapp_leader = true;
+    // The leader is not shown, but a mapped one (wmshutdown's 200x200
+    // "DockApp" window) stays in the X server where the program put it: It
+    // would take the clicks meant for the tiles there (the X server gives
+    // the pointer to the topmost X window). Out of the way, as Window Maker
+    // does not show it either.
+    wlr_xwayland_surface_configure(xws_ptr, -32000, -32000,
+                                   xws_ptr->width, xws_ptr->height);
     // A program that maps the icon window itself, before the leader (GTK
     // dock-apps, eg. wmshutdown): It already got a window. Associate it
     // again, as the dock-app's tile.
