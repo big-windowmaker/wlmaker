@@ -41,6 +41,9 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/util/edges.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#if defined(WLMAKER_HAVE_XWAYLAND)
+#include <wlr/xwayland/xwayland.h>
+#endif  // defined(WLMAKER_HAVE_XWAYLAND)
 #undef WLR_USE_UNSTABLE
 
 #include "backend/backend.h"
@@ -156,6 +159,21 @@ struct _wlmaker_toplevel_icon_t {
     wlmtk_container_t         popup_anchor;
     /** Whether @ref wlmaker_toplevel_icon_t::popup_anchor is initialized. */
     bool                      popup_anchor_ready;
+
+    /**
+     * An X11 dock-app's icon window (through XWayland) adopted as content:
+     * The XWayland surface. NULL otherwise. All X11 clients share the one
+     * Xwayland `wl_client`: name and process come from the X11 window.
+     */
+    struct wlr_xwayland_surface *wlr_xwayland_surface_ptr;
+    /** The X11 dock-app's name (WM_CLASS instance), for placement. */
+    char                      *xwl_name_ptr;
+    /** The X11 dock-app's process (_NET_WM_PID). 0 if unknown. */
+    pid_t                     xwl_pid;
+    /** Layout position the X11 icon window was last configured at. */
+    int                       xwl_x;
+    /** See @ref wlmaker_toplevel_icon_t::xwl_x. */
+    int                       xwl_y;
 };
 
 static wlmaker_icon_manager_t *icon_manager_from_resource(
@@ -238,6 +256,8 @@ static void _wlmaker_toplevel_icon_handle_layer_destroy(
 static void _wlmaker_toplevel_icon_handle_layer_new_popup(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static void _wlmaker_toplevel_icon_xwl_sync_position(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr);
 static bool _wlmaker_toplevel_icon_content_has_pointer(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr);
 
@@ -599,6 +619,9 @@ void wlmaker_toplevel_icon_destroy(
         }
     }
     wlmtk_tile_fini(&toplevel_icon_ptr->super_tile);
+    if (NULL != toplevel_icon_ptr->xwl_name_ptr) {
+        free(toplevel_icon_ptr->xwl_name_ptr);
+    }
 
     // Note: Not destroying toplevel_icon_ptr->resource, since that causes
     // cycles...
@@ -666,6 +689,17 @@ void handle_surface_commit(
 
     if (NULL != toplevel_icon_ptr->wlr_layer_surface_v1_ptr) {
         _wlmaker_toplevel_icon_layer_commit(toplevel_icon_ptr);
+        return;
+    }
+    if (NULL != toplevel_icon_ptr->wlr_xwayland_surface_ptr) {
+        // The X11 icon window: Its buffer is the tile's content, as drawn.
+        if (NULL == wlr_surface_ptr->buffer) return;
+        wlmtk_element_t *e = wlmtk_surface_element(
+            toplevel_icon_ptr->content_surface_ptr);
+        if (NULL == e->parent_container_ptr) {
+            wlmtk_tile_set_content(&toplevel_icon_ptr->super_tile, e);
+        }
+        _wlmaker_toplevel_icon_xwl_sync_position(toplevel_icon_ptr);
         return;
     }
     if (NULL == wlr_surface_ptr->buffer) {
@@ -810,13 +844,29 @@ static void _wlmaker_toplevel_icon_menu_right(void *ud_ptr) {
 static pid_t _wlmaker_toplevel_icon_pid(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr)
 {
-    if (NULL == toplevel_icon_ptr->wl_client_ptr) return 0;
     pid_t pid = 0;
-    wl_client_get_credentials(toplevel_icon_ptr->wl_client_ptr,
-                              &pid, NULL, NULL);
+    if (NULL != toplevel_icon_ptr->wlr_xwayland_surface_ptr) {
+        pid = toplevel_icon_ptr->xwl_pid;
+    } else {
+        if (NULL == toplevel_icon_ptr->wl_client_ptr) return 0;
+        wl_client_get_credentials(toplevel_icon_ptr->wl_client_ptr,
+                                  &pid, NULL, NULL);
+    }
     // Never ourselves, or a process group.
     if (pid <= 1 || pid == getpid()) return 0;
     return pid;
+}
+
+/** @return The dock-app's name (to be freed), or NULL if unknown. */
+static char *_wlmaker_toplevel_icon_name(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    if (NULL != toplevel_icon_ptr->wlr_xwayland_surface_ptr) {
+        return NULL != toplevel_icon_ptr->xwl_name_ptr ?
+            logged_strdup(toplevel_icon_ptr->xwl_name_ptr) : NULL;
+    }
+    if (NULL == toplevel_icon_ptr->wl_client_ptr) return NULL;
+    return wlmaker_dockapps_client_name(toplevel_icon_ptr->wl_client_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -853,10 +903,7 @@ void _wlmaker_toplevel_icon_open_menu(
     wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(server_ptr, tile_ptr);
     int column = wlmaker_clip_dockapps_column_of(server_ptr, tile_ptr);
     if (0 > column) column = WLMAKER_COLUMN_CLIP;
-    char *name_ptr = NULL;
-    if (NULL != toplevel_icon_ptr->wl_client_ptr) {
-        name_ptr = wlmaker_dockapps_client_name(toplevel_icon_ptr->wl_client_ptr);
-    }
+    char *name_ptr = _wlmaker_toplevel_icon_name(toplevel_icon_ptr);
     wlmaker_context_menu_t *cm_ptr = wlmaker_context_menu_create(
         server_ptr, toplevel_icon_ptr,
         NULL != name_ptr ? name_ptr : wlmaker_i18n("Dock-app"));
@@ -1054,6 +1101,11 @@ bool _wlmaker_toplevel_icon_element_pointer_button(
         return true;
     }
 
+    // An X11 dock-app's popups (eg. wmcliphist's menu) are placed by the
+    // X11 window's position: Have it where the tile is.
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type) {
+        _wlmaker_toplevel_icon_xwl_sync_position(toplevel_icon_ptr);
+    }
     uint32_t modifier = wlmim_cursor_options(
         server_ptr->input_manager_ptr)->move_window_modifier;
     // The right button opens the tile's menu, like on Window Maker. Also on
@@ -1062,7 +1114,10 @@ bool _wlmaker_toplevel_icon_element_pointer_button(
     // An adopted layer surface (eg. the system tray) takes the right button
     // where it takes input (its icons): Their own menus. Elsewhere on the
     // tile, the tile's menu.
-    if (NULL != toplevel_icon_ptr->wlr_layer_surface_v1_ptr &&
+    // An X11 dock-app (eg. wmix, wmcliphist) gets its right button too, as
+    // on Window Maker: The tile's menu is on its border.
+    if ((NULL != toplevel_icon_ptr->wlr_layer_surface_v1_ptr ||
+         NULL != toplevel_icon_ptr->wlr_xwayland_surface_ptr) &&
         BTN_RIGHT == button_event_ptr->button &&
         _wlmaker_toplevel_icon_content_has_pointer(toplevel_icon_ptr)) {
         return toplevel_icon_ptr->orig_element_vmt.pointer_button(
@@ -1237,10 +1292,7 @@ char *_wlmaker_toplevel_icon_balloon_text(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr)
 {
     pid_t pid = _wlmaker_toplevel_icon_pid(toplevel_icon_ptr);
-    char *name_ptr = NULL;
-    if (NULL != toplevel_icon_ptr->wl_client_ptr) {
-        name_ptr = wlmaker_dockapps_client_name(toplevel_icon_ptr->wl_client_ptr);
-    }
+    char *name_ptr = _wlmaker_toplevel_icon_name(toplevel_icon_ptr);
     if (NULL == name_ptr) return NULL;
     char *cmdline_ptr = _wlmaker_toplevel_icon_cmdline(pid);
     char *text_ptr = (NULL != cmdline_ptr) ?
@@ -1289,8 +1341,10 @@ bool _wlmaker_toplevel_icon_tile_set_content_size(
 {
     wlmaker_toplevel_icon_t *toplevel_icon_ptr = BS_CONTAINER_OF(
         tile_ptr, wlmaker_toplevel_icon_t, super_tile);
-    // An adopted layer surface keeps the size it asked for.
-    if (NULL != toplevel_icon_ptr->wlr_layer_surface_v1_ptr) return true;
+    // An adopted layer surface keeps the size it asked for; so does an X11
+    // dock-app's icon window (it draws at its own size, as on X11).
+    if (NULL != toplevel_icon_ptr->wlr_layer_surface_v1_ptr ||
+        NULL != toplevel_icon_ptr->wlr_xwayland_surface_ptr) return true;
 
     toplevel_icon_ptr->pending_serial = wl_display_next_serial(
         toplevel_icon_ptr->icon_manager_ptr->wl_display_ptr);
@@ -1390,6 +1444,135 @@ bool wlmaker_icon_manager_adopt_layer_surface(
         &toplevel_icon_ptr->layer_new_popup_listener,
         _wlmaker_toplevel_icon_handle_layer_new_popup);
     return true;
+}
+
+/* ------------------------------------------------------------------------- */
+wlmaker_toplevel_icon_t *wlmaker_icon_manager_adopt_xwayland_surface(
+    wlmaker_icon_manager_t *icon_manager_ptr,
+    struct wlr_xwayland_surface *wlr_xwayland_surface_ptr,
+    const char *name_ptr,
+    pid_t pid)
+{
+#if defined(WLMAKER_HAVE_XWAYLAND)
+    wlmaker_server_t *server_ptr = icon_manager_ptr->server_ptr;
+    if (NULL == server_ptr->dockapps_ptr || NULL == server_ptr->clip_ptr ||
+        NULL == wlr_xwayland_surface_ptr->surface) {
+        return NULL;
+    }
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr = logged_calloc(
+        1, sizeof(wlmaker_toplevel_icon_t));
+    if (NULL == toplevel_icon_ptr) return NULL;
+    toplevel_icon_ptr->icon_manager_ptr = icon_manager_ptr;
+    toplevel_icon_ptr->server_ptr = server_ptr;
+    toplevel_icon_ptr->wlr_surface_ptr = wlr_xwayland_surface_ptr->surface;
+    toplevel_icon_ptr->wlr_xwayland_surface_ptr = wlr_xwayland_surface_ptr;
+    toplevel_icon_ptr->xwl_pid = pid;
+    toplevel_icon_ptr->xwl_x = INT32_MIN;
+    toplevel_icon_ptr->xwl_y = INT32_MIN;
+    if (NULL != name_ptr) {
+        toplevel_icon_ptr->xwl_name_ptr = logged_strdup(name_ptr);
+    }
+    // No configure sequence: The X11 window draws at its size.
+    toplevel_icon_ptr->acknowledged = true;
+
+    if (!wlmtk_tile_init(&toplevel_icon_ptr->super_tile,
+                         &server_ptr->style_ptr->tile)) {
+        if (NULL != toplevel_icon_ptr->xwl_name_ptr) {
+            free(toplevel_icon_ptr->xwl_name_ptr);
+        }
+        free(toplevel_icon_ptr);
+        return NULL;
+    }
+    toplevel_icon_ptr->orig_element_vmt = wlmtk_element_extend(
+        wlmtk_tile_element(&toplevel_icon_ptr->super_tile),
+        &_wlmaker_toplevel_icon_element_vmt);
+    wlmtk_tile_extend(&toplevel_icon_ptr->super_tile,
+                      &_wlmaker_toplevel_icon_tile_vmt);
+    wlmtk_element_set_visible(
+        wlmtk_tile_element(&toplevel_icon_ptr->super_tile), true);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_tile_element(&toplevel_icon_ptr->super_tile)->events.pointer_leave,
+        &toplevel_icon_ptr->pointer_leave_listener,
+        _wlmaker_toplevel_icon_handle_pointer_leave);
+
+    toplevel_icon_ptr->content_surface_ptr = wlmtk_surface_create(
+        toplevel_icon_ptr->wlr_surface_ptr, server_ptr->wlr_seat_ptr);
+    if (NULL == toplevel_icon_ptr->content_surface_ptr) {
+        wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
+        return NULL;
+    }
+    wlmtk_element_set_visible(
+        wlmtk_surface_element(toplevel_icon_ptr->content_surface_ptr), true);
+
+    // Placed as the other dock-apps: Where it was before, by its name.
+    if (!wlmaker_clip_add_dockapp(
+            server_ptr, &toplevel_icon_ptr->super_tile, name_ptr)) {
+        wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
+        return NULL;
+    }
+    bs_log(BS_INFO, "Adopted the X11 dock-app \"%s\" (pid %"PRIdMAX") as "
+           "dock-app %p.", NULL != name_ptr ? name_ptr : "(unknown)",
+           (intmax_t)pid, toplevel_icon_ptr);
+
+    wlmtk_util_connect_listener_signal(
+        &toplevel_icon_ptr->wlr_surface_ptr->events.commit,
+        &toplevel_icon_ptr->surface_commit_listener,
+        handle_surface_commit);
+    wlmtk_util_connect_listener_signal(
+        &toplevel_icon_ptr->wlr_surface_ptr->events.destroy,
+        &toplevel_icon_ptr->surface_destroy_listener,
+        handle_surface_destroy);
+    if (NULL != toplevel_icon_ptr->wlr_surface_ptr->buffer) {
+        wlmtk_tile_set_content(
+            &toplevel_icon_ptr->super_tile,
+            wlmtk_surface_element(toplevel_icon_ptr->content_surface_ptr));
+    }
+    return toplevel_icon_ptr;
+#else  // defined(WLMAKER_HAVE_XWAYLAND)
+    (void)icon_manager_ptr;
+    (void)wlr_xwayland_surface_ptr;
+    (void)name_ptr;
+    (void)pid;
+    return NULL;
+#endif  // defined(WLMAKER_HAVE_XWAYLAND)
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_icon_manager_release_xwayland_icon(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    if (NULL == toplevel_icon_ptr) return;
+    wlmaker_toplevel_icon_destroy(toplevel_icon_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Configures an X11 dock-app's icon window at the position its content is
+ * shown at, as Window Maker has it on X11: The program places its popups
+ * (and reads the pointer) from there.
+ */
+void _wlmaker_toplevel_icon_xwl_sync_position(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+#if defined(WLMAKER_HAVE_XWAYLAND)
+    struct wlr_xwayland_surface *xws_ptr =
+        toplevel_icon_ptr->wlr_xwayland_surface_ptr;
+    if (NULL == xws_ptr || NULL == toplevel_icon_ptr->content_surface_ptr) {
+        return;
+    }
+    wlmtk_element_t *e = wlmtk_surface_element(
+        toplevel_icon_ptr->content_surface_ptr);
+    if (NULL == e->parent_container_ptr) return;
+    int x, y;
+    wlmtk_element_get_absolute_position(e, &x, &y);
+    if (x == toplevel_icon_ptr->xwl_x && y == toplevel_icon_ptr->xwl_y) return;
+    toplevel_icon_ptr->xwl_x = x;
+    toplevel_icon_ptr->xwl_y = y;
+    wlr_xwayland_surface_configure(
+        xws_ptr, x, y, xws_ptr->width, xws_ptr->height);
+#else  // defined(WLMAKER_HAVE_XWAYLAND)
+    (void)toplevel_icon_ptr;
+#endif  // defined(WLMAKER_HAVE_XWAYLAND)
 }
 
 /* ------------------------------------------------------------------------- */
