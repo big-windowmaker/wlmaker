@@ -188,6 +188,12 @@ static void _wlmaker_clip_pointer_grab_cancel(wlmtk_element_t *element_ptr);
 static void _wlmaker_clip_end_drag(wlmaker_clip_t *clip_ptr);
 static void _wlmaker_clip_apply_preview(void *data_ptr);
 static int _wlmaker_clip_handle_sigusr1(int signal_number, void *data_ptr);
+static bool _wlmaker_clip_spacer_init(
+    wlmtk_tile_t *tile_ptr,
+    const struct wlmtk_tile_style *tile_style_ptr);
+static bool _wlmaker_clip_spacer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr);
 static bool _wlmaker_clip_set_spacers(
     wlmaker_clip_t *clip_ptr,
     size_t spacers,
@@ -376,8 +382,8 @@ wlmaker_clip_t *wlmaker_clip_create(
             return NULL;
         }
         for (size_t i = 0; i < clip_ptr->spacer_tiles; ++i) {
-            if (!wlmtk_tile_init(&clip_ptr->spacer_tiles_ptr[i],
-                                 &style_ptr->tile)) {
+            if (!_wlmaker_clip_spacer_init(&clip_ptr->spacer_tiles_ptr[i],
+                                           &style_ptr->tile)) {
                 clip_ptr->spacer_tiles = i;
                 wlmaker_clip_destroy(clip_ptr);
                 return NULL;
@@ -1966,6 +1972,38 @@ void _wlmaker_clip_handle_theme_changed(
 }
 
 /* ------------------------------------------------------------------------- */
+/** Extension of a spacer tile's element: lets the pointer through. */
+static const wlmtk_element_vmt_t _wlmaker_clip_spacer_element_vmt = {
+    .pointer_accepts_motion = _wlmaker_clip_spacer_accepts_motion,
+};
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Initializes a spacer tile: The room kept for a launcher that
+ * `wlmdock --clip` shows there. The tile is transparent and must not take the
+ * pointer either: It is stacked above the launchers, and took their clicks
+ * (Firefox and Thunar in the Clip did not open).
+ */
+bool _wlmaker_clip_spacer_init(
+    wlmtk_tile_t *tile_ptr,
+    const struct wlmtk_tile_style *tile_style_ptr)
+{
+    if (!wlmtk_tile_init(tile_ptr, tile_style_ptr)) return false;
+    wlmtk_element_extend(wlmtk_tile_element(tile_ptr),
+                         &_wlmaker_clip_spacer_element_vmt);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** A spacer tile never accepts the pointer. */
+bool _wlmaker_clip_spacer_accepts_motion(
+    __UNUSED__ wlmtk_element_t *element_ptr,
+    __UNUSED__ wlmtk_pointer_motion_event_t *motion_event_ptr)
+{
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
 /** Gives the spacer tiles a transparent background. */
 bool _wlmaker_clip_update_spacers(
     wlmaker_clip_t *clip_ptr,
@@ -2512,7 +2550,7 @@ bool _wlmaker_clip_set_spacers(
     if (NULL == clip_ptr->spacer_tiles_ptr) return false;
     for (size_t i = 0; i < spacers; ++i) {
         wlmtk_tile_t *t_ptr = &clip_ptr->spacer_tiles_ptr[i];
-        if (!wlmtk_tile_init(t_ptr, tile_style_ptr)) break;
+        if (!_wlmaker_clip_spacer_init(t_ptr, tile_style_ptr)) break;
         clip_ptr->spacer_tiles = i + 1;
         wlmtk_element_set_visible(wlmtk_tile_element(t_ptr), true);
         // Right after the Clip, before the dock-apps.
