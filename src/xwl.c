@@ -133,6 +133,12 @@ static const char *xwl_atom_name_map[XWL_MAX_ATOM_ID] = {
 #endif  // defined(WLMAKER_HAVE_XWAYLAND)
 
 /* ------------------------------------------------------------------------- */
+struct wlr_xwayland *wlmaker_xwl_wlr_xwayland(wlmaker_xwl_t *xwl_ptr)
+{
+    return xwl_ptr->wlr_xwayland_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 wlmaker_xwl_t *wlmaker_xwl_create(wlmaker_server_t *server_ptr)
 {
     wlmaker_xwl_t *xwl_ptr = logged_calloc(1, sizeof(wlmaker_xwl_t));

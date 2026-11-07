@@ -27,12 +27,16 @@
 #include <libbase/libbase.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wayland-server-core.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/xwayland/xwayland.h>
 #undef WLR_USE_UNSTABLE
 
+#include <xcb/xcb.h>
+
+#include "icon_manager.h"
 #include "input/cursor.h"
 #include "input/manager.h"
 #include "server.h"
@@ -54,12 +58,21 @@ struct _wlmaker_xwl_surface_t {
     /** Back-link to the XWayland server. */
     wlmaker_xwl_t             *xwl_ptr;
 
+    /** Link in @ref _xwl_surfaces, for finding a dock-app's icon window. */
+    struct wl_list            link;
+    /** An X11 dock-app's withdrawn leader window: Shown as its icon. */
+    bool                      dockapp_leader;
+    /** An X11 dock-app's icon window, adopted as the tile's content. */
+    wlmaker_toplevel_icon_t   *dockapp_icon_ptr;
+
     /** Listener for the `destroy` signal of `wlr_xwayland_surface`. */
     struct wl_listener        destroy_listener;
     /** Listener for `request_configure` signal of `wlr_xwayland_surface`. */
     struct wl_listener        request_configure_listener;
     /** Listener for `request_minimize` signal of `wlr_xwayland_surface`. */
     struct wl_listener        request_minimize_listener;
+    /** Listener for `map_request` of `wlr_xwayland_surface`: Dock-apps. */
+    struct wl_listener        map_request_listener;
 
     /** Listener for the `associate` signal of `wlr_xwayland_surface`. */
     struct wl_listener        associate_listener;
@@ -120,6 +133,14 @@ static void _xwl_surface_handle_request_minimize(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _xwl_surface_map_window(wlmaker_xwl_surface_t *xwl_surface_ptr);
+/** All XWL surfaces, see @ref wlmaker_xwl_surface_t::link. */
+static struct wl_list _xwl_surfaces = { &_xwl_surfaces, &_xwl_surfaces };
+static bool _xwl_surface_handle_dockapp(wlmaker_xwl_surface_t *xs_ptr);
+static bool _xwl_surface_dockapp_leader(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_handle_map_request(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _xwl_dockapp_forget(xcb_window_t window_id);
 
 static void _wlmaker_xwl_surface_base_element_destroy(
     wlmtk_element_t *element_ptr);
@@ -234,6 +255,7 @@ wlmaker_xwl_surface_t *wlmaker_xwl_surface_create(
     wlr_xwayland_surface_ptr->data = xwl_surface_ptr;
     xwl_surface_ptr->xwl_ptr = xwl_ptr;
     xwl_surface_ptr->server_ptr = server_ptr;
+    wl_list_insert(&_xwl_surfaces, &xwl_surface_ptr->link);
 
     if (!wlmtk_base_init(&xwl_surface_ptr->base, NULL)) {
         wlmaker_xwl_surface_destroy(xwl_surface_ptr);
@@ -255,6 +277,10 @@ wlmaker_xwl_surface_t *wlmaker_xwl_surface_create(
         &wlr_xwayland_surface_ptr->events.request_minimize,
         &xwl_surface_ptr->request_minimize_listener,
         _xwl_surface_handle_request_minimize);
+    wlmtk_util_connect_listener_signal(
+        &wlr_xwayland_surface_ptr->events.map_request,
+        &xwl_surface_ptr->map_request_listener,
+        _xwl_surface_handle_map_request);
 
     wlmtk_util_connect_listener_signal(
         &wlr_xwayland_surface_ptr->events.associate,
@@ -298,6 +324,10 @@ void wlmaker_xwl_surface_destroy(wlmaker_xwl_surface_t *xwl_surface_ptr)
     bs_log(BS_INFO, "Destroy XWL surface %p", xwl_surface_ptr);
 
     _xwl_surface_handle_dissociate(&xwl_surface_ptr->dissociate_listener, 0);
+    _xwl_dockapp_forget(xwl_surface_ptr->wlr_xwayland_surface_ptr->window_id);
+    if (NULL != xwl_surface_ptr->link.prev) {
+        wl_list_remove(&xwl_surface_ptr->link);
+    }
 
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_geometry_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_decorations_listener);
@@ -308,6 +338,7 @@ void wlmaker_xwl_surface_destroy(wlmaker_xwl_surface_t *xwl_surface_ptr)
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->associate_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_configure_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_minimize_listener);
+    wlmtk_util_disconnect_listener(&xwl_surface_ptr->map_request_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->destroy_listener);
 
     if (NULL != xwl_surface_ptr->title_ptr) {
@@ -321,6 +352,295 @@ void wlmaker_xwl_surface_destroy(wlmaker_xwl_surface_t *xwl_surface_ptr)
 }
 
 /* == Local (static) methods =============================================== */
+
+/* ------------------------------------------------------------------------- */
+/**
+ * X11 dock-apps, as Window Maker has them: The program maps a leader window
+ * in WithdrawnState, with an icon window in its WM_HINTS. Window Maker shows
+ * the icon window on a tile of the Dock or the Clip, and never the leader.
+ * Here: The leader gets no window; we map its icon window (as the window
+ * manager does on X11), and its surface is adopted as a dock-app tile.
+ * Original X11 dock-apps (wmcpuload, wmix, wmcliphist...) thus show and work
+ * as on X11.
+ */
+typedef struct {
+    /** The icon window to adopt. XCB_WINDOW_NONE: The slot is free. */
+    xcb_window_t              icon_window;
+    /** The leader window it belongs to. */
+    xcb_window_t              leader_window;
+    /** The dock-app's name: WM_CLASS instance of the leader. */
+    char                      name[64];
+    /** The dock-app's process. */
+    pid_t                     pid;
+} xwl_dockapp_t;
+
+/** Dock-apps whose icon window was mapped. Few: One per dock-app. */
+static xwl_dockapp_t _xwl_dockapps[64];
+
+/** The fields of WM_HINTS a dock-app's leader is told by. */
+typedef struct {
+    /** Which fields are set. */
+    uint32_t                  flags;
+    /** Initial state: Withdrawn (0) for a dock-app. */
+    uint32_t                  initial_state;
+    /** The icon window. */
+    xcb_window_t              icon_window;
+} xwl_wm_hints_t;
+
+/* ------------------------------------------------------------------------- */
+/** Reads the window's WM_HINTS. @return false if it has none. */
+static bool _xwl_read_wm_hints(
+    xcb_connection_t *c_ptr,
+    xcb_window_t window,
+    xwl_wm_hints_t *hints_ptr)
+{
+    xcb_get_property_reply_t *r_ptr = xcb_get_property_reply(
+        c_ptr,
+        xcb_get_property(c_ptr, 0, window, XCB_ATOM_WM_HINTS,
+                         XCB_ATOM_WM_HINTS, 0, 9),
+        NULL);
+    if (NULL == r_ptr) return false;
+    bool rv = false;
+    // flags, input, initial_state, icon_pixmap, icon_window, ...
+    if (32 == r_ptr->format &&
+        5 <= xcb_get_property_value_length(r_ptr) / 4) {
+        const uint32_t *v_ptr = xcb_get_property_value(r_ptr);
+        hints_ptr->flags = v_ptr[0];
+        hints_ptr->initial_state = v_ptr[2];
+        hints_ptr->icon_window = v_ptr[4];
+        rv = true;
+    }
+    free(r_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Reads WM_CLASS: Instance into `buf`, class into `cls` ("" if none). */
+static void _xwl_read_class(
+    xcb_connection_t *c_ptr,
+    xcb_window_t window,
+    char *buf,
+    size_t len,
+    char *cls,
+    size_t cls_len)
+{
+    buf[0] = '\0';
+    cls[0] = '\0';
+    xcb_get_property_reply_t *r_ptr = xcb_get_property_reply(
+        c_ptr,
+        xcb_get_property(c_ptr, 0, window, XCB_ATOM_WM_CLASS,
+                         XCB_ATOM_STRING, 0, 64),
+        NULL);
+    if (NULL == r_ptr) return;
+    int n = xcb_get_property_value_length(r_ptr);
+    if (8 == r_ptr->format && 0 < n) {
+        // "instance\0class\0".
+        const char *v_ptr = xcb_get_property_value(r_ptr);
+        snprintf(buf, len, "%.*s", n, v_ptr);
+        int i = strnlen(v_ptr, n);
+        if (i + 1 < n) snprintf(cls, cls_len, "%.*s", n - i - 1, v_ptr + i + 1);
+    }
+    free(r_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Reads _NET_WM_PID. @return The process, or 0 if unknown. */
+static pid_t _xwl_read_pid(xcb_connection_t *c_ptr, xcb_window_t window)
+{
+    static xcb_atom_t net_wm_pid = XCB_ATOM_NONE;
+    if (XCB_ATOM_NONE == net_wm_pid) {
+        xcb_intern_atom_reply_t *a_ptr = xcb_intern_atom_reply(
+            c_ptr, xcb_intern_atom(c_ptr, 0, 11, "_NET_WM_PID"), NULL);
+        if (NULL == a_ptr) return 0;
+        net_wm_pid = a_ptr->atom;
+        free(a_ptr);
+    }
+    xcb_get_property_reply_t *r_ptr = xcb_get_property_reply(
+        c_ptr,
+        xcb_get_property(c_ptr, 0, window, net_wm_pid, XCB_ATOM_CARDINAL, 0, 1),
+        NULL);
+    if (NULL == r_ptr) return 0;
+    pid_t pid = 0;
+    if (32 == r_ptr->format && 4 <= xcb_get_property_value_length(r_ptr)) {
+        pid = (pid_t)*(const uint32_t *)xcb_get_property_value(r_ptr);
+    }
+    free(r_ptr);
+    return pid;
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The entry for the icon window `window_id`, or NULL. */
+static xwl_dockapp_t *_xwl_dockapp_of_icon(xcb_window_t window_id)
+{
+    if (XCB_WINDOW_NONE == window_id) return NULL;
+    for (size_t i = 0; i < sizeof(_xwl_dockapps) / sizeof(_xwl_dockapps[0]); ++i) {
+        if (_xwl_dockapps[i].icon_window == window_id) return &_xwl_dockapps[i];
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Forgets the dock-app entries of the window (leader or icon window). */
+void _xwl_dockapp_forget(xcb_window_t window_id)
+{
+    for (size_t i = 0; i < sizeof(_xwl_dockapps) / sizeof(_xwl_dockapps[0]); ++i) {
+        xwl_dockapp_t *d_ptr = &_xwl_dockapps[i];
+        if (XCB_WINDOW_NONE == d_ptr->icon_window) continue;
+        if (d_ptr->leader_window == window_id ||
+            d_ptr->icon_window == window_id) {
+            *d_ptr = (xwl_dockapp_t){ .icon_window = XCB_WINDOW_NONE };
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles an associated surface of an X11 dock-app.
+ *
+ * @return true if it is one (leader or icon window): No window for it.
+ */
+bool _xwl_surface_handle_dockapp(wlmaker_xwl_surface_t *xs_ptr)
+{
+    struct wlr_xwayland_surface *xws_ptr = xs_ptr->wlr_xwayland_surface_ptr;
+    wlmaker_server_t *server_ptr = xs_ptr->server_ptr;
+    if (NULL == server_ptr->icon_manager_ptr ||
+        NULL == server_ptr->dockapps_ptr) return false;
+
+    // The icon window of a dock-app's leader: Its tile.
+    xwl_dockapp_t *d_ptr = _xwl_dockapp_of_icon(xws_ptr->window_id);
+    if (NULL != d_ptr) {
+        xs_ptr->dockapp_icon_ptr = wlmaker_icon_manager_adopt_xwayland_surface(
+            server_ptr->icon_manager_ptr, xws_ptr,
+            '\0' != d_ptr->name[0] ? d_ptr->name : NULL, d_ptr->pid);
+        return NULL != xs_ptr->dockapp_icon_ptr;
+    }
+
+    // A leader (its surface, if it draws in its window): No window.
+    return xs_ptr->dockapp_leader || _xwl_surface_dockapp_leader(xs_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles `map_request`: A dock-app's leader maps its icon window. */
+void _xwl_surface_handle_map_request(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, map_request_listener);
+    if (!xs_ptr->dockapp_leader) _xwl_surface_dockapp_leader(xs_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Checks for an X11 dock-app's leader, and maps its icon window.
+ *
+ * The leader is a window in WithdrawnState with an icon window in its
+ * WM_HINTS. Most dock-apps never draw in it: Its surface may never be
+ * associated. So this is done at the map request already.
+ *
+ * @return true if it is a dock-app's leader.
+ */
+bool _xwl_surface_dockapp_leader(wlmaker_xwl_surface_t *xs_ptr)
+{
+    struct wlr_xwayland_surface *xws_ptr = xs_ptr->wlr_xwayland_surface_ptr;
+    wlmaker_server_t *server_ptr = xs_ptr->server_ptr;
+    xwl_dockapp_t *d_ptr = NULL;
+    if (NULL == server_ptr->icon_manager_ptr ||
+        NULL == server_ptr->dockapps_ptr) return false;
+
+    if (xws_ptr->override_redirect) return false;
+    xcb_connection_t *c_ptr = wlr_xwayland_get_xwm_connection(
+        wlmaker_xwl_wlr_xwayland(xs_ptr->xwl_ptr));
+    if (NULL == c_ptr) return false;
+    // Read here: wlroots reads the properties of a window when its surface
+    // is associated, and a dock-app's leader may never get there.
+    xwl_wm_hints_t hints;
+    if (!_xwl_read_wm_hints(c_ptr, xws_ptr->window_id, &hints)) return false;
+    char instance[64], cls[64];
+    _xwl_read_class(c_ptr, xws_ptr->window_id,
+                    instance, sizeof(instance), cls, sizeof(cls));
+    // A leader, as Window Maker tells one: WithdrawnState, or the class
+    // "DockApp" (libdockapp; eg. wmshutdown, in NormalState). With an icon
+    // window in WM_HINTS, else the leader itself is the tile.
+    const xwl_wm_hints_t *h_ptr = &hints;
+    bool withdrawn = (h_ptr->flags & XCB_ICCCM_WM_HINT_STATE) &&
+        XCB_ICCCM_WM_STATE_WITHDRAWN == h_ptr->initial_state;
+    if (!withdrawn && 0 != strcmp(cls, "DockApp")) return false;
+    if (!(h_ptr->flags & XCB_ICCCM_WM_HINT_ICON_WINDOW)) {
+        hints.icon_window = xws_ptr->window_id;
+    }
+    if (XCB_WINDOW_NONE == h_ptr->icon_window) return false;
+
+    // Which window becomes the tile: The icon window if it is a top-level
+    // (libdockapp). Is it the leader itself (eg. wmcliphist), or a child of
+    // it (the "wmgeneral" dock-apps: wmclock, wmix, wmcube...), the leader:
+    // XWayland only gives top-level windows a surface, and those programs
+    // draw the same image in both windows.
+    xcb_window_t tile_window = h_ptr->icon_window;
+    if (tile_window != xws_ptr->window_id) {
+        xcb_query_tree_reply_t *t_ptr = xcb_query_tree_reply(
+            c_ptr, xcb_query_tree(c_ptr, tile_window), NULL);
+        if (NULL != t_ptr) {
+            if (t_ptr->parent == xws_ptr->window_id) {
+                tile_window = xws_ptr->window_id;
+            }
+            free(t_ptr);
+        }
+    }
+
+    if (NULL == _xwl_dockapp_of_icon(tile_window)) {
+        d_ptr = _xwl_dockapp_of_icon(XCB_WINDOW_NONE);
+        for (size_t i = 0; NULL == d_ptr &&
+                 i < sizeof(_xwl_dockapps) / sizeof(_xwl_dockapps[0]); ++i) {
+            if (XCB_WINDOW_NONE == _xwl_dockapps[i].icon_window) {
+                d_ptr = &_xwl_dockapps[i];
+            }
+        }
+        if (NULL == d_ptr) {
+            bs_log(BS_WARNING, "Too many X11 dock-apps, not docking 0x%"PRIx32,
+                   xws_ptr->window_id);
+            return false;
+        }
+        *d_ptr = (xwl_dockapp_t){
+            .icon_window = tile_window,
+            .leader_window = xws_ptr->window_id,
+            .pid = _xwl_read_pid(c_ptr, xws_ptr->window_id),
+        };
+        snprintf(d_ptr->name, sizeof(d_ptr->name), "%s", instance);
+    }
+    d_ptr = _xwl_dockapp_of_icon(tile_window);
+    if (tile_window == xws_ptr->window_id) {
+        // The leader is the tile: Its surface comes through `associate`.
+        bs_log(BS_INFO, "X11 dock-app \"%s\" (window 0x%"PRIx32"): Shown "
+               "on its tile.", NULL != d_ptr ? d_ptr->name : "(unknown)",
+               xws_ptr->window_id);
+        return false;
+    }
+    xs_ptr->dockapp_leader = true;
+    // A program that maps the icon window itself, before the leader (GTK
+    // dock-apps, eg. wmshutdown): It already got a window. Associate it
+    // again, as the dock-app's tile.
+    wlmaker_xwl_surface_t *icon_xs_ptr;
+    wl_list_for_each(icon_xs_ptr, &_xwl_surfaces, link) {
+        struct wlr_xwayland_surface *i_ptr =
+            icon_xs_ptr->wlr_xwayland_surface_ptr;
+        if (i_ptr->window_id != h_ptr->icon_window ||
+            NULL == i_ptr->surface ||
+            NULL != icon_xs_ptr->dockapp_icon_ptr) continue;
+        _xwl_surface_handle_dissociate(&icon_xs_ptr->dissociate_listener, NULL);
+        _xwl_surface_handle_associate(&icon_xs_ptr->associate_listener, NULL);
+        break;
+    }
+    // As the window manager on X11: Map the icon window. Its surface comes
+    // back through `associate`, as the icon window's.
+    xcb_map_window(c_ptr, h_ptr->icon_window);
+    xcb_flush(c_ptr);
+    bs_log(BS_INFO, "X11 dock-app \"%s\" (window 0x%"PRIx32"): Mapped its "
+           "icon window 0x%"PRIx32".",
+           NULL != d_ptr ? d_ptr->name : "(unknown)",
+           xws_ptr->window_id, h_ptr->icon_window);
+    return true;
+}
 
 /* ------------------------------------------------------------------------- */
 /**
@@ -428,6 +748,10 @@ void _xwl_surface_handle_associate(
     }
 
     BS_ASSERT(NULL == xwl_surface_ptr->surface_ptr);
+
+    // An X11 dock-app (its withdrawn leader, or its icon window): A tile on
+    // the docks, no window.
+    if (_xwl_surface_handle_dockapp(xwl_surface_ptr)) return;
 
     xwl_surface_ptr->surface_ptr = wlmtk_surface_create(
         xwl_surface_ptr->wlr_xwayland_surface_ptr->surface,
@@ -553,6 +877,14 @@ void _xwl_surface_handle_dissociate(
 
     bs_log(BS_INFO, "Dissociate XWL surface %p from wlr_surface %p",
            xwl_surface_ptr, xwl_surface_ptr->wlr_xwayland_surface_ptr->surface);
+
+    if (NULL != xwl_surface_ptr->dockapp_icon_ptr) {
+        wlmaker_icon_manager_release_xwayland_icon(
+            xwl_surface_ptr->dockapp_icon_ptr);
+        xwl_surface_ptr->dockapp_icon_ptr = NULL;
+        return;
+    }
+    if (xwl_surface_ptr->dockapp_leader) return;
 
     if (NULL != xwl_surface_ptr->window_ptr) {
         wlmtk_util_disconnect_listener(
@@ -1063,6 +1395,7 @@ void fake_init_wlr_xwayland_surface(
     wl_signal_init(&wlr_xwayland_surface_ptr->events.destroy);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.request_configure);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.request_minimize);
+    wl_signal_init(&wlr_xwayland_surface_ptr->events.map_request);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.associate);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.dissociate);
     wl_signal_init(&wlr_xwayland_surface_ptr->events.set_title);
