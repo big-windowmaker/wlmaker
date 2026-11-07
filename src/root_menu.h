@@ -78,6 +78,12 @@ wlmtk_window_t *wlmaker_root_menu_window(wlmaker_root_menu_t *root_menu_ptr);
 wlmtk_menu_t *wlmaker_root_menu_menu(wlmaker_root_menu_t *root_menu_ptr);
 
 /**
+ * @return Whether the root menu is pinned (its title bar was dragged, as in
+ *     Window Maker): It stays open after an action.
+ */
+bool wlmaker_root_menu_pinned(wlmaker_root_menu_t *root_menu_ptr);
+
+/**
  * Opens the root menu at the pointer, on the current workspace. It is kept
  * within the usable area of the output: Not under docks and panels. That is
  * also the bounds for its submenus, see @ref wlmtk_menu_set_bounds.
