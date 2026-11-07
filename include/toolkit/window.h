@@ -93,6 +93,13 @@ typedef struct {
      * Takes a `bool` as argument, specifying whether to enable maximized.
      */
     struct wl_signal          request_maximized;
+
+    /**
+     * Signals that the window moved on the workspace (placed, dragged, or
+     * resized at the left or top edge). Eg. for XWayland, which needs the
+     * X window's position to match, for the client's popups.
+     */
+    struct wl_signal          position_changed;
 } wlmtk_window_events_t;
 
 /** Style options for the window. */
