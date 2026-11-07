@@ -172,6 +172,27 @@ static const char *_wlmaker_xdg_decoration_dict_name = "Decoration";
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
+bool wlmaker_xdg_decoration_manager_reconfigure(
+    wlmaker_xdg_decoration_manager_t *decoration_manager_ptr,
+    bspl_dict_t *config_dict_ptr)
+{
+    bspl_dict_t *dict_ptr = bspl_dict_get_dict(
+        config_dict_ptr, _wlmaker_xdg_decoration_dict_name);
+    if (NULL == dict_ptr) return false;
+    // Decoded into a copy: A broken value keeps the current mode.
+    wlmaker_xdg_decoration_manager_t copy = *decoration_manager_ptr;
+    if (!bspl_decode_dict(dict_ptr, _wlmaker_xdg_decoration_config_desc,
+                          &copy)) {
+        bs_log(BS_WARNING, "Failed to decode '%s' dict, keeping the mode.",
+               _wlmaker_xdg_decoration_dict_name);
+        return false;
+    }
+    // New windows get it; open ones keep their decorations.
+    decoration_manager_ptr->mode = copy.mode;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 wlmaker_xdg_decoration_manager_t *wlmaker_xdg_decoration_manager_create(
     struct wl_display *wl_display_ptr,
     bspl_dict_t *config_dict_ptr)

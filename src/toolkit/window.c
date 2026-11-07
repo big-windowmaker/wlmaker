@@ -105,6 +105,8 @@ struct _wlmtk_window_t {
 
     /** Properties of the window. See @ref wlmtk_window_property_t. */
     uint32_t                  properties;
+    /** Edges at which the window is tiled (WLR_EDGE_*), 0 if free. */
+    uint32_t                  tiled_edges;
     /** Modifier to trigger moving the window, on pointer drag. */
     uint32_t                  move_modifier;
 
@@ -251,6 +253,7 @@ wlmtk_window_t *wlmtk_window_create(
     wlmtk_menu_style_ref_retain(menu_style_ref_ptr);
     wl_signal_init(&window_ptr->events.state_changed);
     wl_signal_init(&window_ptr->events.position_changed);
+    wl_signal_init(&window_ptr->events.tiled_changed);
     wl_signal_init(&window_ptr->events.request_close);
     wl_signal_init(&window_ptr->events.set_activated);
     wl_signal_init(&window_ptr->events.request_size);
@@ -471,6 +474,14 @@ void wlmtk_window_position_changed(wlmtk_window_t *window_ptr)
         wlmtk_window_element(window_ptr),
         &window_ptr->organic_bounding_box.x,
         &window_ptr->organic_bounding_box.y);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_set_tiled_edges(wlmtk_window_t *window_ptr, uint32_t edges)
+{
+    if (window_ptr->tiled_edges == edges) return;
+    window_ptr->tiled_edges = edges;
+    wl_signal_emit(&window_ptr->events.tiled_changed, &edges);
 }
 
 /* ------------------------------------------------------------------------- */

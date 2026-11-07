@@ -108,6 +108,8 @@ struct wlmaker_xdg_toplevel {
     struct wl_listener        window_request_fullscreen_listener;
     /** Listener for @ref wlmtk_window_events_t::request_maximized. */
     struct wl_listener        window_request_maximized_listener;
+    /** Listener for @ref wlmtk_window_events_t::tiled_changed. */
+    struct wl_listener        window_tiled_changed_listener;
 
     /** Injected method for wlr_xdg_toplevel_set_maximized(). */
     uint32_t (*_set_maximized)(struct wlr_xdg_toplevel *, bool);
@@ -167,6 +169,9 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
     void (*_get_extents)(struct wlr_surface *, struct wlr_box *));
 static void _wlmaker_xdg_toplevel_update_window_properties(
     struct wlmaker_xdg_toplevel *wxt_ptr);
+static void _wlmaker_xdg_toplevel_handle_window_tiled_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 static void _wlmaker_xdg_toplevel_flush_properties(
     struct wlmaker_xdg_toplevel *wxt_ptr);
 static void _wlmaker_xdg_toplevel_try_map(
@@ -257,6 +262,7 @@ void wlmaker_xdg_toplevel_destroy(struct wlmaker_xdg_toplevel *wxt_ptr)
     bs_log(BS_INFO, "Destroying XDG toplevel %p", wxt_ptr);
     wxt_ptr->wlr_xdg_toplevel_ptr->base->data = NULL;
 
+    wlmtk_util_disconnect_listener(&wxt_ptr->window_tiled_changed_listener);
     wlmtk_util_disconnect_listener(&wxt_ptr->window_request_fullscreen_listener);
     wlmtk_util_disconnect_listener(&wxt_ptr->window_request_size_listener);
     wlmtk_util_disconnect_listener(&wxt_ptr->window_set_activated_listener);
@@ -309,6 +315,12 @@ void wlmaker_xdg_toplevel_set_server_side_decorated(
     bool server_side_decorated)
 {
     wlmaker_xdg_toplevel_ptr->server_side_decorated = server_side_decorated;
+    // In the window's frame, only the window geometry: A client that keeps
+    // its client-side shadows (Chrome does) shows no gap inside the frame.
+    if (NULL != wlmaker_xdg_toplevel_ptr->surface_ptr) {
+        wlmtk_surface_set_clip_to_geometry(
+            wlmaker_xdg_toplevel_ptr->surface_ptr, server_side_decorated);
+    }
     wlmtk_window_set_server_side_decorated(
         wlmaker_xdg_toplevel_ptr->window_ptr,
         wlmaker_xdg_toplevel_ptr->server_side_decorated);
@@ -487,6 +499,10 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
         &wlmtk_window_events(wlmaker_xdg_toplevel_ptr->window_ptr)->request_maximized,
         &wlmaker_xdg_toplevel_ptr->window_request_maximized_listener,
         _wlmaker_xdg_toplevel_handle_window_request_maximized);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_window_events(wlmaker_xdg_toplevel_ptr->window_ptr)->tiled_changed,
+        &wlmaker_xdg_toplevel_ptr->window_tiled_changed_listener,
+        _wlmaker_xdg_toplevel_handle_window_tiled_changed);
 
     wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->base->data =
         wlmaker_xdg_toplevel_ptr;
@@ -750,6 +766,27 @@ void _wlmaker_xdg_toplevel_handle_set_app_id(
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * The window was snapped or tiled (or freed): Tells the client (xdg-shell
+ * version 2), which then drops its shadows and rounded corners there, as
+ * GTK and Chrome do.
+ */
+void _wlmaker_xdg_toplevel_handle_window_tiled_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    struct wlmaker_xdg_toplevel *wxt_ptr = BS_CONTAINER_OF(
+        listener_ptr, struct wlmaker_xdg_toplevel, window_tiled_changed_listener);
+    const uint32_t *edges_ptr = data_ptr;
+    struct wlr_xdg_toplevel *t = wxt_ptr->wlr_xdg_toplevel_ptr;
+    if (NULL == t->resource ||
+        wl_resource_get_version(t->resource) <
+        XDG_TOPLEVEL_STATE_TILED_LEFT_SINCE_VERSION) return;
+    if (!t->base->initialized) return;
+    wlr_xdg_toplevel_set_tiled(t, *edges_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 /** The window's buttons and resize bar: Window attributes and fixed size. */
 void _wlmaker_xdg_toplevel_update_window_properties(
     struct wlmaker_xdg_toplevel *wxt_ptr)
@@ -842,9 +879,13 @@ void _wlmaker_xdg_toplevel_handle_surface_commit(
         wxt_ptr->_get_extents(
             wxt_ptr->wlr_xdg_toplevel_ptr->base->surface,
             &geo);
+        // The extents may start left or above the surface's origin.
+        geo.width -= geo.x;
+        geo.height -= geo.y;
     }
-    wlmtk_window_commit_size(
-        wxt_ptr->window_ptr, geo.width - geo.x, geo.height - geo.y);
+    // With a window geometry (client-side shadows and resize margins, eg.
+    // Chrome, GTK), the window is the geometry: Its size, not the buffer's.
+    wlmtk_window_commit_size(wxt_ptr->window_ptr, geo.width, geo.height);
     // The client's minimum (GTK4/libadwaita ask for large ones): Tiling
     // checks it before putting the window into a cell.
     wlmtk_window_set_min_size(

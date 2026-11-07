@@ -52,6 +52,18 @@ wlmaker_xdg_decoration_manager_t *wlmaker_xdg_decoration_manager_create(
  *
  * @param decoration_manager_ptr
  */
+/**
+ * Re-reads the 'Decoration' mode (on SIGHUP). Applies to new windows.
+ *
+ * @param decoration_manager_ptr
+ * @param config_dict_ptr
+ *
+ * @return true on success.
+ */
+bool wlmaker_xdg_decoration_manager_reconfigure(
+    wlmaker_xdg_decoration_manager_t *decoration_manager_ptr,
+    bspl_dict_t *config_dict_ptr);
+
 void wlmaker_xdg_decoration_manager_destroy(
     wlmaker_xdg_decoration_manager_t *decoration_manager_ptr);
 

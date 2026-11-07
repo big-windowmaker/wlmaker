@@ -444,6 +444,19 @@ static bool _snappable(wlmaker_zones_t *zones_ptr, wlmtk_window_t *window_ptr)
 }
 
 /** Snaps the window to a box (layout coordinates, with decorations). */
+/**
+ * Tells the window (and its client) whether it is snapped or tiled: GTK and
+ * Chrome then drop their shadows and rounded corners, as in a zone on X11.
+ */
+static void _sync_tiled(zones_window_t *w)
+{
+    if (NULL == w || NULL == w->window_ptr) return;
+    wlmtk_window_set_tiled_edges(
+        w->window_ptr,
+        (w->tiled || 0 <= w->zone) ?
+        (WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT) : 0);
+}
+
 static void _snap(wlmaker_zones_t *zones_ptr,
                   wlmtk_window_t *window_ptr,
                   wz_rect target,
@@ -456,6 +469,7 @@ static void _snap(wlmaker_zones_t *zones_ptr,
         w->has_restore = true;
     }
     if (NULL != w) w->zone = zone;
+    _sync_tiled(w);
     struct wlr_box box = {
         .x = target.x, .y = target.y,
         .width = target.w, .height = target.h };
@@ -683,10 +697,12 @@ static bool _hist_step(wlmaker_zones_t *zones_ptr, bool redo)
             (_autotile_on(zones_ptr, o) && !w->rule_float);
         if (w->tiled) {
             w->tiled = false;
+            _sync_tiled(w);
             _tsets_forget(zones_ptr, w->window_ptr);
         }
         wlmtk_window_request_bounding_box(w->window_ptr, &b);
         w->zone = it->zone;
+        _sync_tiled(w);
         w->has_restore = it->flags & WZ_HIST_HAS_RESTORE;
         w->restore = (struct wlr_box){ it->restore.x, it->restore.y,
                                        it->restore.w, it->restore.h };
@@ -1702,6 +1718,7 @@ static void _wlmaker_zones_handle_move_end(struct wl_listener *listener_ptr,
             .x = (int)(ev->x - fx * w->restore.width), .y = now.y,
             .width = w->restore.width, .height = w->restore.height };
         w->zone = -1;
+        _sync_tiled(w);
         w->has_restore = false;
         wlmtk_window_request_bounding_box(window_ptr, &r);
     }
@@ -1924,12 +1941,14 @@ int _wlmaker_zones_tile_run(void *data_ptr)
             w->fit_prev = false;
             if (w->tiled) {
                 w->tiled = false;
+                _sync_tiled(w);
                 _tsets_forget(zones_ptr, window_ptr);
                 memset(&w->expect, 0, sizeof(w->expect));
                 if (w->has_restore) {
                     wlmtk_window_request_bounding_box(window_ptr, &w->restore);
                     w->has_restore = false;
                     w->zone = -1;
+                    _sync_tiled(w);
                 }
             }
             continue;
@@ -2025,12 +2044,14 @@ int _wlmaker_zones_tile_run(void *data_ptr)
             }
             if (w->tiled) {
                 w->tiled = false;
+                _sync_tiled(w);
                 _tsets_forget(zones_ptr, w->window_ptr);
                 memset(&w->expect, 0, sizeof(w->expect));
                 if (w->has_restore) {
                     wlmtk_window_request_bounding_box(w->window_ptr, &w->restore);
                     w->has_restore = false;
                     w->zone = -1;
+                    _sync_tiled(w);
                 }
             }
             memmove(&set[worst], &set[worst + 1], sizeof(set[0]) * (size_t)(k - worst - 1));
@@ -2044,6 +2065,7 @@ int _wlmaker_zones_tile_run(void *data_ptr)
                     w->has_restore = true;
                 }
                 w->tiled = true;
+                _sync_tiled(w);
             }
             struct wlr_box box = { rects[j].x, rects[j].y, rects[j].w, rects[j].h };
             if (memcmp(&box, &w->expect, sizeof(box)) != 0) {
@@ -2128,11 +2150,13 @@ static void _wlmaker_zones_untile_all(wlmaker_zones_t *zones_ptr)
         w->fit_prev = false;
         if (!w->tiled) continue;
         w->tiled = false;
+        _sync_tiled(w);
         memset(&w->expect, 0, sizeof(w->expect));
         if (w->has_restore) {
             wlmtk_window_request_bounding_box(w->window_ptr, &w->restore);
             w->has_restore = false;
             w->zone = -1;
+            _sync_tiled(w);
         }
     }
     for (int i = 0; i < TSETS_MAX; ++i) {
@@ -2443,6 +2467,7 @@ static void _restore(wlmaker_zones_t *zones_ptr, zones_window_t *w)
         wlmtk_window_request_bounding_box(w->window_ptr, &w->restore);
         w->has_restore = false;
         w->zone = -1;
+        _sync_tiled(w);
     }
 }
 

@@ -461,6 +461,11 @@ bool wlmaker_server_reload(wlmaker_server_t *server_ptr)
     if (!wlmim_input_manager_reconfigure(
             server_ptr->input_manager_ptr, config_dict_ptr)) rv = false;
     wlmaker_server_configure_desktop(server_ptr, config_dict_ptr);
+    if (NULL != server_ptr->xdg_decoration_manager_ptr &&
+        !wlmaker_xdg_decoration_manager_reconfigure(
+            server_ptr->xdg_decoration_manager_ptr, config_dict_ptr)) {
+        rv = false;
+    }
     bspl_dict_t *corner_dict_ptr = bspl_dict_get_dict(
         config_dict_ptr, "HotCorner");
     if (NULL != server_ptr->corner_ptr && NULL != corner_dict_ptr &&

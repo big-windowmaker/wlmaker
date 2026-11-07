@@ -87,6 +87,16 @@ void wlmtk_surface_destroy(wlmtk_surface_t *surface_ptr);
 wlmtk_element_t *wlmtk_surface_element(wlmtk_surface_t *surface_ptr);
 
 /**
+ * Crops an XDG surface to its window geometry (without the client's own
+ * shadows and resize margins), eg. while the window has the server's frame.
+ *
+ * @param surface_ptr
+ * @param clip
+ */
+void wlmtk_surface_set_clip_to_geometry(wlmtk_surface_t *surface_ptr,
+                                        bool clip);
+
+/**
  * Returns committed size of the surface.
  *
  * @param surface_ptr
