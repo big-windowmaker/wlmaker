@@ -100,6 +100,13 @@ typedef struct {
      * X window's position to match, for the client's popups.
      */
     struct wl_signal          position_changed;
+
+    /**
+     * Signals that the window's tiled edges changed (snapped to a zone or
+     * tiled: the client may drop its shadows and rounded corners). Takes a
+     * `uint32_t*` with the WLR_EDGE_* bitmask.
+     */
+    struct wl_signal          tiled_changed;
 } wlmtk_window_events_t;
 
 /** Style options for the window. */
@@ -232,6 +239,16 @@ void wlmtk_window_get_min_bounding_size(
 
 /** Helper: Indicates that the position has changed. */
 void wlmtk_window_position_changed(wlmtk_window_t *window_ptr);
+
+/**
+ * Sets the edges at which the window is tiled (WLR_EDGE_* bitmask, 0 for a
+ * free window), and tells the client through @ref
+ * wlmtk_window_events_t::tiled_changed when they change.
+ *
+ * @param window_ptr
+ * @param edges
+ */
+void wlmtk_window_set_tiled_edges(wlmtk_window_t *window_ptr, uint32_t edges);
 
 /**
  * Sets properties for the window.
