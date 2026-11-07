@@ -1534,7 +1534,6 @@ wlmaker_toplevel_icon_t *wlmaker_icon_manager_adopt_xwayland_surface(
     toplevel_icon_ptr->server_ptr = server_ptr;
     toplevel_icon_ptr->wlr_surface_ptr = wlr_xwayland_surface_ptr->surface;
     toplevel_icon_ptr->wlr_xwayland_surface_ptr = wlr_xwayland_surface_ptr;
-    wl_list_insert(&icon_manager_ptr->xwl_icons, &toplevel_icon_ptr->xwl_link);
     toplevel_icon_ptr->xwl_pid = pid;
     toplevel_icon_ptr->xwl_x = INT32_MIN;
     toplevel_icon_ptr->xwl_y = INT32_MIN;
@@ -1552,6 +1551,9 @@ wlmaker_toplevel_icon_t *wlmaker_icon_manager_adopt_xwayland_surface(
         free(toplevel_icon_ptr);
         return NULL;
     }
+    // Listed from here on: The failures below go through the destroy, which
+    // takes it off the list.
+    wl_list_insert(&icon_manager_ptr->xwl_icons, &toplevel_icon_ptr->xwl_link);
     toplevel_icon_ptr->orig_element_vmt = wlmtk_element_extend(
         wlmtk_tile_element(&toplevel_icon_ptr->super_tile),
         &_wlmaker_toplevel_icon_element_vmt);
