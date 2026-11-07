@@ -260,6 +260,9 @@ static void _wlmaker_clip_handle_pointer_leave(
 static void _wlmaker_clip_handle_theme_changed(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static void _wlmaker_clip_signal_wlmdock_with(
+    wlmaker_server_t *server_ptr,
+    int signal_number);
 
 /* == Data ================================================================= */
 
@@ -642,6 +645,15 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
  * the state file: Sends SIGUSR1. */
 static void _wlmaker_clip_signal_wlmdock(wlmaker_server_t *server_ptr)
 {
+    _wlmaker_clip_signal_wlmdock_with(server_ptr, SIGUSR1);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Sends `signal_number` to the `wlmdock` processes. SIGHUP: New theme. */
+static void _wlmaker_clip_signal_wlmdock_with(
+    wlmaker_server_t *server_ptr,
+    int signal_number)
+{
     // wlmdock (the Dock, and the Clip's launchers) re-reads the state file
     // on SIGUSR1.
     struct wl_list *clients_ptr = wl_display_get_client_list(
@@ -653,9 +665,9 @@ static void _wlmaker_clip_signal_wlmdock(wlmaker_server_t *server_ptr)
         if (0 == strcmp(name_ptr, "wlmdock")) {
             pid_t pid = 0;
             wl_client_get_credentials(wl_client_ptr, &pid, NULL, NULL);
-            if (1 < pid && 0 != kill(pid, SIGUSR1)) {
+            if (1 < pid && 0 != kill(pid, signal_number)) {
                 bs_log(BS_WARNING | BS_ERRNO, "Failed kill(%"PRIdMAX
-                       ", SIGUSR1)", (intmax_t)pid);
+                       ", %d)", (intmax_t)pid, signal_number);
             }
         }
         free(name_ptr);
@@ -1994,6 +2006,10 @@ void _wlmaker_clip_handle_theme_changed(
     // overwrites.
     _wlmaker_clip_apply_button_state(clip_ptr);
     _wlmaker_clip_update_spacers(clip_ptr, &style_ptr->tile);
+
+    // The Dock and the Clip's launchers (wlmdock) take the new theme too,
+    // as Window Maker's Dock does at once.
+    _wlmaker_clip_signal_wlmdock_with(clip_ptr->server_ptr, SIGHUP);
 }
 
 /* ------------------------------------------------------------------------- */
