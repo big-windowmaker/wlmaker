@@ -190,6 +190,13 @@ struct wlmdock_state {
     char                      *icon_ptr;
     /** Whether `Icon` was given. */
     bool                      has_icon;
+    /**
+     * Command for a double-click on the main tile: Window Maker shows its
+     * Info Panel ("About") there.
+     */
+    char                      *info_command_ptr;
+    /** Whether `InfoCommand` was given. */
+    bool                      has_info_command;
 };
 
 static wlmdock_t *_wlmdock_create(
@@ -317,6 +324,8 @@ const bspl_desc_t _wlmdock_plist_desc[] = {
                     margin, has_margin, 0),
     BSPL_DESC_STRING("Icon", false, struct wlmdock_state,
                      icon_ptr, has_icon, ""),
+    BSPL_DESC_STRING("InfoCommand", false, struct wlmdock_state,
+                     info_command_ptr, has_info_command, ""),
     BSPL_DESC_SENTINEL(),
 };
 
@@ -444,11 +453,18 @@ int main(int argc, const char **argv)
         if (NULL == dock_ptr->maintile_ptr) return EXIT_FAILURE;
         wlmdock_maintile_set_menu_handler(
             dock_ptr->maintile_ptr, _wlmdock_open_main_menu, dock_ptr);
+        if (state.has_info_command && NULL != state.info_command_ptr &&
+            '\0' != *state.info_command_ptr) {
+            wlmdock_maintile_set_info_command(
+                dock_ptr->maintile_ptr, state.info_command_ptr,
+                dock_ptr->subprocess_monitor_ptr);
+        }
         wlmdock_tilebox_add_tile(
             dock_ptr->tilebox_ptr,
             wlmdock_maintile_tile(dock_ptr->maintile_ptr));
     }
     if (NULL != state.icon_ptr) free(state.icon_ptr);
+    if (NULL != state.info_command_ptr) free(state.info_command_ptr);
 
     _wlmdock_set_launchers(dock_ptr, state.launchers_array_ptr);
     if (state.launchers_array_ptr) bspl_array_unref(state.launchers_array_ptr);
@@ -830,6 +846,7 @@ bool _wlmdock_load_positioning(
         bspl_array_unref(state.launchers_array_ptr);
     }
     if (NULL != state.icon_ptr) free(state.icon_ptr);
+    if (NULL != state.info_command_ptr) free(state.info_command_ptr);
     *positioning_ptr = state.positioning;
     positioning_ptr->margin = state.margin;
     positioning_ptr->overlay = dock_ptr->positioning.overlay;

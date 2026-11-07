@@ -400,6 +400,12 @@ void wlmdock_launcher_set_drawer_side(bool left)
 }
 
 /* ------------------------------------------------------------------------- */
+uint32_t wlmdock_launcher_double_click_msec(void)
+{
+    return _wlmdock_launcher_double_click_msec;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmdock_launcher_autolaunch(wlmdock_launcher_t *launcher_ptr)
 {
     if (_wlmdock_launcher_is_drawer(launcher_ptr)) return;

@@ -119,6 +119,9 @@ void wlmdock_launcher_autolaunch(wlmdock_launcher_t *launcher_ptr);
 
 extern const bs_test_set_t wlmdock_launcher_test_set;
 
+/** @return Window Maker's double-click time, as set by the click mode. */
+uint32_t wlmdock_launcher_double_click_msec(void);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
