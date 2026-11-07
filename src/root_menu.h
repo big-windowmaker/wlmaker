@@ -58,6 +58,14 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
 void wlmaker_root_menu_destroy(wlmaker_root_menu_t *root_menu_ptr);
 
 /**
+ * After a theme change: Restyles the torn-off submenus and the submenus'
+ * titles (the title bar's look).
+ *
+ * @param root_menu_ptr
+ */
+void wlmaker_root_menu_restyle(wlmaker_root_menu_t *root_menu_ptr);
+
+/**
  * Replaces the server's root menu with one loaded anew, eg. after the menu
  * file changed. Uses the server's current styles. Does nothing while the
  * root menu is open.

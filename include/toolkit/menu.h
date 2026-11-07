@@ -85,6 +85,12 @@ typedef struct {
      * closes.
      */
     struct wl_signal          outside_press;
+    /**
+     * The same, for a press inside a right-click menu that stays open (it
+     * otherwise waits for the release): Eg. on a submenu's title, to tear
+     * it off. A listener that takes it sets `claimed`.
+     */
+    struct wl_signal          inside_press;
 } wlmtk_menu_events_t;
 
 /** Argument of @ref wlmtk_menu_events_t::outside_press. */
