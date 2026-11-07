@@ -24,6 +24,7 @@
 
 #include "toolkit/toolkit.h"
 #include "util/files.h"
+#include "util/subprocess_monitor.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,6 +72,19 @@ void wlmdock_maintile_set_menu_handler(
     wlmdock_maintile_t *maintile_ptr,
     wlmdock_maintile_menu_handler_t handler,
     void *ud_ptr);
+
+/**
+ * Sets the command that a double-click on the main tile runs: Window Maker
+ * shows its Info Panel there. NULL: Nothing.
+ *
+ * @param maintile_ptr
+ * @param cmdline_ptr
+ * @param monitor_ptr         Monitor the started process is passed to.
+ */
+void wlmdock_maintile_set_info_command(
+    wlmdock_maintile_t *maintile_ptr,
+    const char *cmdline_ptr,
+    wlm_util_subprocess_monitor_t *monitor_ptr);
 
 /**
  * Resolves an icon file: A path (starting with '/' or '~'), or a name looked
