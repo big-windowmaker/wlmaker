@@ -320,12 +320,14 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         break;
 
     case WLMAKER_ACTION_TASK_TO_PREVIOUS:
+        wlmaker_server_task_list_begin(server_ptr);
         wlmtk_workspace_activate_previous_window(
             wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr));
         wlmaker_server_activate_task_list(server_ptr);
         break;
 
     case WLMAKER_ACTION_TASK_TO_NEXT:
+        wlmaker_server_task_list_begin(server_ptr);
         wlmtk_workspace_activate_next_window(
             wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr));
         wlmaker_server_activate_task_list(server_ptr);

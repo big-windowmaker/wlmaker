@@ -171,6 +171,10 @@ struct _wlmaker_server_t {
     wlmtk_root_t              *root_ptr;
     /** Whether the task list is currently shown. */
     bool                      task_list_enabled;
+    /** The window activated when the task list opened (Esc returns to it). */
+    wlmtk_window_t            *task_list_origin_ptr;
+    /** Whether the task list holds the keyboard grab. */
+    bool                      task_list_grab;
     /** Signal: When the task list is enabled. (to be shown) */
     /** Window zones and tiling (wmake-zones). NULL if unavailable. */
     struct _wlmaker_zones_t   *zones_ptr;
@@ -319,6 +323,14 @@ void wlmaker_server_configure_desktop(
  * @param server_ptr
  */
 void wlmaker_server_activate_task_list(wlmaker_server_t *server_ptr);
+
+/**
+ * Before the first switch of a cycle (Alt+Tab): Notes the activated window,
+ * which Esc returns to, as Window Maker's switch panel does.
+ *
+ * @param server_ptr
+ */
+void wlmaker_server_task_list_begin(wlmaker_server_t *server_ptr);
 
 /**
  * Looks up which output serves the current cursor coordinates and returns that.

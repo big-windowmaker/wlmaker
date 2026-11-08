@@ -34,6 +34,7 @@
 #include "dock_fx.h"
 #include "dock_launchers.h"
 #include "dock_menu.h"
+#include "app_icon.h"
 #include "dock_position.h"
 #include "window_attributes.h"
 #include "dockapp_prefs.h"
@@ -67,6 +68,7 @@ int main(int argc, const char **argv)
         &wlmaker_action_item_test_set,
         &wlmaker_action_test_set,
         &wlmaker_clip_test_set,
+        &wlmaker_app_icon_test_set,
         &wlmaker_config_test_set,
         &wlmaker_context_menu_test_set,
         &wlmaker_corner_test_set,

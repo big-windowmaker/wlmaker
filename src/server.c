@@ -71,6 +71,11 @@ static void _wlmaker_server_handle_dock_fx_theme_changed(
 static void _wlmaker_server_handle_input_activity(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static bool _wlmaker_server_task_list_key(xkb_keysym_t keysym,
+                                          uint32_t modifiers,
+                                          void *ud_ptr);
+static void _wlmaker_server_end_task_list(wlmaker_server_t *server_ptr,
+                                          bool commit);
 static void _wlmaker_server_handle_deactivate_task_list(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -680,10 +685,111 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmaker_server_task_list_begin(wlmaker_server_t *server_ptr)
+{
+    if (server_ptr->task_list_enabled) return;
+    server_ptr->task_list_origin_ptr = wlmtk_workspace_get_activated_window(
+        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr));
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_server_activate_task_list(wlmaker_server_t *server_ptr)
 {
     server_ptr->task_list_enabled = true;
+    // The switch panel's keys (Esc, Enter, arrows, Home, End): Not for the
+    // application under it.
+    if (!server_ptr->task_list_grab && NULL != server_ptr->input_manager_ptr) {
+        wlmim_set_key_grab(server_ptr->input_manager_ptr,
+                           _wlmaker_server_task_list_key, server_ptr);
+        server_ptr->task_list_grab = true;
+    }
     wl_signal_emit(&server_ptr->task_list_enabled_event, NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Closes the task list. Committed (Alt released, Enter): The selected window
+ * is raised (restored if minimized). Cancelled (Esc): The window active when
+ * the cycle began is activated again, not raised, as on Window Maker.
+ */
+void _wlmaker_server_end_task_list(wlmaker_server_t *server_ptr, bool commit)
+{
+    if (!server_ptr->task_list_enabled) return;
+    server_ptr->task_list_enabled = false;
+    if (server_ptr->task_list_grab) {
+        wlmim_set_key_grab(server_ptr->input_manager_ptr, NULL, NULL);
+        server_ptr->task_list_grab = false;
+    }
+    wl_signal_emit(&server_ptr->task_list_disabled_event, NULL);
+
+    wlmtk_workspace_t *workspace_ptr =
+        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr);
+    wlmtk_window_t *origin_ptr = server_ptr->task_list_origin_ptr;
+    server_ptr->task_list_origin_ptr = NULL;
+    if (NULL == workspace_ptr) return;
+    if (!commit) {
+        // Only if it is still a window of this workspace.
+        for (bs_dllist_node_t *d =
+                 wlmtk_workspace_get_windows_dllist(workspace_ptr)->head_ptr;
+             NULL != d; d = d->next_ptr) {
+            if (wlmtk_window_from_dlnode(d) == origin_ptr) {
+                wlmtk_workspace_activate_window(workspace_ptr, origin_ptr);
+                break;
+            }
+        }
+        return;
+    }
+    wlmtk_window_t *window_ptr =
+        wlmtk_workspace_get_activated_window(workspace_ptr);
+    if (NULL != window_ptr) {
+        wlmtk_workspace_raise_window(workspace_ptr, window_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Keys while the task list is shown, as in Window Maker's switch panel: Esc
+ * cancels, Enter confirms, the arrows move, Home and End go to the first and
+ * last window. Other keys (Tab with the bindings) go on as usual.
+ */
+bool _wlmaker_server_task_list_key(xkb_keysym_t keysym,
+                                   __UNUSED__ uint32_t modifiers,
+                                   void *ud_ptr)
+{
+    wlmaker_server_t *server_ptr = ud_ptr;
+    if (!server_ptr->task_list_enabled) return false;
+    wlmtk_workspace_t *workspace_ptr =
+        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr);
+    if (NULL == workspace_ptr) return false;
+    const bs_dllist_t *windows_ptr =
+        wlmtk_workspace_get_windows_dllist(workspace_ptr);
+    switch (keysym) {
+    case XKB_KEY_Escape:
+        _wlmaker_server_end_task_list(server_ptr, false);
+        return true;
+    case XKB_KEY_Return:
+    case XKB_KEY_KP_Enter:
+        _wlmaker_server_end_task_list(server_ptr, true);
+        return true;
+    case XKB_KEY_Right:
+        wlmtk_workspace_activate_next_window(workspace_ptr);
+        break;
+    case XKB_KEY_Left:
+        wlmtk_workspace_activate_previous_window(workspace_ptr);
+        break;
+    case XKB_KEY_Home:
+    case XKB_KEY_End:
+        if (bs_dllist_empty(windows_ptr)) return true;
+        wlmtk_workspace_activate_window(
+            workspace_ptr, wlmtk_window_from_dlnode(
+                XKB_KEY_Home == keysym ?
+                windows_ptr->head_ptr : windows_ptr->tail_ptr));
+        break;
+    default:
+        return false;
+    }
+    wl_signal_emit(&server_ptr->task_list_enabled_event, NULL);
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -882,18 +988,7 @@ static void _wlmaker_server_handle_deactivate_task_list(
     wlmaker_server_t *server_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_server_t, deactivate_task_list_listener);
 
-    if (!server_ptr->task_list_enabled) return;
-
-    server_ptr->task_list_enabled = false;
-    wl_signal_emit(&server_ptr->task_list_disabled_event, NULL);
-
-    wlmtk_workspace_t *workspace_ptr =
-        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr);
-    wlmtk_window_t *window_ptr =
-        wlmtk_workspace_get_activated_window(workspace_ptr);
-    if (NULL != window_ptr) {
-        wlmtk_workspace_raise_window(workspace_ptr, window_ptr);
-    }
+    _wlmaker_server_end_task_list(server_ptr, true);
 }
 
 /* ------------------------------------------------------------------------- */

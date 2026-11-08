@@ -43,6 +43,7 @@ set(public_header_files
   dock_fx.h
   dock_launchers.h
   dock_menu.h
+  app_icon.h
   dock_position.h
   window_attributes.h
   dockapp_prefs.h
@@ -82,6 +83,7 @@ target_sources(wlmaker_lib PRIVATE
   dock_fx.c
   dock_launchers.c
   dock_menu.c
+  app_icon.c
   dock_position.c
   window_attributes.c
   dockapp_prefs.c
@@ -146,6 +148,7 @@ target_link_libraries(
   wlmutil_lib
   wlmaker_protocols
   PkgConfig::CAIRO
+  PkgConfig::LIBRSVG
   PkgConfig::WAYLAND_SERVER
   PkgConfig::WLROOTS
   PkgConfig::XCB
