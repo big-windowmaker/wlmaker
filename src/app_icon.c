@@ -88,8 +88,13 @@ cairo_surface_t *wlmaker_app_icon_get(
         if (0 == strcmp(e->key_ptr, key)) return e->surface_ptr;
     }
 
-    // The desktop entry's icon; without one, the names themselves.
+    // The desktop entry's icon; without one, the names themselves. The
+    // names come from the client: One with a path separator ("../x", an
+    // absolute path) names no application, and opens nothing.
     const char *names[] = { app_id_ptr, instance_ptr };
+    for (size_t i = 0; i < 2; ++i) {
+        if (NULL != names[i] && NULL != strchr(names[i], '/')) names[i] = NULL;
+    }
     char *icon_ptr = NULL;
     for (size_t i = 0; i < 2 && NULL == icon_ptr; ++i) {
         if (NULL != names[i] && '\0' != *names[i]) {
@@ -531,6 +536,13 @@ void _app_icon_test(bs_test_t *test_ptr)
                        wlmaker_app_icon_get("TESTCLASS", "testclass", 16));
     BS_TEST_VERIFY_EQ(test_ptr, NULL,
                       wlmaker_app_icon_get("no.such.app", NULL, 16));
+    // A client's name is never a path: Not the icon file itself, nor the
+    // desktop entry by a relative path.
+    snprintf(p, sizeof(p),
+             "%s/share/icons/hicolor/scalable/apps/test-icon", root_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlmaker_app_icon_get(p, NULL, 16));
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlmaker_app_icon_get(
+                          "../applications/org.test.App", NULL, 16));
     wlmaker_app_icon_flush();
 
     if (NULL != old_dirs) {
