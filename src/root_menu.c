@@ -697,6 +697,41 @@ bool _wlmaker_root_menu_add_title(
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Whether the title is shown at (x, y), on top: Its submenu open (the scene
+ * nodes of the title and of all its ancestors enabled) and no other menu
+ * over it there. The title of a closed submenu keeps the position it had
+ * when last shown: Without this, a click on an item that is now at that
+ * place tore off the closed submenu (Aplicativos web > Telegram tore off
+ * Aparência > Papéis de parede).
+ */
+static bool _wlmaker_root_menu_title_under_cursor(
+    wlmaker_root_menu_t *root_menu_ptr,
+    _wlmaker_root_menu_title_t *t,
+    double x,
+    double y)
+{
+    wlmtk_element_t *e = wlmtk_menu_item_element(t->item_ptr);
+    if (!e->visible || NULL == e->wlr_scene_node_ptr) return false;
+    int lx, ly;
+    if (!wlr_scene_node_coords(e->wlr_scene_node_ptr, &lx, &ly)) return false;
+    int ex, ey, l, tp, r, b;
+    wlmtk_element_get_absolute_position(e, &ex, &ey);
+    wlmtk_element_get_dimensions(e, &l, &tp, &r, &b);
+    if (x < ex + l || x >= ex + r || y < ey + tp || y >= ey + b) return false;
+
+    struct wlr_scene *scene_ptr = root_menu_ptr->server_ptr->wlr_scene_ptr;
+    if (NULL == scene_ptr) return true;  // Unit tests: no scene.
+    double nx, ny;
+    struct wlr_scene_node *n = wlr_scene_node_at(
+        &scene_ptr->tree.node, x, y, &nx, &ny);
+    for (; NULL != n; n = (NULL != n->parent) ? &n->parent->node : NULL) {
+        if (n == e->wlr_scene_node_ptr) return true;
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
 /** A press inside the root menu opened by a click: On a title, tear off. */
 void _wlmaker_root_menu_handle_inside_press(
     struct wl_listener *listener_ptr,
@@ -712,14 +747,8 @@ void _wlmaker_root_menu_handle_inside_press(
          d = d->next_ptr) {
         _wlmaker_root_menu_title_t *t = BS_CONTAINER_OF(
             d, _wlmaker_root_menu_title_t, dlnode);
-        wlmtk_element_t *e = wlmtk_menu_item_element(t->item_ptr);
-        if (!e->visible || NULL == e->wlr_scene_node_ptr ||
-            !e->wlr_scene_node_ptr->enabled) continue;
-        int x, y, l, tp, r, b;
-        wlmtk_element_get_absolute_position(e, &x, &y);
-        wlmtk_element_get_dimensions(e, &l, &tp, &r, &b);
-        if (c_ptr->x >= x + l && c_ptr->x < x + r &&
-            c_ptr->y >= y + tp && c_ptr->y < y + b) {
+        if (_wlmaker_root_menu_title_under_cursor(
+                root_menu_ptr, t, c_ptr->x, c_ptr->y)) {
             press_ptr->claimed = true;
             _wlmaker_root_menu_tear_off(t);
             return;
