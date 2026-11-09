@@ -1876,15 +1876,24 @@ void _xwl_surface_apply_decorations(wlmaker_xwl_surface_t *xwl_surface_ptr)
         NULL != xwl_surface_ptr->server_ptr ?
         xwl_surface_ptr->server_ptr->config_dict_ptr : NULL,
         s->class, s->instance);
-    // Forced only on the main windows: Not on the program's menus,
-    // notifications, splash screens or tool windows.
+    // Forced only on the main windows and dialogs: Not on the program's
+    // menus, notifications, splash screens, tool windows, docks or desktops
+    // (so that it can be set for all programs, "*").
     static const xwl_atom_identifier_t not_forced_types[] = {
         NET_WM_WINDOW_TYPE_UTILITY, NET_WM_WINDOW_TYPE_TOOLBAR,
         NET_WM_WINDOW_TYPE_SPLASH, NET_WM_WINDOW_TYPE_MENU,
         NET_WM_WINDOW_TYPE_DROPDOWN_MENU, NET_WM_WINDOW_TYPE_POPUP_MENU,
         NET_WM_WINDOW_TYPE_NOTIFICATION, XWL_MAX_ATOM_ID};
     if (1 == override &&
-        xwl_is_window_type(xwl_surface_ptr->xwl_ptr, s, not_forced_types)) {
+        (xwl_is_window_type(xwl_surface_ptr->xwl_ptr, s, not_forced_types) ||
+         wlr_xwayland_surface_has_window_type(
+             s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DOCK) ||
+         wlr_xwayland_surface_has_window_type(
+             s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DESKTOP) ||
+         wlr_xwayland_surface_has_window_type(
+             s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DND) ||
+         wlr_xwayland_surface_has_window_type(
+             s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_COMBO))) {
         override = -1;
     }
     if (!s->override_redirect &&
