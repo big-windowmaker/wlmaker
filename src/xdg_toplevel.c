@@ -129,6 +129,14 @@ struct wlmaker_xdg_toplevel {
 
     /** Whether this toplevel is configured to be server-side decorated. */
     bool                      server_side_decorated;
+    /** Whether the client negotiated server-side decoration. */
+    bool                      client_server_side;
+    /** Framed by the `ServerDecoration` attribute, though the client
+     * decorates itself: It is told to be tiled (no shadows, no rounded
+     * corners, no resize margins of its own). */
+    bool                      forced_frame;
+    /** Tiled edges from the window (zones, tiling). */
+    uint32_t                  tiled_edges;
 
     /** Properties that are pending to be configured for the toplevel. */
     struct {
@@ -167,6 +175,10 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
     uint32_t (*_set_size)(struct wlr_xdg_toplevel *, int32_t, int32_t),
     uint32_t (*_set_activated)(struct wlr_xdg_toplevel *, bool),
     void (*_get_extents)(struct wlr_surface *, struct wlr_box *));
+static void _wlmaker_xdg_toplevel_apply_decoration(
+    struct wlmaker_xdg_toplevel *wxt_ptr);
+static void _wlmaker_xdg_toplevel_send_tiled(
+    struct wlmaker_xdg_toplevel *wxt_ptr);
 static void _wlmaker_xdg_toplevel_update_window_properties(
     struct wlmaker_xdg_toplevel *wxt_ptr);
 static void _wlmaker_xdg_toplevel_handle_window_tiled_changed(
@@ -314,16 +326,20 @@ void wlmaker_xdg_toplevel_set_server_side_decorated(
     struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr,
     bool server_side_decorated)
 {
-    wlmaker_xdg_toplevel_ptr->server_side_decorated = server_side_decorated;
-    // In the window's frame, only the window geometry: A client that keeps
-    // its client-side shadows (Chrome does) shows no gap inside the frame.
-    if (NULL != wlmaker_xdg_toplevel_ptr->surface_ptr) {
-        wlmtk_surface_set_clip_to_geometry(
-            wlmaker_xdg_toplevel_ptr->surface_ptr, server_side_decorated);
-    }
-    wlmtk_window_set_server_side_decorated(
-        wlmaker_xdg_toplevel_ptr->window_ptr,
-        wlmaker_xdg_toplevel_ptr->server_side_decorated);
+    wlmaker_xdg_toplevel_ptr->client_server_side = server_side_decorated;
+    _wlmaker_xdg_toplevel_apply_decoration(wlmaker_xdg_toplevel_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+int wlmaker_xdg_toplevel_decoration_override(
+    struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr)
+{
+    if (NULL == wlmaker_xdg_toplevel_ptr->server_ptr) return -1;
+    const char *app_id_ptr =
+        wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->app_id;
+    return wlmaker_window_attributes_server_decoration(
+        wlmaker_xdg_toplevel_ptr->server_ptr->config_dict_ptr,
+        app_id_ptr, app_id_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -506,6 +522,8 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
 
     wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->base->data =
         wlmaker_xdg_toplevel_ptr;
+    // A client without any decoration protocol (GTK 4) may still be framed.
+    _wlmaker_xdg_toplevel_apply_decoration(wlmaker_xdg_toplevel_ptr);
 
     wl_signal_emit(
         &server_ptr->window_created_event,
@@ -763,6 +781,7 @@ void _wlmaker_xdg_toplevel_handle_set_app_id(
         _wlmaker_xdg_toplevel_update_window_properties(
             wlmaker_xdg_toplevel_ptr);
     }
+    _wlmaker_xdg_toplevel_apply_decoration(wlmaker_xdg_toplevel_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -778,12 +797,55 @@ void _wlmaker_xdg_toplevel_handle_window_tiled_changed(
     struct wlmaker_xdg_toplevel *wxt_ptr = BS_CONTAINER_OF(
         listener_ptr, struct wlmaker_xdg_toplevel, window_tiled_changed_listener);
     const uint32_t *edges_ptr = data_ptr;
+    wxt_ptr->tiled_edges = *edges_ptr;
+    _wlmaker_xdg_toplevel_send_tiled(wxt_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tells the client its tiled edges: Those of the zone or the tiling, or all
+ * of them while wlmaker frames a client that decorates itself.
+ */
+void _wlmaker_xdg_toplevel_send_tiled(struct wlmaker_xdg_toplevel *wxt_ptr)
+{
     struct wlr_xdg_toplevel *t = wxt_ptr->wlr_xdg_toplevel_ptr;
-    if (NULL == t->resource ||
+    if (NULL == t || NULL == t->resource ||
         wl_resource_get_version(t->resource) <
         XDG_TOPLEVEL_STATE_TILED_LEFT_SINCE_VERSION) return;
     if (!t->base->initialized) return;
-    wlr_xdg_toplevel_set_tiled(t, *edges_ptr);
+    uint32_t edges = wxt_ptr->tiled_edges;
+    if (wxt_ptr->forced_frame) {
+        edges = WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT |
+            WLR_EDGE_RIGHT;
+    }
+    wlr_xdg_toplevel_set_tiled(t, edges);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Frames the window as the client negotiated, unless the window attribute
+ * `ServerDecoration` of its app ID says otherwise.
+ */
+void _wlmaker_xdg_toplevel_apply_decoration(
+    struct wlmaker_xdg_toplevel *wxt_ptr)
+{
+    int override = wlmaker_xdg_toplevel_decoration_override(wxt_ptr);
+    bool ssd = 0 <= override ? 1 == override : wxt_ptr->client_server_side;
+    bool forced = ssd && !wxt_ptr->client_server_side;
+
+    wxt_ptr->server_side_decorated = ssd;
+    // In the window's frame, only the window geometry: A client that keeps
+    // its client-side shadows (Chrome does) shows no gap inside the frame.
+    if (NULL != wxt_ptr->surface_ptr) {
+        wlmtk_surface_set_clip_to_geometry(wxt_ptr->surface_ptr, ssd);
+    }
+    if (NULL != wxt_ptr->window_ptr) {
+        wlmtk_window_set_server_side_decorated(wxt_ptr->window_ptr, ssd);
+    }
+    if (forced != wxt_ptr->forced_frame) {
+        wxt_ptr->forced_frame = forced;
+        _wlmaker_xdg_toplevel_send_tiled(wxt_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -893,6 +955,12 @@ void _wlmaker_xdg_toplevel_handle_surface_commit(
         wxt_ptr->wlr_xdg_toplevel_ptr->current.min_width,
         wxt_ptr->wlr_xdg_toplevel_ptr->current.min_height);
     _wlmaker_xdg_toplevel_update_window_properties(wxt_ptr);
+    if (wlr_xdg_surface_ptr->initial_commit) {
+        // The app ID is known now; a framed client that decorates itself
+        // is told it is tiled in its first configure.
+        _wlmaker_xdg_toplevel_apply_decoration(wxt_ptr);
+        if (wxt_ptr->forced_frame) _wlmaker_xdg_toplevel_send_tiled(wxt_ptr);
+    }
 
     if (0 != wxt_ptr->pending.properties) {
         _wlmaker_xdg_toplevel_flush_properties(wxt_ptr);

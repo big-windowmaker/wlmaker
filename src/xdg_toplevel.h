@@ -51,10 +51,22 @@ struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_create(
 void wlmaker_xdg_toplevel_destroy(
     struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr);
 
-/** En-/Disables server-side decoration for the XDG toplevel. */
+/**
+ * En-/Disables server-side decoration for the XDG toplevel, as the client
+ * negotiated it. The window attribute `ServerDecoration` of the app ID
+ * overrides it (@ref wlmaker_xdg_toplevel_decoration_override).
+ */
 void wlmaker_xdg_toplevel_set_server_side_decorated(
     struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr,
     bool server_side_decorated);
+
+/**
+ * The window attribute `ServerDecoration` for the toplevel's app ID.
+ *
+ * @return 1 to always frame it, 0 to never frame it, -1 if not configured.
+ */
+int wlmaker_xdg_toplevel_decoration_override(
+    struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr);
 
 /**
  * Looks up the window of the XDG toplevel that `wlr_surface_ptr` belongs to.

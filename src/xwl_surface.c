@@ -1224,6 +1224,7 @@ void _xwl_surface_apply_identity(wlmaker_xwl_surface_t *xs_ptr)
     struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
     wlmtk_window_set_app_id(xs_ptr->window_ptr, s->class, s->instance);
     _xwl_surface_update_window_properties(xs_ptr);
+    _xwl_surface_apply_decorations(xs_ptr);
     wlmtk_window_set_dialog(
         xs_ptr->window_ptr,
         s->modal || NULL != s->parent ||
@@ -1868,9 +1869,28 @@ void _xwl_surface_apply_decorations(wlmaker_xwl_surface_t *xwl_surface_ptr)
     // TODO(kaeser@gubbe.ch): Adapt whether NO_BORDER or NO_TITLE was set.
     // Override-redirect windows (menus, tooltips of programs without a parent
     // window, eg. the menu of a dock-app) are never decorated, as on X11.
-    if (!xwl_surface_ptr->wlr_xwayland_surface_ptr->override_redirect &&
-        xwl_surface_ptr->wlr_xwayland_surface_ptr->decorations ==
-        WLR_XWAYLAND_SURFACE_DECORATIONS_ALL &&
+    // The window attribute `ServerDecoration` overrides _MOTIF_WM_HINTS
+    // (Steam turns the decorations off and draws its own title bar).
+    struct wlr_xwayland_surface *s = xwl_surface_ptr->wlr_xwayland_surface_ptr;
+    int override = wlmaker_window_attributes_server_decoration(
+        NULL != xwl_surface_ptr->server_ptr ?
+        xwl_surface_ptr->server_ptr->config_dict_ptr : NULL,
+        s->class, s->instance);
+    // Forced only on the main windows: Not on the program's menus,
+    // notifications, splash screens or tool windows.
+    static const xwl_atom_identifier_t not_forced_types[] = {
+        NET_WM_WINDOW_TYPE_UTILITY, NET_WM_WINDOW_TYPE_TOOLBAR,
+        NET_WM_WINDOW_TYPE_SPLASH, NET_WM_WINDOW_TYPE_MENU,
+        NET_WM_WINDOW_TYPE_DROPDOWN_MENU, NET_WM_WINDOW_TYPE_POPUP_MENU,
+        NET_WM_WINDOW_TYPE_NOTIFICATION, XWL_MAX_ATOM_ID};
+    if (1 == override &&
+        xwl_is_window_type(xwl_surface_ptr->xwl_ptr, s, not_forced_types)) {
+        override = -1;
+    }
+    if (!s->override_redirect &&
+        (1 == override ||
+         (-1 == override &&
+          s->decorations == WLR_XWAYLAND_SURFACE_DECORATIONS_ALL)) &&
         !xwl_is_window_type(
             xwl_surface_ptr->xwl_ptr,
             xwl_surface_ptr->wlr_xwayland_surface_ptr,

@@ -424,13 +424,22 @@ void handle_decoration_request_mode(
         BS_ABORT();
     }
 
+    struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr =
+        wlr_xdg_toplevel_ptr->base->data;
+    // The window attribute `ServerDecoration` of the app ID wins: The
+    // client is told so (GTK 3 and Qt follow; some keep drawing their own).
+    enum wlr_xdg_toplevel_decoration_v1_mode client_mode = mode;
+    int override = NULL != wlmaker_xdg_toplevel_ptr ?
+        wlmaker_xdg_toplevel_decoration_override(wlmaker_xdg_toplevel_ptr) :
+        -1;
+    if (1 == override) mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+    if (0 == override) mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+
     if (wlr_xdg_toplevel_ptr->base->initialized) {
         decoration_ptr->decoration_manager_ptr->set_mode(
             decoration_ptr->wlr_xdg_toplevel_decoration_v1_ptr, mode);
     }
 
-    struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr =
-        wlr_xdg_toplevel_ptr->base->data;
     if (NULL == wlmaker_xdg_toplevel_ptr) {
         bs_log(BS_WARNING,
                "Decoration request for XDG toplevel %p w/o handle?",
@@ -449,9 +458,10 @@ void handle_decoration_request_mode(
            decoration_ptr->wlr_xdg_toplevel_decoration_v1_ptr->requested_mode,
            mode);
 
+    // What the client negotiated; the toplevel applies the attribute.
     wlmaker_xdg_toplevel_set_server_side_decorated(
         wlmaker_xdg_toplevel_ptr,
-        mode != WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+        client_mode != WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
 }
 
 /* ------------------------------------------------------------------------- */
