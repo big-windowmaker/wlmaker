@@ -2697,6 +2697,20 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
                 _out(out_ptr, out_len, "%s\t%s\t%s\n", cls, ins, title);
             }
         }
+    } else if (0 == strcmp(buf, "pointer")) {
+        // The pointer's position and its output, when asked: For screenshot
+        // tools (big-wm-kwin-screenshot: the "current screen" of Spectacle).
+        struct wlr_cursor *c = wlmim_wlr_cursor(
+            zones_ptr->server_ptr->input_manager_ptr);
+        struct wlr_output *o = wlmaker_server_get_output_at_cursor(
+            zones_ptr->server_ptr);
+        if (NULL == o) {
+            _out(out_ptr, out_len, "error=sem saída sob o ponteiro\n");
+        } else {
+            struct wlr_box b = _output_box(zones_ptr, o);
+            _out(out_ptr, out_len, "%d %d %s %dx%d%+d%+d\n",
+                 (int)c->x, (int)c->y, o->name, b.width, b.height, b.x, b.y);
+        }
     } else if (0 == strcmp(buf, "active")) {
         // The activated window: Its box (decorations included) and title.
         // For screenshot tools (big-wm-kwin-screenshot: "active window").
