@@ -1577,7 +1577,8 @@ void _wlmaker_layer_panel_handle_new_popup(
 
     wlmaker_xdg_popup_t *popup_ptr = wlmaker_xdg_popup_create(
         wlr_xdg_popup_ptr,
-        layer_panel_ptr->server_ptr->wlr_seat_ptr);
+        layer_panel_ptr->server_ptr->wlr_seat_ptr,
+        layer_panel_ptr->server_ptr->wlr_output_layout_ptr);
     if (NULL == popup_ptr) {
         wl_resource_post_error(
             wlr_xdg_popup_ptr->resource,

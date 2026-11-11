@@ -42,12 +42,16 @@ extern "C" {
  *
  * @param wlr_xdg_popup_ptr
  * @param wlr_seat_ptr
+ * @param wlr_output_layout_ptr  The outputs: The popup is kept on the
+ *                               output of its anchor (positioner rules).
+ *                               May be NULL (no constraint).
  *
  * @return Popup handle or NULL on error.
  */
 wlmaker_xdg_popup_t *wlmaker_xdg_popup_create(
     struct wlr_xdg_popup *wlr_xdg_popup_ptr,
-    struct wlr_seat *wlr_seat_ptr);
+    struct wlr_seat *wlr_seat_ptr,
+    struct wlr_output_layout *wlr_output_layout_ptr);
 
 /**
  * Destroys the popup.

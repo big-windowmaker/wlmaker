@@ -2065,7 +2065,8 @@ void _wlmaker_toplevel_icon_handle_layer_new_popup(
         listener_ptr, wlmaker_toplevel_icon_t, layer_new_popup_listener);
     struct wlr_xdg_popup *wlr_xdg_popup_ptr = data_ptr;
     wlmaker_xdg_popup_t *popup_ptr = wlmaker_xdg_popup_create(
-        wlr_xdg_popup_ptr, toplevel_icon_ptr->server_ptr->wlr_seat_ptr);
+        wlr_xdg_popup_ptr, toplevel_icon_ptr->server_ptr->wlr_seat_ptr,
+        toplevel_icon_ptr->server_ptr->wlr_output_layout_ptr);
     if (NULL == popup_ptr) {
         wl_resource_post_error(wlr_xdg_popup_ptr->resource,
                                WL_DISPLAY_ERROR_NO_MEMORY,

@@ -28,6 +28,7 @@
 #include <wayland-server-protocol.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/box.h>
@@ -53,7 +54,14 @@ struct _wlmaker_xdg_popup_t {
     struct wlr_seat           *wlr_seat_ptr;
     /** The WLR popup. */
     struct wlr_xdg_popup      *wlr_xdg_popup_ptr;
+    /** The popup's surface: The content of @ref base. */
+    wlmtk_surface_t           *surface_ptr;
+    /** The outputs, to keep the popup on its output. May be NULL. */
+    struct wlr_output_layout  *wlr_output_layout_ptr;
 };
+
+static void _wlmaker_xdg_popup_unconstrain(
+    wlmaker_xdg_popup_t *wlmaker_xdg_popup_ptr);
 
 static void handle_reposition(
     struct wl_listener *listener_ptr,
@@ -84,13 +92,15 @@ static void handle_surface_commit(
 /* ------------------------------------------------------------------------- */
 wlmaker_xdg_popup_t *wlmaker_xdg_popup_create(
     struct wlr_xdg_popup *wlr_xdg_popup_ptr,
-    struct wlr_seat *wlr_seat_ptr)
+    struct wlr_seat *wlr_seat_ptr,
+    struct wlr_output_layout *wlr_output_layout_ptr)
 {
     wlmaker_xdg_popup_t *wlmaker_xdg_popup_ptr = logged_calloc(
         1, sizeof(wlmaker_xdg_popup_t));
     if (NULL == wlmaker_xdg_popup_ptr) return NULL;
     wlmaker_xdg_popup_ptr->wlr_seat_ptr = wlr_seat_ptr;
     wlmaker_xdg_popup_ptr->wlr_xdg_popup_ptr = wlr_xdg_popup_ptr;
+    wlmaker_xdg_popup_ptr->wlr_output_layout_ptr = wlr_output_layout_ptr;
 
     if (!wlmtk_base_init(&wlmaker_xdg_popup_ptr->base, NULL)) {
         wlmaker_xdg_popup_destroy(wlmaker_xdg_popup_ptr);
@@ -109,6 +119,7 @@ wlmaker_xdg_popup_t *wlmaker_xdg_popup_create(
     wlmtk_base_set_content_element(
         &wlmaker_xdg_popup_ptr->base,
         wlmtk_surface_element(surface_ptr));
+    wlmaker_xdg_popup_ptr->surface_ptr = surface_ptr;
     wlmtk_util_connect_listener_signal(
         &wlr_xdg_popup_ptr->base->surface->events.commit,
         &wlmaker_xdg_popup_ptr->surface_commit_listener,
@@ -182,10 +193,56 @@ void handle_reposition(
     wlmaker_xdg_popup_t *wlmaker_xdg_popup_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_xdg_popup_t, reposition_listener);
 
+    // The new rules apply on the output, too (wlroots then configures).
+    _wlmaker_xdg_popup_unconstrain(wlmaker_xdg_popup_ptr);
     wlmtk_element_set_position(
         wlmtk_base_element(&wlmaker_xdg_popup_ptr->base),
         wlmaker_xdg_popup_ptr->wlr_xdg_popup_ptr->scheduled.geometry.x,
         wlmaker_xdg_popup_ptr->wlr_xdg_popup_ptr->scheduled.geometry.y);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Keeps the popup on the output of its anchor, by the positioner's rules
+ * (flip, slide, resize; as the client asked): Before, a menu near an
+ * output's edge went past it, cut. The constraint box is the output, in the
+ * coordinates of the popup's root toplevel surface.
+ *
+ * @param wlmaker_xdg_popup_ptr
+ */
+void _wlmaker_xdg_popup_unconstrain(wlmaker_xdg_popup_t *wlmaker_xdg_popup_ptr)
+{
+    struct wlr_output_layout *layout_ptr =
+        wlmaker_xdg_popup_ptr->wlr_output_layout_ptr;
+    wlmtk_element_t *e = wlmtk_base_element(&wlmaker_xdg_popup_ptr->base);
+    if (NULL == layout_ptr || NULL == e->parent_container_ptr) return;
+    struct wlr_xdg_popup *popup_ptr = wlmaker_xdg_popup_ptr->wlr_xdg_popup_ptr;
+
+    // The popup's coordinates are relative to its parent's window geometry:
+    // The origin of the container it is in (on screen: px, py).
+    int px, py;
+    wlmtk_element_get_absolute_position(
+        &e->parent_container_ptr->super_element, &px, &py);
+    // The same origin in the root toplevel's surface coordinates.
+    int tx, ty;
+    wlr_xdg_popup_get_toplevel_coords(popup_ptr, 0, 0, &tx, &ty);
+
+    // The output of the anchor (else the nearest one).
+    struct wlr_box anchor = popup_ptr->scheduled.rules.anchor_rect;
+    double ax = px + anchor.x + anchor.width / 2.0;
+    double ay = py + anchor.y + anchor.height / 2.0;
+    double cx, cy;
+    wlr_output_layout_closest_point(layout_ptr, NULL, ax, ay, &cx, &cy);
+    struct wlr_output *output_ptr = wlr_output_layout_output_at(
+        layout_ptr, cx, cy);
+    if (NULL == output_ptr) return;
+    struct wlr_box box;
+    wlr_output_layout_get_box(layout_ptr, output_ptr, &box);
+    if (wlr_box_empty(&box)) return;
+
+    box.x -= px - tx;
+    box.y -= py - ty;
+    wlr_xdg_popup_unconstrain_from_box(popup_ptr, &box);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -212,7 +269,8 @@ void handle_new_popup(
 
     wlmaker_xdg_popup_t *new_popup_ptr = wlmaker_xdg_popup_create(
         wlr_xdg_popup_ptr,
-        wlmaker_xdg_popup_ptr->wlr_seat_ptr);
+        wlmaker_xdg_popup_ptr->wlr_seat_ptr,
+        wlmaker_xdg_popup_ptr->wlr_output_layout_ptr);
     if (NULL == new_popup_ptr) {
         wl_resource_post_error(
             wlr_xdg_popup_ptr->resource,
@@ -239,10 +297,26 @@ void handle_surface_commit(
         listener_ptr, wlmaker_xdg_popup_t, surface_commit_listener);
 
     if (wlmaker_xdg_popup_ptr->wlr_xdg_popup_ptr->base->initial_commit) {
-        // Initial commit: Ensure a configure is responded with.
+        // Initial commit: Kept on its output, then a configure is responded
+        // with (the geometry it is configured to).
+        _wlmaker_xdg_popup_unconstrain(wlmaker_xdg_popup_ptr);
+        wlmtk_element_set_position(
+            wlmtk_base_element(&wlmaker_xdg_popup_ptr->base),
+            wlmaker_xdg_popup_ptr->wlr_xdg_popup_ptr->scheduled.geometry.x,
+            wlmaker_xdg_popup_ptr->wlr_xdg_popup_ptr->scheduled.geometry.y);
         wlr_xdg_surface_schedule_configure(
             wlmaker_xdg_popup_ptr->wlr_xdg_popup_ptr->base);
     }
+
+    // The popup's position (scheduled.geometry, set on the base) is that of
+    // its window geometry, relative to the parent's window geometry. The
+    // surface is offset by its own geometry, so the base's origin is the
+    // geometry's: As for toplevels, and nested popups are relative to it.
+    // Without, a menu with a shadow (GTK) opened off by the shadow's width.
+    struct wlr_box geo = wlmaker_xdg_popup_ptr->wlr_xdg_popup_ptr->base->geometry;
+    wlmtk_element_set_position(
+        wlmtk_surface_element(wlmaker_xdg_popup_ptr->surface_ptr),
+        -geo.x, -geo.y);
 }
 
 /* ------------------------------------------------------------------------- */
