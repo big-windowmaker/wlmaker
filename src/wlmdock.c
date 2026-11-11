@@ -33,6 +33,7 @@
 #include <string.h>
 #include <strings.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -347,6 +348,11 @@ const bspl_desc_t _wlmdock_plist_desc[] = {
 /** The dock's main program. */
 int main(int argc, const char **argv)
 {
+    // The compositor finds its docks by the process name (to send them
+    // SIGHUP for a new theme, SIGUSR1 for new launchers). Starting over with
+    // execv("/proc/self/exe") renames the process to "exe": Keep the name.
+    prctl(PR_SET_NAME, "wlmdock", 0, 0, 0);
+
     // For starting over with a new theme (SIGHUP): The arguments as given.
     _wlmdock_argv = calloc(argc + 1, sizeof(char *));
     for (int i = 0; NULL != _wlmdock_argv && i < argc; ++i) {

@@ -34,6 +34,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <limits.h>
+#include <unistd.h>
 #include <wayland-server-core.h>
 #include <wayland-util.h>
 #define WLR_USE_UNSTABLE
@@ -278,6 +280,7 @@ static void _wlmaker_clip_handle_theme_changed(
 static void _wlmaker_clip_signal_wlmdock_with(
     wlmaker_server_t *server_ptr,
     int signal_number);
+static bool _wlmaker_clip_client_is_wlmdock(struct wl_client *wl_client_ptr);
 
 /* == Data ================================================================= */
 
@@ -685,18 +688,49 @@ static void _wlmaker_clip_signal_wlmdock_with(
         server_ptr->wl_display_ptr);
     struct wl_client *wl_client_ptr;
     wl_client_for_each(wl_client_ptr, clients_ptr) {
-        char *name_ptr = wlmaker_dockapps_client_name(wl_client_ptr);
-        if (NULL == name_ptr) continue;
-        if (0 == strcmp(name_ptr, "wlmdock")) {
-            pid_t pid = 0;
-            wl_client_get_credentials(wl_client_ptr, &pid, NULL, NULL);
-            if (1 < pid && 0 != kill(pid, signal_number)) {
-                bs_log(BS_WARNING | BS_ERRNO, "Failed kill(%"PRIdMAX
-                       ", %d)", (intmax_t)pid, signal_number);
-            }
+        if (!_wlmaker_clip_client_is_wlmdock(wl_client_ptr)) continue;
+        pid_t pid = 0;
+        wl_client_get_credentials(wl_client_ptr, &pid, NULL, NULL);
+        if (1 < pid && 0 != kill(pid, signal_number)) {
+            bs_log(BS_WARNING | BS_ERRNO, "Failed kill(%"PRIdMAX
+                   ", %d)", (intmax_t)pid, signal_number);
+        } else if (1 < pid) {
+            bs_log(BS_INFO, "Sent signal %d to wlmdock %"PRIdMAX,
+                   signal_number, (intmax_t)pid);
         }
-        free(name_ptr);
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Whether the client is a `wlmdock`: By the process name, or by the
+ * executable. A wlmdock that started over for a new theme with
+ * execv("/proc/self/exe") is named "exe" (older wlmdock); one whose
+ * binary was replaced by an update has " (deleted)" after the path.
+ */
+static bool _wlmaker_clip_client_is_wlmdock(struct wl_client *wl_client_ptr)
+{
+    char *name_ptr = wlmaker_dockapps_client_name(wl_client_ptr);
+    bool is_wlmdock = (NULL != name_ptr && 0 == strcmp(name_ptr, "wlmdock"));
+    free(name_ptr);
+    if (is_wlmdock) return true;
+
+    pid_t pid = 0;
+    wl_client_get_credentials(wl_client_ptr, &pid, NULL, NULL);
+    if (1 >= pid) return false;
+    char path[64], exe[PATH_MAX];
+    snprintf(path, sizeof(path), "/proc/%"PRIdMAX"/exe", (intmax_t)pid);
+    ssize_t len = readlink(path, exe, sizeof(exe) - 1);
+    if (0 >= len) return false;
+    exe[len] = '\0';
+    static const char deleted[] = " (deleted)";
+    size_t dlen = sizeof(deleted) - 1;
+    if ((size_t)len > dlen && 0 == strcmp(exe + len - dlen, deleted)) {
+        exe[len - dlen] = '\0';
+    }
+    const char *base_ptr = strrchr(exe, '/');
+    base_ptr = (NULL != base_ptr) ? base_ptr + 1 : exe;
+    return 0 == strcmp(base_ptr, "wlmdock");
 }
 
 /* ------------------------------------------------------------------------- */
