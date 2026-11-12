@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
 #include <wayland-server-core.h>
 #include <wayland-util.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
@@ -382,6 +383,16 @@ static void _handle_icon_configure(void *ud_ptr, uint32_t width, uint32_t height
         // the tile show around the eyes): The same size here.
         width = BS_MAX(width, 64u);
         height = BS_MAX(height, 64u);
+        // The eyes take no clicks: An empty input region leaves the pointer
+        // to the tile, which is then dragged on or off the Dock and the
+        // Clip from anywhere, as Window Maker drags wmeyes on X11.
+        struct wl_region *input_ptr = wl_compositor_create_region(
+            wlmcl_client_attributes(wlclient_ptr)->wl_compositor_ptr);
+        if (NULL != input_ptr) {
+            wl_surface_set_input_region(
+                wlmcl_icon_wl_surface(icon_ptr), input_ptr);
+            wl_region_destroy(input_ptr);
+        }
     }
     icon_dblbuf_ptr = wlmcl_dblbuf_create(
         wlmcl_client_attributes(wlclient_ptr)->app_id_ptr,
