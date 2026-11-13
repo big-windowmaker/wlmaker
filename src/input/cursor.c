@@ -44,6 +44,7 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xcursor_manager.h>
@@ -103,6 +104,16 @@ struct _wlmim_cursor_t {
     struct wlr_cursor_shape_manager_v1 *wlr_cursor_shape_manager_v1_ptr;
     /** The relative pointer manager. Owned by wl_display. */
     struct wlr_relative_pointer_manager_v1 *wlr_relative_pointer_manager_v1_ptr;
+    /** The pointer constraints manager. Owned by wl_display. */
+    struct wlr_pointer_constraints_v1 *wlr_pointer_constraints_v1_ptr;
+    /** The constraint in effect: on the surface with pointer focus. */
+    struct wlr_pointer_constraint_v1 *active_constraint_ptr;
+    /** `new_constraint` of `wlr_pointer_constraints_v1::events`. */
+    struct wl_listener        new_constraint_listener;
+    /** `destroy` of the active constraint. */
+    struct wl_listener        constraint_destroy_listener;
+    /** `focus_change` of `wlr_seat::pointer_state.events`. */
+    struct wl_listener        pointer_focus_change_listener;
 
     /** Whether the current left-button press emulates a right button. */
     bool                      left_button_emulates_right;
@@ -185,6 +196,23 @@ static void _wlmim_cursor_handle_seat_request_set_cursor(
 static void _wlmim_cursor_process_motion(
     wlmim_cursor_t *cursor_ptr,
     uint32_t time_msec);
+
+static void _wlmim_cursor_handle_new_constraint(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_cursor_handle_constraint_destroy(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_cursor_handle_pointer_focus_change(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_cursor_set_constraint(
+    wlmim_cursor_t *cursor_ptr,
+    struct wlr_pointer_constraint_v1 *constraint_ptr);
+static bool _wlmim_cursor_constrained(
+    wlmim_cursor_t *cursor_ptr,
+    double dx,
+    double dy);
 
 static void _wlmim_cursor_request_xcursor(
     void *ud_ptr,
@@ -321,6 +349,27 @@ wlmim_cursor_t *wlmim_cursor_create(
             wlmim_cursor_destroy(cursor_ptr);
             return NULL;
         }
+
+        // Pointer lock and confinement: VM viewers (SPICE, VNC) and games.
+        // spice-gtk locks the pointer without checking for the global and
+        // crashes (wl_proxy_get_version on NULL) when it is missing.
+        cursor_ptr->wlr_pointer_constraints_v1_ptr =
+            wlr_pointer_constraints_v1_create(wl_display_ptr);
+        if (NULL == cursor_ptr->wlr_pointer_constraints_v1_ptr) {
+            bs_log(BS_ERROR,
+                   "Failed wlr_pointer_constraints_v1_create(%p)",
+                   wl_display_ptr);
+            wlmim_cursor_destroy(cursor_ptr);
+            return NULL;
+        }
+        wlmtk_util_connect_listener_signal(
+            &cursor_ptr->wlr_pointer_constraints_v1_ptr->events.new_constraint,
+            &cursor_ptr->new_constraint_listener,
+            _wlmim_cursor_handle_new_constraint);
+        wlmtk_util_connect_listener_signal(
+            &cursor_ptr->wlr_seat_ptr->pointer_state.events.focus_change,
+            &cursor_ptr->pointer_focus_change_listener,
+            _wlmim_cursor_handle_pointer_focus_change);
     }
 
     // tinywl: wlr_cursor *only* displays an image on screen. It does not move
@@ -364,6 +413,15 @@ wlmim_cursor_t *wlmim_cursor_create(
 /* ------------------------------------------------------------------------- */
 void wlmim_cursor_destroy(wlmim_cursor_t *cursor_ptr)
 {
+    if (NULL != cursor_ptr->active_constraint_ptr) {
+        wlmtk_util_disconnect_listener(&cursor_ptr->constraint_destroy_listener);
+        cursor_ptr->active_constraint_ptr = NULL;
+    }
+    if (NULL != cursor_ptr->wlr_pointer_constraints_v1_ptr) {
+        wlmtk_util_disconnect_listener(&cursor_ptr->pointer_focus_change_listener);
+        wlmtk_util_disconnect_listener(&cursor_ptr->new_constraint_listener);
+        cursor_ptr->wlr_pointer_constraints_v1_ptr = NULL;
+    }
     wlmtk_util_disconnect_listener(
         &cursor_ptr->seat_request_set_cursor_listener);
     if (NULL != cursor_ptr->wlr_cursor_ptr) {
@@ -656,6 +714,15 @@ void _wlmim_cursor_handle_motion(
             wlr_pointer_motion_event_ptr->unaccel_dy);
     }
 
+    // A locked pointer stays; a confined one stays inside its region.
+    if (_wlmim_cursor_constrained(
+            cursor_ptr,
+            wlr_pointer_motion_event_ptr->delta_x,
+            wlr_pointer_motion_event_ptr->delta_y)) {
+        wlr_seat_pointer_notify_frame(cursor_ptr->wlr_seat_ptr);
+        return;
+    }
+
     wlr_cursor_move(
         cursor_ptr->wlr_cursor_ptr,
         &wlr_pointer_motion_event_ptr->pointer->base,
@@ -685,6 +752,10 @@ void _wlmim_cursor_handle_motion_absolute(
 
     wlmim_report_activity(cursor_ptr->input_manager_ptr);
 
+    if (NULL != cursor_ptr->active_constraint_ptr &&
+        WLR_POINTER_CONSTRAINT_V1_LOCKED ==
+        cursor_ptr->active_constraint_ptr->type) return;
+
     wlr_cursor_warp_absolute(
         cursor_ptr->wlr_cursor_ptr,
         &wlr_pointer_motion_absolute_event_ptr->pointer->base,
@@ -694,6 +765,103 @@ void _wlmim_cursor_handle_motion_absolute(
     _wlmim_cursor_process_motion(
         cursor_ptr,
         wlr_pointer_motion_absolute_event_ptr->time_msec);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Whether a motion by (dx, dy) is held back by the active constraint: always
+ * for a locked pointer, and when it would leave the region of a confined one.
+ */
+bool _wlmim_cursor_constrained(
+    wlmim_cursor_t *cursor_ptr,
+    double dx,
+    double dy)
+{
+    struct wlr_pointer_constraint_v1 *c_ptr = cursor_ptr->active_constraint_ptr;
+    if (NULL == c_ptr) return false;
+    if (WLR_POINTER_CONSTRAINT_V1_LOCKED == c_ptr->type) return true;
+
+    // Confined: the new position, in surface coordinates, stays in the region.
+    struct wlr_seat_pointer_state *ps_ptr = &cursor_ptr->wlr_seat_ptr->pointer_state;
+    if (ps_ptr->focused_surface != c_ptr->surface) return false;
+    double sx = ps_ptr->sx + dx;
+    double sy = ps_ptr->sy + dy;
+    return !pixman_region32_contains_point(
+        &c_ptr->region, (int)floor(sx), (int)floor(sy), NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Makes `constraint_ptr` (or none) the active constraint. */
+void _wlmim_cursor_set_constraint(
+    wlmim_cursor_t *cursor_ptr,
+    struct wlr_pointer_constraint_v1 *constraint_ptr)
+{
+    if (cursor_ptr->active_constraint_ptr == constraint_ptr) return;
+
+    struct wlr_pointer_constraint_v1 *old_ptr = cursor_ptr->active_constraint_ptr;
+    if (NULL != old_ptr) {
+        wlmtk_util_disconnect_listener(&cursor_ptr->constraint_destroy_listener);
+        cursor_ptr->active_constraint_ptr = NULL;
+        // May destroy a oneshot constraint.
+        wlr_pointer_constraint_v1_send_deactivated(old_ptr);
+    }
+    if (NULL == constraint_ptr) return;
+
+    cursor_ptr->active_constraint_ptr = constraint_ptr;
+    wlmtk_util_connect_listener_signal(
+        &constraint_ptr->events.destroy,
+        &cursor_ptr->constraint_destroy_listener,
+        _wlmim_cursor_handle_constraint_destroy);
+    wlr_pointer_constraint_v1_send_activated(constraint_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** A client asks for a constraint: active once its surface has the pointer. */
+void _wlmim_cursor_handle_new_constraint(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_cursor_t *cursor_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_cursor_t, new_constraint_listener);
+    struct wlr_pointer_constraint_v1 *constraint_ptr = data_ptr;
+
+    if (constraint_ptr->seat == cursor_ptr->wlr_seat_ptr &&
+        constraint_ptr->surface ==
+        cursor_ptr->wlr_seat_ptr->pointer_state.focused_surface) {
+        _wlmim_cursor_set_constraint(cursor_ptr, constraint_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** The active constraint went away (unlocked by the client, surface gone). */
+void _wlmim_cursor_handle_constraint_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmim_cursor_t *cursor_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_cursor_t, constraint_destroy_listener);
+    wlmtk_util_disconnect_listener(&cursor_ptr->constraint_destroy_listener);
+    cursor_ptr->active_constraint_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** The pointer moved to another surface: its constraint, if any, applies. */
+void _wlmim_cursor_handle_pointer_focus_change(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_cursor_t *cursor_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_cursor_t, pointer_focus_change_listener);
+    struct wlr_seat_pointer_focus_change_event *e_ptr = data_ptr;
+
+    struct wlr_pointer_constraint_v1 *constraint_ptr = NULL;
+    if (NULL != e_ptr->new_surface) {
+        constraint_ptr = wlr_pointer_constraints_v1_constraint_for_surface(
+            cursor_ptr->wlr_pointer_constraints_v1_ptr,
+            e_ptr->new_surface,
+            cursor_ptr->wlr_seat_ptr);
+    }
+    _wlmim_cursor_set_constraint(cursor_ptr, constraint_ptr);
 }
 
 /* ------------------------------------------------------------------------- */

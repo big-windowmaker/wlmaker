@@ -17,6 +17,8 @@ set(public_header_files
   cursor.h
   keyboard.h
   manager.h)
+pkg_check_modules(PIXMAN REQUIRED IMPORTED_TARGET pixman-1)
+
 add_library(wlminput_lib STATIC
   cursor.c
   keyboard.c
@@ -54,6 +56,7 @@ target_link_libraries(
   wlmtoolkit_lib
   PRIVATE
   Libinput::Libinput
+  PkgConfig::PIXMAN
   PkgConfig::WAYLAND_SERVER
   PkgConfig::WLROOTS
   PkgConfig::XKBCOMMON
