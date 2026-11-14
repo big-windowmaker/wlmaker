@@ -148,6 +148,20 @@ struct _wlmaker_xwl_surface_t {
     wlmaker_tl_menu_t         *tl_menu_ptr;
     /** Whether the surface is mapped, but waits for its size to map. */
     bool                      map_pending;
+    /**
+     * The size last sent to the X window. Until X confirms it, the X surface
+     * reports the old size (a late ConfigureNotify): A position sent with
+     * that would undo the resize (a game going fullscreen stayed small).
+     */
+    int                       configured_width;
+    /** See @ref wlmaker_xwl_surface_t::configured_width. */
+    int                       configured_height;
+    /**
+     * Fullscreen was asked for before the window was mapped (games set
+     * _NET_WM_STATE_FULLSCREEN, then map). Without an output then, it was
+     * refused and the game stayed a framed window. Applied once mapped.
+     */
+    bool                      fullscreen_pending;
     /** Or, the parent surface. In that case, window_ptr is NULL. */
     wlmaker_xwl_surface_t     *parent_surface_ptr;
 
@@ -294,6 +308,11 @@ static void _wlmaker_xwl_surface_handle_window_position_changed(
 static bool _xwl_surface_content_position(
     wlmaker_xwl_surface_t *xs_ptr, int *x_ptr, int *y_ptr);
 static void _xwl_surface_sync_x_position(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_configure(
+    wlmaker_xwl_surface_t *xs_ptr, int x, int y, int width, int height);
+static void _xwl_surface_configure_position(
+    wlmaker_xwl_surface_t *xs_ptr, int x, int y);
+static void _xwl_surface_map_if_committed(wlmaker_xwl_surface_t *xs_ptr);
 static void _wlmaker_xwl_surface_handle_window_request_size(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -386,6 +405,10 @@ static void _xwl_surface_handle_request_fullscreen(
     wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_xwl_surface_t, request_fullscreen_listener);
     if (NULL == xs_ptr->window_ptr) return;
+    if (NULL == wlmtk_window_get_workspace(xs_ptr->window_ptr)) {
+        xs_ptr->fullscreen_pending = xs_ptr->wlr_xwayland_surface_ptr->fullscreen;
+        return;
+    }
     wlmtk_window_request_fullscreen(
         xs_ptr->window_ptr, xs_ptr->wlr_xwayland_surface_ptr->fullscreen);
 }
@@ -921,8 +944,7 @@ bool _xwl_surface_dockapp_leader(wlmaker_xwl_surface_t *xs_ptr)
     // would take the clicks meant for the tiles there (the X server gives
     // the pointer to the topmost X window). Out of the way, as Window Maker
     // does not show it either.
-    wlr_xwayland_surface_configure(xws_ptr, -32000, -32000,
-                                   xws_ptr->width, xws_ptr->height);
+    _xwl_surface_configure_position(xs_ptr, -32000, -32000);
     // A program that maps the icon window itself, before the leader (GTK
     // dock-apps, eg. wmshutdown): It already got a window. Associate it
     // again, as the dock-app's tile.
@@ -993,8 +1015,8 @@ void _xwl_surface_handle_request_configure(
     // A hidden dock-app leader stays off-screen: Over a tile, it would take
     // the tile's clicks (X stacking).
     if (xwl_surface_ptr->dockapp_leader) {
-        wlr_xwayland_surface_configure(
-            xwl_surface_ptr->wlr_xwayland_surface_ptr, -32000, -32000,
+        _xwl_surface_configure(
+            xwl_surface_ptr, -32000, -32000,
             cfg_event_ptr->width, cfg_event_ptr->height);
         return;
     }
@@ -1003,9 +1025,8 @@ void _xwl_surface_handle_request_configure(
     // on the workspace stays where it is: X learns its real position.
     int x = cfg_event_ptr->x, y = cfg_event_ptr->y;
     _xwl_surface_content_position(xwl_surface_ptr, &x, &y);
-    wlr_xwayland_surface_configure(
-        xwl_surface_ptr->wlr_xwayland_surface_ptr,
-        x, y, cfg_event_ptr->width, cfg_event_ptr->height);
+    _xwl_surface_configure(
+        xwl_surface_ptr, x, y, cfg_event_ptr->width, cfg_event_ptr->height);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1102,6 +1123,7 @@ void _xwl_surface_handle_associate(
 
     if (_xwl_surface_overlay_associate(xwl_surface_ptr)) {
         _xwl_surface_overlay_update(xwl_surface_ptr);
+        _xwl_surface_map_if_committed(xwl_surface_ptr);
         return;
     }
 
@@ -1195,6 +1217,7 @@ void _xwl_surface_handle_associate(
            parent_xwl_surface_ptr,
            xwl_surface_ptr->wlr_xwayland_surface_ptr->x,
            xwl_surface_ptr->wlr_xwayland_surface_ptr->y);
+    _xwl_surface_map_if_committed(xwl_surface_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1475,7 +1498,7 @@ void _xwl_surface_handle_set_geometry(
         int x, y;
         if (_xwl_surface_content_position(xwl_surface_ptr, &x, &y) &&
             (x != s->x || y != s->y)) {
-            wlr_xwayland_surface_configure(s, x, y, s->width, s->height);
+            _xwl_surface_configure_position(xwl_surface_ptr, x, y);
         }
         return;
     }
@@ -1569,6 +1592,11 @@ void _xwl_surface_map_window(wlmaker_xwl_surface_t *xwl_surface_ptr)
     // it was placed, before it was on the workspace (no content position
     // yet), and a new window stayed at 0, 0 for X until it was moved.
     _xwl_surface_sync_x_position(xwl_surface_ptr);
+    // Fullscreen asked for before mapping (event, or the initial state).
+    if (xwl_surface_ptr->fullscreen_pending || xws_ptr->fullscreen) {
+        xwl_surface_ptr->fullscreen_pending = false;
+        wlmtk_window_request_fullscreen(xwl_surface_ptr->window_ptr, true);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1667,9 +1695,8 @@ void _wlmaker_xwl_surface_handle_window_request_size(
     // (menus, lists, tooltips) in root coordinates.
     int x = 0, y = 0;
     _xwl_surface_content_position(xwl_surface_ptr, &x, &y);
-    wlr_xwayland_surface_configure(
-        xwl_surface_ptr->wlr_xwayland_surface_ptr,
-        x, y, box_ptr->width, box_ptr->height);
+    _xwl_surface_configure(
+        xwl_surface_ptr, x, y, box_ptr->width, box_ptr->height);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1706,7 +1733,51 @@ void _xwl_surface_sync_x_position(wlmaker_xwl_surface_t *xs_ptr)
     int x, y;
     if (!_xwl_surface_content_position(xs_ptr, &x, &y)) return;
     if (x == s->x && y == s->y) return;
-    wlr_xwayland_surface_configure(s, x, y, s->width, s->height);
+    _xwl_surface_configure_position(xs_ptr, x, y);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Configures the X window, and remembers the size sent. */
+void _xwl_surface_configure(
+    wlmaker_xwl_surface_t *xs_ptr, int x, int y, int width, int height)
+{
+    xs_ptr->configured_width = width;
+    xs_ptr->configured_height = height;
+    wlr_xwayland_surface_configure(
+        xs_ptr->wlr_xwayland_surface_ptr, x, y, width, height);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Moves the X window, with the size last sent to it (not the X surface's,
+ * which is old while a resize is on its way).
+ */
+void _xwl_surface_configure_position(wlmaker_xwl_surface_t *xs_ptr, int x, int y)
+{
+    struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
+    _xwl_surface_configure(
+        xs_ptr, x, y,
+        0 < xs_ptr->configured_width ? xs_ptr->configured_width : s->width,
+        0 < xs_ptr->configured_height ? xs_ptr->configured_height : s->height);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Maps the surface if it already has a buffer: wlroots 0.20 maps an X
+ * surface on a commit after the association only. When XWayland's first
+ * commit came before the X11 association (WL_SURFACE_SERIAL arrives on
+ * another socket), a window that draws once and then waits (Steam's
+ * "Properties..." dialog) never got mapped: Present in X, never on screen.
+ * As wlroots does since 08a9f9f1 ("xwayland/xwm: fix association/map race").
+ */
+void _xwl_surface_map_if_committed(wlmaker_xwl_surface_t *xs_ptr)
+{
+    struct wlr_surface *surface_ptr = xs_ptr->wlr_xwayland_surface_ptr->surface;
+    if (NULL == surface_ptr || surface_ptr->mapped ||
+        !wlr_surface_has_buffer(surface_ptr)) return;
+    bs_log(BS_INFO, "XWL surface %p: Committed before its association, "
+           "mapping it now.", xs_ptr);
+    wlr_surface_map(surface_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
