@@ -613,25 +613,28 @@ bool icon_callback(
         }
         cairo_show_text(cairo_ptr, buf);
 
+        // The status codes of the classic battery dock-apps (wmbattery):
+        // Four characters on the 64x64 tile, as on the X11 session. Not
+        // translated (no room for the words of other languages).
         cairo_move_to(cairo_ptr, 8, 27);
         switch (bat->status) {
         case BATTERY_STATUS_CHARGING:
-            cairo_show_text(cairo_ptr, "CHRG");
+            cairo_show_text(cairo_ptr, "CHRG");  // i18n: not translated
             derived_status = ADAPTER_STATUS_ONLINE;
             break;
         case BATTERY_STATUS_DISCHARGING:
-            cairo_show_text(cairo_ptr, "DISC");
+            cairo_show_text(cairo_ptr, "DISC");  // i18n: not translated
             derived_status = ADAPTER_STATUS_OFFLINE;
             break;
         case BATTERY_STATUS_NOT_CHARGING:
             cairo_show_text(cairo_ptr, "----");
             break;
         case BATTERY_STATUS_FULL:
-            cairo_show_text(cairo_ptr, "FULL");
+            cairo_show_text(cairo_ptr, "FULL");  // i18n: not translated
             derived_status = ADAPTER_STATUS_ONLINE;
             break;
         default:
-            cairo_show_text(cairo_ptr, "UNKN");
+            cairo_show_text(cairo_ptr, "UNKN");  // i18n: not translated
             break;
         }
 
@@ -644,13 +647,20 @@ bool icon_callback(
         }
     }
 
+    // As wmbattery: Not translated, see above.
     cairo_move_to(cairo_ptr, 8, 51);
     enum adapter_status status = wlm_power_supply_status(arg_ptr->ps);
     if (ADAPTER_STATUS_UNKNOWN == status) status = derived_status;
     switch (status) {
-    case ADAPTER_STATUS_UNKNOWN: cairo_show_text(cairo_ptr, "? pwr ?"); break;
-    case ADAPTER_STATUS_OFFLINE: cairo_show_text(cairo_ptr, "no pwr"); break;
-    case ADAPTER_STATUS_ONLINE: cairo_show_text(cairo_ptr, " AC "); break;
+    case ADAPTER_STATUS_UNKNOWN:
+        cairo_show_text(cairo_ptr, "? pwr ?");  // i18n: not translated
+        break;
+    case ADAPTER_STATUS_OFFLINE:
+        cairo_show_text(cairo_ptr, "no pwr");  // i18n: not translated
+        break;
+    case ADAPTER_STATUS_ONLINE:
+        cairo_show_text(cairo_ptr, " AC ");  // i18n: not translated
+        break;
     }
 
     cairo_destroy(cairo_ptr);

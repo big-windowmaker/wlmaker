@@ -83,11 +83,18 @@ struct _wlmtk_desktop_t {
 
     /** The wlr layers available in this desktop. */
     wlmtk_layer_t            *layer_ptrs[WLMTK_DESKTOP_LAYER_OVERLAY + 1];
+    /** Listener for the own `usable_area_changed`: Rearranges the layers. */
+    struct wl_listener        usable_area_changed_listener;
+    /** Rearranging the layers: A change from that does not start over. */
+    bool                      rearranging_layers;
 
     // Elements below not owned by wlmtk_desktop_t.
     /** wlroots output layout. */
     struct wlr_output_layout  *wlr_output_layout_ptr;
-
+    /** Policy for placing new windows. */
+    wlmtk_window_placement_t  window_placement;
+    /** Whether windows get activated when the pointer enters them. */
+    bool                      focus_follows_pointer;
 };
 
 static void _wlmtk_desktop_switch_to_workspace(
@@ -136,6 +143,15 @@ struct _wlmtk_desktop_set_style_arg {
     wlmtk_menu_style_ref_t    *menu_style_ref_ptr;
 };
 
+static bool _wlmtk_desktop_other_layers_area(
+    void *ud_ptr,
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *area_ptr);
+static void _wlmtk_desktop_handle_usable_area_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -167,6 +183,8 @@ wlmtk_desktop_t *wlmtk_desktop_create(
         &desktop_ptr->container.super_element,
         &_wlmtk_desktop_element_vmt);
 
+    // Before the layers: they hold a pointer to it.
+    wl_signal_init(&desktop_ptr->events.usable_area_changed);
     for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
         wlmtk_layer_t *layer_ptr = wlmtk_layer_create(wlr_output_layout_ptr);
         if (NULL == layer_ptr) {
@@ -177,7 +195,15 @@ wlmtk_desktop_t *wlmtk_desktop_create(
         wlmtk_container_add_element(
             &desktop_ptr->container, wlmtk_layer_element(layer_ptr));
         desktop_ptr->layer_ptrs[i] = layer_ptr;
+        wlmtk_layer_set_usable_area_signal(
+            layer_ptr, &desktop_ptr->events.usable_area_changed);
+        wlmtk_layer_set_area_func(
+            layer_ptr, _wlmtk_desktop_other_layers_area, desktop_ptr);
     }
+    wlmtk_util_connect_listener_signal(
+        &desktop_ptr->events.usable_area_changed,
+        &desktop_ptr->usable_area_changed_listener,
+        _wlmtk_desktop_handle_usable_area_changed);
 
     if (!wlmtk_container_init(&desktop_ptr->workspace_window_container)) {
         wlmtk_desktop_destroy(desktop_ptr);
@@ -186,11 +212,13 @@ wlmtk_desktop_t *wlmtk_desktop_create(
     wlmtk_element_set_visible(
         &desktop_ptr->workspace_window_container.super_element,
         true);
-    wlmtk_layer_t *bg_layer_ptr = wlmtk_desktop_get_layer(
-        desktop_ptr, WLMTK_DESKTOP_LAYER_BACKGROUND);
+    // Windows are above the bottom layer, as layer-shell has it: Its
+    // surfaces are "below shell surfaces" (and above the background).
+    wlmtk_layer_t *bottom_layer_ptr = wlmtk_desktop_get_layer(
+        desktop_ptr, WLMTK_DESKTOP_LAYER_BOTTOM);
     wlmtk_container_add_element_atop(
         &desktop_ptr->container,
-        wlmtk_layer_element(bg_layer_ptr),
+        wlmtk_layer_element(bottom_layer_ptr),
         &desktop_ptr->workspace_window_container.super_element);
 
     if (!wlmtk_container_init(&desktop_ptr->workspace_fullscreen_container)) {
@@ -245,6 +273,10 @@ wlmtk_desktop_t *wlmtk_desktop_create(
     wl_signal_init(&desktop_ptr->events.unlock_event);
     wl_signal_init(&desktop_ptr->events.window_mapped);
     wl_signal_init(&desktop_ptr->events.window_unmapped);
+    wl_signal_init(&desktop_ptr->events.window_move_begin);
+    wl_signal_init(&desktop_ptr->events.window_move_motion);
+    wl_signal_init(&desktop_ptr->events.window_move_end);
+    wl_signal_init(&desktop_ptr->events.window_resize_end);
     return desktop_ptr;
 }
 
@@ -253,6 +285,13 @@ void wlmtk_desktop_destroy(wlmtk_desktop_t *desktop_ptr)
 {
     wlmtk_util_disconnect_listener(
         &desktop_ptr->output_layout_change_listener);
+    wlmtk_util_disconnect_listener(
+        &desktop_ptr->usable_area_changed_listener);
+    for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
+        if (NULL != desktop_ptr->layer_ptrs[i]) {
+            wlmtk_layer_set_area_func(desktop_ptr->layer_ptrs[i], NULL, NULL);
+        }
+    }
 
     bs_dllist_for_each(
         &desktop_ptr->workspaces,
@@ -387,14 +426,28 @@ wlmtk_workspace_t *wlmtk_desktop_get_current_workspace(wlmtk_desktop_t *desktop_
 /* ------------------------------------------------------------------------- */
 void wlmtk_desktop_destroy_last_workspace(wlmtk_desktop_t *desktop_ptr)
 {
+    // Guard clause: Must have further workspaces.
+    if (1 >= bs_dllist_size(&desktop_ptr->workspaces)) return;
+
     wlmtk_workspace_t *ws_ptr = wlmtk_workspace_from_dlnode(
         desktop_ptr->workspaces.tail_ptr);
+    wlmtk_workspace_t *prev_ws_ptr = wlmtk_workspace_from_dlnode(
+        desktop_ptr->workspaces.tail_ptr->prev_ptr);
 
-    // Guard clause: Must have further workspaces, not be current workspace,
-    // and not have windows on that workspace.
-    if (1 >= bs_dllist_size(&desktop_ptr->workspaces) ||
-        ws_ptr == desktop_ptr->current_workspace_ptr ||
-        !bs_dllist_empty(wlmtk_workspace_get_windows_dllist(ws_ptr))) return;
+    // Like Window Maker: On the last workspace, switch to the one before.
+    if (ws_ptr == desktop_ptr->current_workspace_ptr) {
+        _wlmtk_desktop_switch_to_workspace(desktop_ptr, prev_ws_ptr);
+    }
+
+    // Windows still on it go to the workspace before. Rather than refusing
+    // to destroy the workspace, without a way to tell why.
+    bs_dllist_t *windows_ptr = wlmtk_workspace_get_windows_dllist(ws_ptr);
+    while (!bs_dllist_empty(windows_ptr)) {
+        wlmtk_window_t *window_ptr = wlmtk_window_from_dlnode(
+            windows_ptr->head_ptr);
+        wlmtk_workspace_unmap_window(ws_ptr, window_ptr);
+        wlmtk_workspace_map_window(prev_ws_ptr, window_ptr);
+    }
 
     wlmtk_desktop_remove_workspace(desktop_ptr, ws_ptr);
     wlmtk_workspace_destroy(ws_ptr);
@@ -434,6 +487,31 @@ void wlmtk_desktop_switch_to_previous_workspace(wlmtk_desktop_t *desktop_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+wlmtk_workspace_t *wlmtk_desktop_get_workspace_at(
+    wlmtk_desktop_t *desktop_ptr,
+    size_t index)
+{
+    bs_dllist_node_t *dlnode_ptr = desktop_ptr->workspaces.head_ptr;
+    for (; NULL != dlnode_ptr && 0 < index; --index) {
+        dlnode_ptr = dlnode_ptr->next_ptr;
+    }
+    if (NULL == dlnode_ptr) return NULL;
+    return wlmtk_workspace_from_dlnode(dlnode_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_desktop_switch_to_workspace_at(
+    wlmtk_desktop_t *desktop_ptr,
+    size_t index)
+{
+    wlmtk_workspace_t *workspace_ptr = wlmtk_desktop_get_workspace_at(
+        desktop_ptr, index);
+    if (NULL == workspace_ptr) return false;
+    _wlmtk_desktop_switch_to_workspace(desktop_ptr, workspace_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmtk_desktop_for_each_workspace(
     wlmtk_desktop_t *desktop_ptr,
     void (*func)(bs_dllist_node_t *dlnode_ptr, void *ud_ptr),
@@ -448,9 +526,19 @@ bool wlmtk_desktop_lock(
     wlmtk_element_t *element_ptr)
 {
     if (desktop_ptr->locked) {
-        bs_log(BS_WARNING, "Desktop already locked by element %p",
-               desktop_ptr->lock_element_ptr);
-        return false;
+        if (NULL != desktop_ptr->lock_element_ptr) {
+            bs_log(BS_WARNING, "Desktop already locked by element %p",
+                   desktop_ptr->lock_element_ptr);
+            return false;
+        }
+
+        // Locked, but the earlier lock was abandoned (eg. its client died).
+        // The session remains locked; the new lock element takes over.
+        desktop_ptr->lock_element_ptr = element_ptr;
+        wlmtk_container_add_element(
+            &desktop_ptr->container,
+            desktop_ptr->lock_element_ptr);
+        return true;
     }
     desktop_ptr->lock_element_ptr = element_ptr;
 
@@ -504,6 +592,12 @@ bool wlmtk_desktop_locked(wlmtk_desktop_t *desktop_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmtk_desktop_lock_held(wlmtk_desktop_t *desktop_ptr)
+{
+    return desktop_ptr->locked && NULL != desktop_ptr->lock_element_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmtk_desktop_lock_unreference(
     wlmtk_desktop_t *desktop_ptr,
     wlmtk_element_t *element_ptr)
@@ -514,6 +608,119 @@ void wlmtk_desktop_lock_unreference(
         &desktop_ptr->container,
         desktop_ptr->lock_element_ptr);
     desktop_ptr->lock_element_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_box wlmtk_desktop_get_usable_area(
+    wlmtk_desktop_t *desktop_ptr,
+    struct wlr_output *wlr_output_ptr)
+{
+    struct wlr_box area = {};
+    if (NULL == desktop_ptr->wlr_output_layout_ptr) return area;
+    if (NULL == wlr_output_ptr) {
+        if (wl_list_empty(&desktop_ptr->wlr_output_layout_ptr->outputs)) {
+            return area;
+        }
+        struct wlr_output_layout_output *wolo_ptr = BS_CONTAINER_OF(
+            desktop_ptr->wlr_output_layout_ptr->outputs.next,
+            struct wlr_output_layout_output,
+            link);
+        wlr_output_ptr = wolo_ptr->output;
+    }
+    wlr_output_layout_get_box(
+        desktop_ptr->wlr_output_layout_ptr, wlr_output_ptr, &area);
+
+    // Each layer arranges its panels independently: The usable area is what
+    // remains from all of them.
+    for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
+        struct wlr_box layer_area;
+        if (NULL == desktop_ptr->layer_ptrs[i] ||
+            !wlmtk_layer_get_usable_area(
+                desktop_ptr->layer_ptrs[i], wlr_output_ptr, &layer_area)) {
+            continue;
+        }
+        struct wlr_box intersection;
+        if (!wlr_box_intersection(&intersection, &area, &layer_area)) {
+            return (struct wlr_box){};
+        }
+        area = intersection;
+    }
+    return area;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_layer_area_func_t: What the full-edge exclusive
+ * panels of the other layers leave on the output.
+ */
+bool _wlmtk_desktop_other_layers_area(
+    void *ud_ptr,
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *area_ptr)
+{
+    wlmtk_desktop_t *desktop_ptr = ud_ptr;
+    bool any = false;
+    for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
+        wlmtk_layer_t *l = desktop_ptr->layer_ptrs[i];
+        struct wlr_box b;
+        if (NULL == l || l == layer_ptr ||
+            !wlmtk_layer_get_exclusive_area(l, wlr_output_ptr, &b)) continue;
+        if (!any) {
+            *area_ptr = b;
+            any = true;
+        } else if (!wlr_box_intersection(area_ptr, area_ptr, &b)) {
+            *area_ptr = (struct wlr_box){};
+        }
+    }
+    return any;
+}
+
+/* ------------------------------------------------------------------------- */
+/** A layer's usable area changed: The others place their panels again. */
+void _wlmtk_desktop_handle_usable_area_changed(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmtk_desktop_t *desktop_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmtk_desktop_t, usable_area_changed_listener);
+    if (desktop_ptr->rearranging_layers) return;
+    desktop_ptr->rearranging_layers = true;
+    for (int i = 0; i <= WLMTK_DESKTOP_LAYER_OVERLAY; ++i) {
+        if (NULL != desktop_ptr->layer_ptrs[i]) {
+            wlmtk_layer_reconfigure(desktop_ptr->layer_ptrs[i]);
+        }
+    }
+    desktop_ptr->rearranging_layers = false;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_desktop_set_window_placement(
+    wlmtk_desktop_t *desktop_ptr,
+    wlmtk_window_placement_t placement)
+{
+    desktop_ptr->window_placement = placement;
+}
+
+/* ------------------------------------------------------------------------- */
+wlmtk_window_placement_t wlmtk_desktop_get_window_placement(
+    wlmtk_desktop_t *desktop_ptr)
+{
+    return desktop_ptr->window_placement;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_desktop_set_focus_follows_pointer(
+    wlmtk_desktop_t *desktop_ptr,
+    bool follows)
+{
+    desktop_ptr->focus_follows_pointer = follows;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_desktop_get_focus_follows_pointer(wlmtk_desktop_t *desktop_ptr)
+{
+    return desktop_ptr->focus_follows_pointer;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -788,11 +995,13 @@ bool _wlmtk_desktop_workspace_set_style(
 
 static void test_create_destroy(bs_test_t *test_ptr);
 static void test_workspaces(bs_test_t *test_ptr);
+static void test_focus_follows_pointer(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_desktop_test_cases[] = {
     { 1, "create_destroy", test_create_destroy },
     { 1, "workspaces", test_workspaces },
+    { 1, "focus_follows_pointer", test_focus_follows_pointer },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -818,6 +1027,98 @@ void test_create_destroy(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(
         test_ptr, &desktop_ptr->events, wlmtk_desktop_events(desktop_ptr));
 
+    wlmtk_desktop_destroy(desktop_ptr);
+    wl_display_destroy(wl_display_ptr);
+    wlr_scene_node_destroy(&wlr_scene_ptr->tree.node);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Destroying the last workspace while it is the current one, with a window:
+ * Switches to the workspace before, and moves the window there.
+ */
+static void test_destroy_current_last(
+    bs_test_t *test_ptr,
+    wlmtk_desktop_t *desktop_ptr,
+    struct wlr_output_layout *wlr_output_layout_ptr)
+{
+    static const struct wlmtk_tile_style tstyle = {};
+    wlmtk_workspace_t *ws1_ptr = wlmtk_workspace_create(
+        wlr_output_layout_ptr, "1", &tstyle);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws1_ptr);
+    wlmtk_desktop_add_workspace(desktop_ptr, ws1_ptr);
+    wlmtk_workspace_t *ws2_ptr = wlmtk_workspace_create(
+        wlr_output_layout_ptr, "2", &tstyle);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws2_ptr);
+    wlmtk_desktop_add_workspace(desktop_ptr, ws2_ptr);
+    wlmtk_desktop_switch_to_next_workspace(desktop_ptr);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws2_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
+
+    wlmtk_window_t *w_ptr = wlmtk_test_window_create(NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w_ptr);
+    wlmtk_workspace_map_window(ws2_ptr, w_ptr);
+
+    wlmtk_desktop_destroy_last_workspace(desktop_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, bs_dllist_size(&desktop_ptr->workspaces));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws1_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, ws1_ptr, wlmtk_window_get_workspace(w_ptr));
+
+    wlmtk_workspace_unmap_window(ws1_ptr, w_ptr);
+    wlmtk_window_destroy(w_ptr);
+    wlmtk_desktop_remove_workspace(desktop_ptr, ws1_ptr);
+    wlmtk_workspace_destroy(ws1_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Activates windows on pointer entry, only with focus-follows-pointer. */
+void test_focus_follows_pointer(bs_test_t *test_ptr)
+{
+    struct wlr_scene *wlr_scene_ptr = wlr_scene_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wlr_scene_ptr);
+    struct wl_display *wl_display_ptr = wl_display_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wl_display_ptr);
+    struct wlr_output_layout *wlr_output_layout_ptr =
+        wlr_output_layout_create(wl_display_ptr);
+    struct wlmtk_desktop_style ds = {};
+    wlmtk_desktop_t *desktop_ptr = wlmtk_desktop_create(
+        wlr_scene_ptr, &ds, wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, desktop_ptr);
+    static const struct wlmtk_tile_style tstyle = {};
+    wlmtk_workspace_t *ws_ptr = wlmtk_workspace_create(
+        wlr_output_layout_ptr, "1", &tstyle);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws_ptr);
+    wlmtk_desktop_add_workspace(desktop_ptr, ws_ptr);
+
+    wlmtk_window_t *w1_ptr = wlmtk_test_window_create(NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w1_ptr);
+    wlmtk_workspace_map_window(ws_ptr, w1_ptr);
+    wlmtk_window_t *w2_ptr = wlmtk_test_window_create(NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w2_ptr);
+    wlmtk_workspace_map_window(ws_ptr, w2_ptr);
+    wlmtk_workspace_activate_window(ws_ptr, w1_ptr);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_activated(w1_ptr));
+
+    // Default: Click to focus. Entering w2 doesn't activate it.
+    BS_TEST_VERIFY_FALSE(
+        test_ptr, wlmtk_desktop_get_focus_follows_pointer(desktop_ptr));
+    wl_signal_emit(&wlmtk_window_element(w2_ptr)->events.pointer_enter, NULL);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_activated(w1_ptr));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_activated(w2_ptr));
+
+    // Focus follows pointer: Entering w2 activates it.
+    wlmtk_desktop_set_focus_follows_pointer(desktop_ptr, true);
+    wl_signal_emit(&wlmtk_window_element(w2_ptr)->events.pointer_enter, NULL);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_activated(w1_ptr));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_activated(w2_ptr));
+
+    wlmtk_workspace_unmap_window(ws_ptr, w2_ptr);
+    wlmtk_window_destroy(w2_ptr);
+    wlmtk_workspace_unmap_window(ws_ptr, w1_ptr);
+    wlmtk_window_destroy(w1_ptr);
+    wlmtk_desktop_remove_workspace(desktop_ptr, ws_ptr);
+    wlmtk_workspace_destroy(ws_ptr);
     wlmtk_desktop_destroy(desktop_ptr);
     wl_display_destroy(wl_display_ptr);
     wlr_scene_node_destroy(&wlr_scene_ptr->tree.node);
@@ -883,6 +1184,25 @@ void test_workspaces(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, ws2_ptr, l.last_data_ptr);
     wlmtk_util_clear_test_listener(&l);
 
+    // Switching by position: to the 2nd, then back to the 1st.
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws2_ptr, wlmtk_desktop_get_workspace_at(desktop_ptr, 1));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, NULL, wlmtk_desktop_get_workspace_at(desktop_ptr, 2));
+    BS_TEST_VERIFY_FALSE(
+        test_ptr, wlmtk_desktop_switch_to_workspace_at(desktop_ptr, 2));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws1_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, wlmtk_desktop_switch_to_workspace_at(desktop_ptr, 1));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws2_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, wlmtk_desktop_switch_to_workspace_at(desktop_ptr, 0));
+    BS_TEST_VERIFY_EQ(
+        test_ptr, ws1_ptr, wlmtk_desktop_get_current_workspace(desktop_ptr));
+    wlmtk_util_clear_test_listener(&l);
+
     wlmtk_desktop_remove_workspace(desktop_ptr, ws1_ptr);
     BS_TEST_VERIFY_EQ(test_ptr, 1, l.calls);
     wlmtk_util_clear_test_listener(&l);
@@ -923,6 +1243,8 @@ void test_workspaces(bs_test_t *test_ptr)
         test_ptr, NULL, wlmtk_desktop_get_current_workspace(desktop_ptr));
     BS_TEST_VERIFY_EQ(test_ptr, NULL, l.last_data_ptr);
     BS_TEST_VERIFY_EQ(test_ptr, 0, l.calls);
+
+    test_destroy_current_last(test_ptr, desktop_ptr, wlr_output_layout_ptr);
 
     wlmtk_util_disconnect_test_listener(&l);
     wlmtk_desktop_destroy(desktop_ptr);

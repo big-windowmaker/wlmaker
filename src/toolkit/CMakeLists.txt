@@ -114,7 +114,7 @@ target_compile_options(
 target_link_libraries(
   wlmtoolkit_lib
   PUBLIC libbase PkgConfig::CAIRO PkgConfig::WLROOTS
-  PRIVATE PkgConfig::WAYLAND_SERVER libbase_plist
+  PRIVATE PkgConfig::WAYLAND_SERVER libbase_plist ${Intl_LIBRARIES}
 )
 if(iwyu_path_and_options)
   set_target_properties(

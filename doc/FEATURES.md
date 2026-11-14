@@ -33,6 +33,7 @@ that map to above states.
 #### Elements of the window decoration
 
 * [x] :white_check_mark: XDG decoration protocol implemented, applies decoration as negotiated.
+* [x] :white_check_mark: KDE server decoration protocol implemented (for GTK3), applies decoration as negotiated.
 * [ ] Override decoration setting per application.
 * [ ] Configure applying window decoration in case application does not support decoration protocol.
 
@@ -210,7 +211,7 @@ TBD: Raise/Lower.
 
 ### `ext-idle-notify-v1`
 
-* [ ] Implement.
+* [x] :white_check_mark: Implemented, honoring idle inhibitors. Verified with `swayidle`.
 
 ### `ext-image-capture-source-v1`
 
@@ -234,9 +235,30 @@ TBD: Raise/Lower.
 * [x] :white_check_mark: Implement.
 * [ ] Test it. Didn't have a tool when adding it.
 
+### `presentation-time`
+
+* [x] :white_check_mark: Implemented, feedback provided by the wlroots scene graph.
+
+### `relative-pointer-unstable-v1`
+
+* [x] :white_check_mark: Implemented.
+* [ ] Add `pointer-constraints-unstable-v1`, to lock or confine the pointer.
+
+### `single-pixel-buffer-v1`
+
+* [x] :white_check_mark: Implemented.
+
+### `virtual-keyboard-unstable-v1`
+
+* [x] :white_check_mark: Implemented, keeps the keymap provided by the client.
+
 ### `wlr-foreign-toplevel-management-unstable-v1`
 
 * [ ] Implement.
+
+### `wlr-gamma-control-unstable-v1`
+
+* [x] :white_check_mark: Implemented, applied by the wlroots scene graph.
 
 ### `wlr-layer-shell-unstable-v1`
 
@@ -249,9 +271,17 @@ TBD: Raise/Lower.
 * [x] :white_check_mark: Scale, transformation and mode of output is configurable
   in *config* file, by matching output attributes.
 
+### `wlr-output-power-management-unstable-v1`
+
+* [x] :white_check_mark: Implemented: Powers outputs off and on by disabling, resp. enabling them.
+
 ### `wlr-screencopy-unstable-v1`
 
 * [x] :white_check_mark: Implemented, works for `wdisplays`.
+
+### `wlr-virtual-pointer-unstable-v1`
+
+* [x] :white_check_mark: Implemented.
 
 ### `wp_viewporter`
 
@@ -259,11 +289,22 @@ TBD: Raise/Lower.
 
 ### `xdg-activation-v1`
 
-* [ ] Implement.
+* [x] :white_check_mark: Implemented: Activates and raises the window on the current workspace.
+* [ ] Switch to the window's workspace, when on a different workspace.
+* [ ] Consider focus stealing prevention (validate token seat and serial).
+
+### `server-decoration` (KDE)
+
+* [x] :white_check_mark: Implemented, same decoration modes as for `xdg-decoration`. Used by GTK3.
 
 ### `xdg-decoration`
 
 * [x] :white_check_mark: Implemented.
+
+### `xdg-foreign-unstable-v1`, `xdg-foreign-unstable-v2`
+
+* [x] :white_check_mark: Implemented.
+* [ ] Act upon the parent relation (depends on `set_parent` in `xdg-shell`).
 
 ### `xdg-shell`
 

@@ -85,11 +85,16 @@ else()
 endif()
 include(CTest)
 find_package(PkgConfig REQUIRED)
+# Translations: gettext from the C library (libintl), msgfmt for the catalogs.
+find_package(Intl REQUIRED)
+find_package(Gettext REQUIRED)
 find_package(Libinput)
 pkg_check_modules(CAIRO REQUIRED IMPORTED_TARGET cairo>=1.16.0)
 pkg_check_modules(LIBRSVG REQUIRED IMPORTED_TARGET librsvg-2.0)
 pkg_check_modules(LIBXDGBASEDIR REQUIRED IMPORTED_TARGET libxdg-basedir>=1.2)
 pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon>=1.5.0)
+# Optional: For the `wlmmixer` DockApp. Works with PulseAudio and PipeWire.
+pkg_check_modules(LIBPULSE IMPORTED_TARGET libpulse>=13.0)
 
 # https://github.com/ianlancetaylor/libbacktrace.
 # The REQUIRED arg is available only from cmake 3.28.
@@ -153,6 +158,7 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 add_subdirectory(apps)
 add_subdirectory(examples)
 add_subdirectory(etc)
+add_subdirectory(po)
 add_subdirectory(protocols)
 add_subdirectory(third_party/protocols)
 add_subdirectory(share)

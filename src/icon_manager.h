@@ -29,7 +29,13 @@ typedef struct _wlmaker_icon_manager_t wlmaker_icon_manager_t;
 /** Forward declaration: Toplevel icon handle. */
 typedef struct _wlmaker_toplevel_icon_t wlmaker_toplevel_icon_t;
 
+#include <stddef.h>
+#include <sys/types.h>
+
 #include "task_list.h"
+
+struct wlr_box;
+struct wlr_layer_surface_v1;
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,6 +61,68 @@ wlmaker_icon_manager_t *wlmaker_icon_manager_create(
  */
 void wlmaker_icon_manager_destroy(
     wlmaker_icon_manager_t *icon_manager_ptr);
+
+/**
+ * Adopts a layer surface as a dock-app: Its surface becomes the content of
+ * a tile, placed on the Dock, the Clip or a drawer like the dock-apps of the
+ * icon protocol (by the client's name), and handled as they are: dragged,
+ * removed, its menu. Its popups show above the dock. The surface keeps the
+ * size it asks for (up to the tile's); the right button goes to it where it
+ * takes input (its input region), the tile's menu elsewhere. Layer, anchor
+ * and margins are ignored. For layer-shell clients with the namespace
+ * "wlmaker-dockapp", eg. the system tray.
+ *
+ * @param icon_manager_ptr
+ * @param wlr_layer_surface_v1_ptr
+ *
+ * @return true if adopted: The tile goes with the layer surface.
+ */
+bool wlmaker_icon_manager_adopt_layer_surface(
+    wlmaker_icon_manager_t *icon_manager_ptr,
+    struct wlr_layer_surface_v1 *wlr_layer_surface_v1_ptr);
+
+struct wlr_xwayland_surface;
+
+/**
+ * Adopts an X11 dock-app's icon window (shown through XWayland) as a
+ * dock-app: Its surface is the content of a tile, placed by `name_ptr` like
+ * the other dock-apps, dragged and removed as they are. The X11 program gets
+ * the pointer on its window, also the right button (the tile's menu is on
+ * the border), as on Window Maker. The window is configured at the place it
+ * is shown at, for its popups.
+ *
+ * @param icon_manager_ptr
+ * @param wlr_xwayland_surface_ptr The icon window's surface.
+ * @param name_ptr            The dock-app's name (WM_CLASS instance), or
+ *                            NULL.
+ * @param pid                 The dock-app's process, or 0.
+ *
+ * @return The tile's icon, or NULL if not adopted. Release it with
+ *     @ref wlmaker_icon_manager_release_xwayland_icon when the window goes.
+ */
+wlmaker_toplevel_icon_t *wlmaker_icon_manager_adopt_xwayland_surface(
+    wlmaker_icon_manager_t *icon_manager_ptr,
+    struct wlr_xwayland_surface *wlr_xwayland_surface_ptr,
+    const char *name_ptr,
+    pid_t pid);
+
+/**
+ * Sets the shape of an adopted X11 icon window: Only these rectangles of
+ * it (in its coordinates) are shown, the tile shows around them; as Window
+ * Maker shows a shaped icon window (X Shape extension). NULL or none: All.
+ *
+ * @param toplevel_icon_ptr
+ * @param rects_ptr
+ * @param rects
+ */
+void wlmaker_icon_manager_set_xwayland_shape(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr,
+    const struct wlr_box *rects_ptr,
+    size_t rects);
+
+/** Releases what @ref wlmaker_icon_manager_adopt_xwayland_surface adopted. */
+void wlmaker_icon_manager_release_xwayland_icon(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr);
 
 #ifdef __cplusplus
 }  // extern "C"

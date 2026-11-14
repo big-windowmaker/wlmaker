@@ -26,6 +26,7 @@
 #include <libbase/plist.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "box.h"
 #include "container.h"
@@ -195,6 +196,122 @@ void wlmtk_dock_add_tile(
 }
 
 /* ------------------------------------------------------------------------- */
+const wlmtk_dock_positioning_t *wlmtk_dock_get_positioning(
+    wlmtk_dock_t *dock_ptr)
+{
+    return &dock_ptr->dock_positioning;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_dock_set_positioning(
+    wlmtk_dock_t *dock_ptr,
+    const wlmtk_dock_positioning_t *positioning_ptr)
+{
+    wlmtk_dock_positioning_t old_positioning = dock_ptr->dock_positioning;
+    wlmtk_box_orientation_t old_orientation = _wlmtk_dock_orientation(dock_ptr);
+    dock_ptr->dock_positioning = *positioning_ptr;
+    if (_wlmtk_dock_orientation(dock_ptr) != old_orientation) {
+        dock_ptr->dock_positioning = old_positioning;
+        return false;
+    }
+
+    // Collect tiles in order from the (former) anchor, then re-add: Adding
+    // places a tile at the end away from the (new) anchor.
+    size_t n = bs_dllist_size(&dock_ptr->tiles);
+    wlmtk_tile_t **tiles_ptr = NULL;
+    if (0 < n) {
+        tiles_ptr = logged_calloc(n, sizeof(wlmtk_tile_t*));
+        if (NULL == tiles_ptr) {
+            dock_ptr->dock_positioning = old_positioning;
+            return false;
+        }
+    }
+    bool from_head = (WLR_EDGE_TOP == old_positioning.anchor ||
+                      WLR_EDGE_LEFT == old_positioning.anchor);
+    size_t pos = 0;
+    for (bs_dllist_node_t *dlnode_ptr = from_head ?
+             dock_ptr->tiles.head_ptr : dock_ptr->tiles.tail_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = from_head ? dlnode_ptr->next_ptr : dlnode_ptr->prev_ptr) {
+        tiles_ptr[pos++] = wlmtk_tile_from_dlnode(dlnode_ptr);
+    }
+    for (size_t i = 0; i < n; ++i) {
+        wlmtk_box_remove_element(
+            &dock_ptr->tile_box, wlmtk_tile_element(tiles_ptr[i]));
+        bs_dllist_remove(&dock_ptr->tiles, wlmtk_dlnode_from_tile(tiles_ptr[i]));
+    }
+    for (size_t i = 0; i < n; ++i) wlmtk_dock_add_tile(dock_ptr, tiles_ptr[i]);
+    if (NULL != tiles_ptr) free(tiles_ptr);
+
+    _wlmtk_dock_panel_request_size(&dock_ptr->super_panel, 0, 0);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+size_t wlmtk_dock_tiles(wlmtk_dock_t *dock_ptr)
+{
+    return bs_dllist_size(&dock_ptr->tiles);
+}
+
+/* ------------------------------------------------------------------------- */
+int wlmtk_dock_tile_index(wlmtk_dock_t *dock_ptr, wlmtk_tile_t *tile_ptr)
+{
+    // @ref wlmtk_dock_t::tiles is in visual order (top/left first). Tiles are
+    // added at the end away from the anchor.
+    bool from_head = (WLR_EDGE_TOP == dock_ptr->dock_positioning.anchor ||
+                      WLR_EDGE_LEFT == dock_ptr->dock_positioning.anchor);
+    int index = 0;
+    for (bs_dllist_node_t *dlnode_ptr = from_head ?
+             dock_ptr->tiles.head_ptr : dock_ptr->tiles.tail_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = from_head ? dlnode_ptr->next_ptr : dlnode_ptr->prev_ptr) {
+        if (wlmtk_tile_from_dlnode(dlnode_ptr) == tile_ptr) return index;
+        ++index;
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_dock_move_tile(
+    wlmtk_dock_t *dock_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t index)
+{
+    int current = wlmtk_dock_tile_index(dock_ptr, tile_ptr);
+    size_t n = bs_dllist_size(&dock_ptr->tiles);
+    if (0 > current) return;
+    if (index >= n) index = n - 1;
+    if ((size_t)current == index) return;
+
+    // Collect tiles in order from the anchor, without `tile_ptr`.
+    wlmtk_tile_t **tiles_ptr = logged_calloc(n, sizeof(wlmtk_tile_t*));
+    if (NULL == tiles_ptr) return;
+    bool from_head = (WLR_EDGE_TOP == dock_ptr->dock_positioning.anchor ||
+                      WLR_EDGE_LEFT == dock_ptr->dock_positioning.anchor);
+    size_t pos = 0;
+    for (bs_dllist_node_t *dlnode_ptr = from_head ?
+             dock_ptr->tiles.head_ptr : dock_ptr->tiles.tail_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = from_head ? dlnode_ptr->next_ptr : dlnode_ptr->prev_ptr) {
+        wlmtk_tile_t *t_ptr = wlmtk_tile_from_dlnode(dlnode_ptr);
+        if (t_ptr != tile_ptr) tiles_ptr[pos++] = t_ptr;
+    }
+    // Insert `tile_ptr` at `index`.
+    memmove(&tiles_ptr[index + 1], &tiles_ptr[index],
+            (n - 1 - index) * sizeof(wlmtk_tile_t*));
+    tiles_ptr[index] = tile_ptr;
+
+    // Re-add all tiles in that order. Adding places a tile at the far end.
+    for (size_t i = 0; i < n; ++i) {
+        wlmtk_box_remove_element(
+            &dock_ptr->tile_box, wlmtk_tile_element(tiles_ptr[i]));
+        bs_dllist_remove(&dock_ptr->tiles, wlmtk_dlnode_from_tile(tiles_ptr[i]));
+    }
+    for (size_t i = 0; i < n; ++i) wlmtk_dock_add_tile(dock_ptr, tiles_ptr[i]);
+    free(tiles_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmtk_dock_remove_tile(
     wlmtk_dock_t *dock_ptr,
     wlmtk_tile_t *tile_ptr)
@@ -344,7 +461,51 @@ bool _wlmtk_dock_positioning(
         return false;
     }
 
+    // Distance from the anchor.
+    switch (dock_ptr->dock_positioning.anchor) {
+    case WLR_EDGE_TOP:
+        panel_positioning_ptr->margin_top = dock_ptr->dock_positioning.margin;
+        break;
+    case WLR_EDGE_BOTTOM:
+        panel_positioning_ptr->margin_bottom = dock_ptr->dock_positioning.margin;
+        break;
+    case WLR_EDGE_LEFT:
+        panel_positioning_ptr->margin_left = dock_ptr->dock_positioning.margin;
+        break;
+    case WLR_EDGE_RIGHT:
+        panel_positioning_ptr->margin_right = dock_ptr->dock_positioning.margin;
+        break;
+    default:
+        break;
+    }
+
+    // Distance from the edge.
+    switch (dock_ptr->dock_positioning.edge) {
+    case WLR_EDGE_TOP:
+        panel_positioning_ptr->margin_top = dock_ptr->dock_positioning.edge_offset;
+        break;
+    case WLR_EDGE_BOTTOM:
+        panel_positioning_ptr->margin_bottom =
+            dock_ptr->dock_positioning.edge_offset;
+        break;
+    case WLR_EDGE_LEFT:
+        panel_positioning_ptr->margin_left =
+            dock_ptr->dock_positioning.edge_offset;
+        break;
+    case WLR_EDGE_RIGHT:
+        panel_positioning_ptr->margin_right =
+            dock_ptr->dock_positioning.edge_offset;
+        break;
+    default:
+        break;
+    }
+
     panel_positioning_ptr->exclusive_edge = dock_ptr->dock_positioning.edge;
+    // Overlay: Relative to the full output, without an exclusive zone. As
+    // the layer shell's exclusive zone of -1.
+    if (dock_ptr->dock_positioning.overlay) {
+        panel_positioning_ptr->exclusive_zone = -1;
+    }
     return true;
 }
 
@@ -370,10 +531,16 @@ void _wlmtk_dock_tile_destroy(bs_dllist_node_t *dlnode_ptr, void *ud_ptr)
 /* == Unit tests =========================================================== */
 
 static void test_create_destroy(bs_test_t *test_ptr);
+static void test_move_tile(bs_test_t *test_ptr);
+static void test_set_positioning(bs_test_t *test_ptr);
+static void test_edge_offset(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_dock_test_cases[] = {
     { 1, "create_destroy", test_create_destroy },
+    { 1, "move_tile", test_move_tile },
+    { 1, "set_positioning", test_set_positioning },
+    { 1, "edge_offset", test_edge_offset },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -408,6 +575,132 @@ const bs_test_set_t wlmtk_dock_test_set = BS_TEST_SET(
         WLMTK_BOX_VERTICAL,
         dock_ptr->tile_box.orientation);
     BS_TEST_VERIFY_NEQ(test_ptr, NULL, dock_ptr);
+    wlmtk_dock_destroy(dock_ptr);
+}
+
+
+/* ------------------------------------------------------------------------- */
+/** Tests indexing and moving tiles, for both anchor directions. */
+void test_move_tile(bs_test_t *test_ptr)
+{
+    static const enum wlr_edges anchors[] = { WLR_EDGE_TOP, WLR_EDGE_BOTTOM };
+    for (size_t a = 0; a < 2; ++a) {
+        wlmtk_dock_positioning_t pos = {
+            .edge = WLR_EDGE_LEFT, .anchor = anchors[a] };
+        struct wlmtk_dock_style style = {};
+        wlmtk_dock_t *dock_ptr = wlmtk_dock_create(&pos, &style);
+        BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dock_ptr);
+
+        struct wlmtk_tile_style ts = { .size = 64 };
+        wlmtk_tile_t t[3];
+        for (int i = 0; i < 3; ++i) {
+            BS_TEST_VERIFY_TRUE_OR_RETURN(test_ptr, wlmtk_tile_init(&t[i], &ts));
+            wlmtk_element_set_visible(wlmtk_tile_element(&t[i]), true);
+            wlmtk_dock_add_tile(dock_ptr, &t[i]);
+        }
+        BS_TEST_VERIFY_EQ(test_ptr, 3, wlmtk_dock_tiles(dock_ptr));
+        BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_dock_tile_index(dock_ptr, &t[0]));
+        BS_TEST_VERIFY_EQ(test_ptr, 2, wlmtk_dock_tile_index(dock_ptr, &t[2]));
+
+        // Move last to the anchor: order 2, 0, 1.
+        wlmtk_dock_move_tile(dock_ptr, &t[2], 0);
+        BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_dock_tile_index(dock_ptr, &t[2]));
+        BS_TEST_VERIFY_EQ(test_ptr, 1, wlmtk_dock_tile_index(dock_ptr, &t[0]));
+        BS_TEST_VERIFY_EQ(test_ptr, 2, wlmtk_dock_tile_index(dock_ptr, &t[1]));
+
+        // Move first far beyond the end: order 0, 1, 2.
+        wlmtk_dock_move_tile(dock_ptr, &t[2], 10);
+        BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_dock_tile_index(dock_ptr, &t[0]));
+        BS_TEST_VERIFY_EQ(test_ptr, 1, wlmtk_dock_tile_index(dock_ptr, &t[1]));
+        BS_TEST_VERIFY_EQ(test_ptr, 2, wlmtk_dock_tile_index(dock_ptr, &t[2]));
+
+        // Visual position: Index 0 nearest the anchor.
+        int x0, y0, x2, y2;
+        wlmtk_element_get_position(wlmtk_tile_element(&t[0]), &x0, &y0);
+        wlmtk_element_get_position(wlmtk_tile_element(&t[2]), &x2, &y2);
+        if (WLR_EDGE_TOP == anchors[a]) {
+            BS_TEST_VERIFY_TRUE(test_ptr, y0 < y2);
+        } else {
+            BS_TEST_VERIFY_TRUE(test_ptr, y0 > y2);
+        }
+
+        for (int i = 0; i < 3; ++i) {
+            wlmtk_dock_remove_tile(dock_ptr, &t[i]);
+            wlmtk_tile_fini(&t[i]);
+        }
+        wlmtk_dock_destroy(dock_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Moves the dock to other corners: Order from the anchor is kept. */
+void test_set_positioning(bs_test_t *test_ptr)
+{
+    wlmtk_dock_positioning_t pos = {
+        .edge = WLR_EDGE_LEFT, .anchor = WLR_EDGE_TOP };
+    struct wlmtk_dock_style style = {};
+    wlmtk_dock_t *dock_ptr = wlmtk_dock_create(&pos, &style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dock_ptr);
+
+    struct wlmtk_tile_style ts = { .size = 64 };
+    wlmtk_tile_t t[3];
+    for (int i = 0; i < 3; ++i) {
+        BS_TEST_VERIFY_TRUE_OR_RETURN(test_ptr, wlmtk_tile_init(&t[i], &ts));
+        wlmtk_element_set_visible(wlmtk_tile_element(&t[i]), true);
+        wlmtk_dock_add_tile(dock_ptr, &t[i]);
+    }
+
+    // To the bottom-right corner: t[0] still nearest the anchor, now lowest.
+    pos = (wlmtk_dock_positioning_t){
+        .edge = WLR_EDGE_RIGHT, .anchor = WLR_EDGE_BOTTOM };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_dock_set_positioning(dock_ptr, &pos));
+    BS_TEST_VERIFY_EQ(test_ptr, WLR_EDGE_RIGHT,
+                      wlmtk_dock_get_positioning(dock_ptr)->edge);
+    for (int i = 0; i < 3; ++i) {
+        BS_TEST_VERIFY_EQ(test_ptr, i, wlmtk_dock_tile_index(dock_ptr, &t[i]));
+    }
+    int x0, y0, x2, y2;
+    wlmtk_element_get_position(wlmtk_tile_element(&t[0]), &x0, &y0);
+    wlmtk_element_get_position(wlmtk_tile_element(&t[2]), &x2, &y2);
+    BS_TEST_VERIFY_TRUE(test_ptr, y0 > y2);
+
+    // Back to the top: Order kept.
+    pos.anchor = WLR_EDGE_TOP;
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_dock_set_positioning(dock_ptr, &pos));
+    for (int i = 0; i < 3; ++i) {
+        BS_TEST_VERIFY_EQ(test_ptr, i, wlmtk_dock_tile_index(dock_ptr, &t[i]));
+    }
+
+    // Changing the orientation is refused.
+    pos = (wlmtk_dock_positioning_t){
+        .edge = WLR_EDGE_BOTTOM, .anchor = WLR_EDGE_LEFT };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_dock_set_positioning(dock_ptr, &pos));
+    BS_TEST_VERIFY_EQ(test_ptr, WLR_EDGE_RIGHT,
+                      wlmtk_dock_get_positioning(dock_ptr)->edge);
+
+    for (int i = 0; i < 3; ++i) {
+        wlmtk_dock_remove_tile(dock_ptr, &t[i]);
+        wlmtk_tile_fini(&t[i]);
+    }
+    wlmtk_dock_destroy(dock_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests the distance from the edge, and an overlay's exclusive zone. */
+void test_edge_offset(bs_test_t *test_ptr)
+{
+    wlmtk_dock_positioning_t pos = {
+        .edge = WLR_EDGE_TOP, .anchor = WLR_EDGE_RIGHT,
+        .margin = 65, .edge_offset = 130, .overlay = true };
+    struct wlmtk_dock_style style = {};
+    wlmtk_dock_t *dock_ptr = wlmtk_dock_create(&pos, &style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dock_ptr);
+    wlmtk_panel_positioning_t p = {};
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmtk_dock_positioning(dock_ptr, &p));
+    BS_TEST_VERIFY_EQ(test_ptr, WLR_EDGE_TOP | WLR_EDGE_RIGHT, p.anchor);
+    BS_TEST_VERIFY_EQ(test_ptr, 65, p.margin_right);
+    BS_TEST_VERIFY_EQ(test_ptr, 130, p.margin_top);
+    BS_TEST_VERIFY_EQ(test_ptr, -1, p.exclusive_zone);
     wlmtk_dock_destroy(dock_ptr);
 }
 

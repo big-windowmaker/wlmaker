@@ -65,6 +65,8 @@ struct _wlmtk_surface_t {
     int                       committed_width;
     /** Committed height of the surface, in pixels. */
     int                       committed_height;
+    /** Whether an XDG surface is shown cropped to its window geometry. */
+    bool                      clip_to_geometry;
 
     /** Listener for the `events.commit` signal of `wlr_surface`. */
     struct wl_listener        surface_commit_listener;
@@ -132,6 +134,7 @@ static void _wlmtk_surface_handle_element_pointer_motion(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
+static void _wlmtk_surface_apply_clip(wlmtk_surface_t *surface_ptr);
 static void _wlmtk_surface_commit_size(
     wlmtk_surface_t *surface_ptr,
     int width,
@@ -220,14 +223,15 @@ void wlmtk_surface_set_activated(
         struct wlr_keyboard *wlr_keyboard_ptr = wlr_seat_get_keyboard(
             surface_ptr->wlr_seat_ptr);
         if (activated) {
-            if (NULL != wlr_keyboard_ptr) {
-                wlr_seat_keyboard_notify_enter(
-                    surface_ptr->wlr_seat_ptr,
-                    surface_ptr->wlr_surface_ptr,
-                    wlr_keyboard_ptr->keycodes,
-                    wlr_keyboard_ptr->num_keycodes,
-                    &wlr_keyboard_ptr->modifiers);
-            }
+            // Sets keyboard focus also without a keyboard: The seat tracks
+            // the focus, so that keys of a keyboard added later (hotplug,
+            // virtual keyboard) go to this surface.
+            wlr_seat_keyboard_notify_enter(
+                surface_ptr->wlr_seat_ptr,
+                surface_ptr->wlr_surface_ptr,
+                NULL != wlr_keyboard_ptr ? wlr_keyboard_ptr->keycodes : NULL,
+                NULL != wlr_keyboard_ptr ? wlr_keyboard_ptr->num_keycodes : 0,
+                NULL != wlr_keyboard_ptr ? &wlr_keyboard_ptr->modifiers : NULL);
         } else if (surface_ptr->wlr_seat_ptr->keyboard_state.focused_surface ==
                    surface_ptr->wlr_surface_ptr) {
             wlr_seat_keyboard_clear_focus(surface_ptr->wlr_seat_ptr);
@@ -448,6 +452,7 @@ struct wlr_scene_node *_wlmtk_surface_element_create_scene_node(
             wlr_scene_tree_ptr, surface_ptr->wlr_surface_ptr);
     }
     if (NULL == surface_ptr->wlr_scene_tree_ptr) return NULL;
+    _wlmtk_surface_apply_clip(surface_ptr);
 
     wlmtk_util_connect_listener_signal(
         &surface_ptr->wlr_scene_tree_ptr->node.events.destroy,
@@ -663,10 +668,39 @@ void _wlmtk_surface_handle_surface_commit(
     wlmtk_surface_t *surface_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmtk_surface_t, surface_commit_listener);
 
-    _wlmtk_surface_commit_size(
-        surface_ptr,
-        surface_ptr->wlr_surface_ptr->current.width,
-        surface_ptr->wlr_surface_ptr->current.height);
+    // An XDG surface's size is its window geometry: Without the client's
+    // shadows and resize margins (the scene tree is offset by the geometry).
+    int width = surface_ptr->wlr_surface_ptr->current.width;
+    int height = surface_ptr->wlr_surface_ptr->current.height;
+    if (NULL != surface_ptr->wlr_xdg_surface_ptr &&
+        0 < surface_ptr->wlr_xdg_surface_ptr->geometry.width &&
+        0 < surface_ptr->wlr_xdg_surface_ptr->geometry.height) {
+        width = surface_ptr->wlr_xdg_surface_ptr->geometry.width;
+        height = surface_ptr->wlr_xdg_surface_ptr->geometry.height;
+    }
+    _wlmtk_surface_apply_clip(surface_ptr);
+    _wlmtk_surface_commit_size(surface_ptr, width, height);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Crops an XDG surface to its window geometry, if requested. */
+void _wlmtk_surface_apply_clip(wlmtk_surface_t *surface_ptr)
+{
+    if (NULL == surface_ptr->wlr_xdg_surface_ptr ||
+        NULL == surface_ptr->wlr_scene_tree_ptr) return;
+    struct wlr_box geo = surface_ptr->wlr_xdg_surface_ptr->geometry;
+    wlr_scene_subsurface_tree_set_clip(
+        &surface_ptr->wlr_scene_tree_ptr->node,
+        surface_ptr->clip_to_geometry && 0 < geo.width && 0 < geo.height ?
+        &geo : NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_surface_set_clip_to_geometry(wlmtk_surface_t *surface_ptr,
+                                        bool clip)
+{
+    surface_ptr->clip_to_geometry = clip;
+    _wlmtk_surface_apply_clip(surface_ptr);
 }
 
 /* ------------------------------------------------------------------------- */

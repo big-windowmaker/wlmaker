@@ -81,8 +81,73 @@ struct wlmcl_client_events {
     struct wl_signal          keymap;
     /** Keyboard repeat information was updated. No argument. */
     struct wl_signal          keyboard_repeat_info;
+    /**
+     * The seat's pointer appeared or disappeared: Check
+     * @ref wlmcl_client_attributes::wl_pointer_ptr. No argument.
+     */
+    struct wl_signal          pointer_changed;
     /** Indicates the outputs have changed. A bs_dllist_t of outputs. */
     struct bs_signal          outputs_changed;
+    /**
+     * A pointer button was pressed or released over one of the client's
+     * surfaces. Provides struct @ref wlmcl_client_pointer_button_event *.
+     */
+    struct wl_signal          pointer_button;
+    /**
+     * A pointer axis (eg. the scroll wheel) was moved over one of the client's
+     * surfaces. Emitted once per axis and pointer frame. Provides
+     * struct @ref wlmcl_client_pointer_axis_event *.
+     */
+    struct wl_signal          pointer_axis;
+    /**
+     * The pointer left one of the client's surfaces. Provides the
+     * struct wl_surface *.
+     */
+    struct wl_signal          pointer_leave;
+    /**
+     * The pointer moved over one of the client's surfaces. Provides struct
+     * @ref wlmcl_client_pointer_motion_event *.
+     */
+    struct wl_signal          pointer_motion;
+};
+
+/** Event argument for @ref wlmcl_client_events::pointer_button. */
+struct wlmcl_client_pointer_button_event {
+    /** The surface that has pointer focus. NULL if unknown. */
+    struct wl_surface         *wl_surface_ptr;
+    /** The button, as linux input event code. Eg. `BTN_LEFT`. */
+    uint32_t                  button;
+    /** Whether the button was pressed (true) or released. */
+    bool                      pressed;
+    /** Position of the pointer on the surface, in surface coordinates. */
+    double                    x;
+    /** Position of the pointer on the surface, in surface coordinates. */
+    double                    y;
+};
+
+/** Event argument for @ref wlmcl_client_events::pointer_motion. */
+struct wlmcl_client_pointer_motion_event {
+    /** The surface that has pointer focus. */
+    struct wl_surface         *wl_surface_ptr;
+    /** Position of the pointer on the surface, in surface coordinates. */
+    double                    x;
+    /** Position of the pointer on the surface, in surface coordinates. */
+    double                    y;
+};
+
+/** Event argument for @ref wlmcl_client_events::pointer_axis. */
+struct wlmcl_client_pointer_axis_event {
+    /** The surface that has pointer focus. NULL if unknown. */
+    struct wl_surface         *wl_surface_ptr;
+    /** The axis. A value of `enum wl_pointer_axis`. */
+    uint32_t                  axis;
+    /** Length of the motion along the axis, in surface coordinates. */
+    double                    value;
+    /**
+     * Number of discrete steps (eg. wheel clicks). Positive values are
+     * scrolling down or right. 0 if the source is not discrete.
+     */
+    int32_t                   discrete;
 };
 
 /** Key event. */
@@ -175,6 +240,18 @@ const struct wlmcl_client_attributes *wlmcl_client_attributes(
 /** @return A pointer to @ref wlmcl_client_t::events. */
 struct wlmcl_client_events *wlmcl_client_events(wlmcl_client_t *wlmcl_client_ptr);
 
+/**
+ * Adds a signal to those monitored by @ref wlmcl_client_signal_fd (initially
+ * SIGINT and SIGTERM). It is blocked from regular delivery.
+ *
+ * @param wlmcl_client_ptr
+ * @param signal_number
+ *
+ * @return true on success.
+ */
+bool wlmcl_client_add_signal(wlmcl_client_t *wlmcl_client_ptr,
+                             int signal_number);
+
 /** @return The signal file descriptor monitored by the client. */
 int wlmcl_client_signal_fd(wlmcl_client_t *wlmcl_client_ptr);
 
@@ -203,6 +280,9 @@ bs_dllist_t *wlmcl_client_outputs(wlmcl_client_t *wlmcl_client_ptr);
  * be called with the provided arguments. This is a one-time registration. For
  * repeated calls, clients need to re-register.
  *
+ * Should the system clock be set (eg. stepped by NTP), all registered timers
+ * are called right away, permitting clients to re-register for the new time.
+ *
  * @param wlmcl_client_ptr
  * @param target_usec
  * @param callback
@@ -215,6 +295,39 @@ bool wlmcl_client_register_timer(
     uint64_t target_usec,
     wlmcl_client_callback_t callback,
     void *callback_ud_ptr);
+
+/**
+ * Registers a file descriptor to be watched by the client's mainloop.
+ *
+ * Once `fd` becomes readable (or reports an error or hangup), `callback` will
+ * be called from the mainloop. The callback must consume the data, or
+ * unregister `fd`; otherwise it will be called again right away. Permits to
+ * integrate other event sources (eg. an `eventfd` signalled by a thread) with
+ * the client, without polling.
+ *
+ * @param wlmcl_client_ptr
+ * @param fd
+ * @param callback
+ * @param callback_ud_ptr
+ *
+ * @return true on success. Fails if `fd` is already watched, or if too many
+ *     file descriptors are watched already.
+ */
+bool wlmcl_client_register_fd(
+    wlmcl_client_t *wlmcl_client_ptr,
+    int fd,
+    wlmcl_client_callback_t callback,
+    void *callback_ud_ptr);
+
+/**
+ * Unregisters a file descriptor registered by @ref wlmcl_client_register_fd.
+ *
+ * May be called from within the callback.
+ *
+ * @param wlmcl_client_ptr
+ * @param fd
+ */
+void wlmcl_client_unregister_fd(wlmcl_client_t *wlmcl_client_ptr, int fd);
 
 #ifdef __cplusplus
 }  // extern "C"

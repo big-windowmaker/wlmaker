@@ -187,6 +187,21 @@ void wlmbe_output_config_apply_attributes(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmbe_output_config_init_discovered(
+    wlmbe_output_config_t *config_ptr,
+    struct wlr_output *wlr_output_ptr)
+{
+    // An output plugged in after startup has no CRTC yet: It is not enabled,
+    // and would stay dark. Newly discovered outputs are enabled, keeping the
+    // mode of an output that is already lit (eg. by the console), and the
+    // preferred mode otherwise.
+    config_ptr->attributes.enabled = true;
+    config_ptr->attributes.has_mode =
+        wlr_output_ptr->enabled &&
+        0 < wlr_output_ptr->width && 0 < wlr_output_ptr->height;
+}
+
+/* ------------------------------------------------------------------------- */
 wlmbe_output_config_t *wlmbe_output_config_create_from_wlr(
     struct wlr_output *wlr_output_ptr)
 {

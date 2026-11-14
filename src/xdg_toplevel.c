@@ -21,6 +21,8 @@
 
 #include "xdg_toplevel.h"
 
+#include "window_attributes.h"
+
 #include <libbase/libbase.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -106,6 +108,8 @@ struct wlmaker_xdg_toplevel {
     struct wl_listener        window_request_fullscreen_listener;
     /** Listener for @ref wlmtk_window_events_t::request_maximized. */
     struct wl_listener        window_request_maximized_listener;
+    /** Listener for @ref wlmtk_window_events_t::tiled_changed. */
+    struct wl_listener        window_tiled_changed_listener;
 
     /** Injected method for wlr_xdg_toplevel_set_maximized(). */
     uint32_t (*_set_maximized)(struct wlr_xdg_toplevel *, bool);
@@ -125,6 +129,14 @@ struct wlmaker_xdg_toplevel {
 
     /** Whether this toplevel is configured to be server-side decorated. */
     bool                      server_side_decorated;
+    /** Whether the client negotiated server-side decoration. */
+    bool                      client_server_side;
+    /** Framed by the `ServerDecoration` attribute, though the client
+     * decorates itself: It is told to be tiled (no shadows, no rounded
+     * corners, no resize margins of its own). */
+    bool                      forced_frame;
+    /** Tiled edges from the window (zones, tiling). */
+    uint32_t                  tiled_edges;
 
     /** Properties that are pending to be configured for the toplevel. */
     struct {
@@ -163,6 +175,15 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
     uint32_t (*_set_size)(struct wlr_xdg_toplevel *, int32_t, int32_t),
     uint32_t (*_set_activated)(struct wlr_xdg_toplevel *, bool),
     void (*_get_extents)(struct wlr_surface *, struct wlr_box *));
+static void _wlmaker_xdg_toplevel_apply_decoration(
+    struct wlmaker_xdg_toplevel *wxt_ptr);
+static void _wlmaker_xdg_toplevel_send_tiled(
+    struct wlmaker_xdg_toplevel *wxt_ptr);
+static void _wlmaker_xdg_toplevel_update_window_properties(
+    struct wlmaker_xdg_toplevel *wxt_ptr);
+static void _wlmaker_xdg_toplevel_handle_window_tiled_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 static void _wlmaker_xdg_toplevel_flush_properties(
     struct wlmaker_xdg_toplevel *wxt_ptr);
 static void _wlmaker_xdg_toplevel_try_map(
@@ -253,6 +274,7 @@ void wlmaker_xdg_toplevel_destroy(struct wlmaker_xdg_toplevel *wxt_ptr)
     bs_log(BS_INFO, "Destroying XDG toplevel %p", wxt_ptr);
     wxt_ptr->wlr_xdg_toplevel_ptr->base->data = NULL;
 
+    wlmtk_util_disconnect_listener(&wxt_ptr->window_tiled_changed_listener);
     wlmtk_util_disconnect_listener(&wxt_ptr->window_request_fullscreen_listener);
     wlmtk_util_disconnect_listener(&wxt_ptr->window_request_size_listener);
     wlmtk_util_disconnect_listener(&wxt_ptr->window_set_activated_listener);
@@ -304,10 +326,34 @@ void wlmaker_xdg_toplevel_set_server_side_decorated(
     struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr,
     bool server_side_decorated)
 {
-    wlmaker_xdg_toplevel_ptr->server_side_decorated = server_side_decorated;
-    wlmtk_window_set_server_side_decorated(
-        wlmaker_xdg_toplevel_ptr->window_ptr,
-        wlmaker_xdg_toplevel_ptr->server_side_decorated);
+    wlmaker_xdg_toplevel_ptr->client_server_side = server_side_decorated;
+    _wlmaker_xdg_toplevel_apply_decoration(wlmaker_xdg_toplevel_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+int wlmaker_xdg_toplevel_decoration_override(
+    struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr)
+{
+    if (NULL == wlmaker_xdg_toplevel_ptr->server_ptr) return -1;
+    const char *app_id_ptr =
+        wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->app_id;
+    return wlmaker_window_attributes_server_decoration(
+        wlmaker_xdg_toplevel_ptr->server_ptr->config_dict_ptr,
+        app_id_ptr, app_id_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+wlmtk_window_t *wlmaker_xdg_toplevel_window_from_wlr_surface(
+    struct wlr_surface *wlr_surface_ptr)
+{
+    if (NULL == wlr_surface_ptr) return NULL;
+    struct wlr_xdg_toplevel *wlr_xdg_toplevel_ptr =
+        wlr_xdg_toplevel_try_from_wlr_surface(wlr_surface_ptr);
+    if (NULL == wlr_xdg_toplevel_ptr) return NULL;
+
+    struct wlmaker_xdg_toplevel *wxt_ptr = wlr_xdg_toplevel_ptr->base->data;
+    if (NULL == wxt_ptr) return NULL;
+    return wxt_ptr->window_ptr;
 }
 
 /* == Local (static) methods =============================================== */
@@ -364,11 +410,7 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
             wlmim_cursor_options(
                 server_ptr->input_manager_ptr)->move_window_modifier);
     }
-    wlmtk_window_set_properties(
-        wlmaker_xdg_toplevel_ptr->window_ptr,
-        WLMTK_WINDOW_PROPERTY_RESIZABLE |
-        WLMTK_WINDOW_PROPERTY_ICONIFIABLE |
-        WLMTK_WINDOW_PROPERTY_CLOSABLE);
+    _wlmaker_xdg_toplevel_update_window_properties(wlmaker_xdg_toplevel_ptr);
     wlmtk_util_client_t client = {};
     if (NULL != wlr_xdg_toplevel_ptr->resource) {
         wl_client_get_credentials(
@@ -376,6 +418,12 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
             &client.pid, &client.uid, &client.gid);
     }
     wlmtk_window_set_client(wlmaker_xdg_toplevel_ptr->window_ptr, &client);
+    // App ID and parent may already be set before the toplevel is created.
+    wlmtk_window_set_app_id(wlmaker_xdg_toplevel_ptr->window_ptr,
+                            wlr_xdg_toplevel_ptr->app_id,
+                            wlr_xdg_toplevel_ptr->app_id);
+    wlmtk_window_set_dialog(wlmaker_xdg_toplevel_ptr->window_ptr,
+                            NULL != wlr_xdg_toplevel_ptr->parent);
 
     wlmaker_xdg_toplevel_ptr->tracker_handle_ptr =
         wlmaker_toplevel_tracker_handle_create(
@@ -467,9 +515,15 @@ struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
         &wlmtk_window_events(wlmaker_xdg_toplevel_ptr->window_ptr)->request_maximized,
         &wlmaker_xdg_toplevel_ptr->window_request_maximized_listener,
         _wlmaker_xdg_toplevel_handle_window_request_maximized);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_window_events(wlmaker_xdg_toplevel_ptr->window_ptr)->tiled_changed,
+        &wlmaker_xdg_toplevel_ptr->window_tiled_changed_listener,
+        _wlmaker_xdg_toplevel_handle_window_tiled_changed);
 
     wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->base->data =
         wlmaker_xdg_toplevel_ptr;
+    // A client without any decoration protocol (GTK 4) may still be framed.
+    _wlmaker_xdg_toplevel_apply_decoration(wlmaker_xdg_toplevel_ptr);
 
     wl_signal_emit(
         &server_ptr->window_created_event,
@@ -544,7 +598,18 @@ void _wlmaker_xdg_toplevel_try_map(struct wlmaker_xdg_toplevel *wxt_ptr)
 
     wlmtk_workspace_t *workspace_ptr = wlmtk_desktop_get_current_workspace(
         wxt_ptr->server_ptr->desktop_ptr);
-    wlmtk_workspace_map_window(workspace_ptr, wxt_ptr->window_ptr);
+
+    // Transients (eg. dialogs) are placed centered on their parent.
+    wlmtk_window_placement_hint_t hint = {};
+    struct wlr_xdg_toplevel *parent_ptr = wxt_ptr->wlr_xdg_toplevel_ptr->parent;
+    if (NULL != parent_ptr && NULL != parent_ptr->base->data) {
+        struct wlmaker_xdg_toplevel *parent_wxt_ptr = parent_ptr->base->data;
+        if (NULL != wlmtk_window_get_workspace(parent_wxt_ptr->window_ptr)) {
+            hint.parent_ptr = parent_wxt_ptr->window_ptr;
+        }
+    }
+    wlmtk_workspace_map_window_with_hint(
+        workspace_ptr, wxt_ptr->window_ptr, &hint);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -604,7 +669,7 @@ void _wlmaker_xdg_toplevel_handle_request_minimize(
     struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr = BS_CONTAINER_OF(
         listener_ptr, struct wlmaker_xdg_toplevel, request_minimize_listener);
 
-    bs_log(BS_ERROR, "TODO: Request minimize %p", wlmaker_xdg_toplevel_ptr);
+    wlmtk_window_request_minimize(wlmaker_xdg_toplevel_ptr->window_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -670,7 +735,13 @@ void _wlmaker_xdg_toplevel_handle_set_parent(
     struct wlmaker_xdg_toplevel *wlmaker_xdg_toplevel_ptr = BS_CONTAINER_OF(
         listener_ptr, struct wlmaker_xdg_toplevel, set_parent_listener);
 
-    bs_log(BS_ERROR, "TODO: set_parent %p", wlmaker_xdg_toplevel_ptr);
+    // A toplevel with a parent is a dialog. wlmaker does not stack it on
+    // the parent yet; window organizers leave it alone.
+    if (NULL != wlmaker_xdg_toplevel_ptr->window_ptr) {
+        wlmtk_window_set_dialog(
+            wlmaker_xdg_toplevel_ptr->window_ptr,
+            NULL != wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->parent);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -684,7 +755,7 @@ void _wlmaker_xdg_toplevel_handle_set_title(
 
     wlmaker_toplevel_tracker_handle_set_title(
         wlmaker_xdg_toplevel_ptr->tracker_handle_ptr,
-        wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->app_id);
+        wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->title);
     wlmtk_window_set_title(
         wlmaker_xdg_toplevel_ptr->window_ptr,
         wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->title);
@@ -702,6 +773,99 @@ void _wlmaker_xdg_toplevel_handle_set_app_id(
     wlmaker_toplevel_tracker_handle_set_app_id(
         wlmaker_xdg_toplevel_ptr->tracker_handle_ptr,
         wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->app_id);
+    if (NULL != wlmaker_xdg_toplevel_ptr->window_ptr) {
+        const char *app_id_ptr =
+            wlmaker_xdg_toplevel_ptr->wlr_xdg_toplevel_ptr->app_id;
+        wlmtk_window_set_app_id(
+            wlmaker_xdg_toplevel_ptr->window_ptr, app_id_ptr, app_id_ptr);
+        _wlmaker_xdg_toplevel_update_window_properties(
+            wlmaker_xdg_toplevel_ptr);
+    }
+    _wlmaker_xdg_toplevel_apply_decoration(wlmaker_xdg_toplevel_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * The window was snapped or tiled (or freed): Tells the client (xdg-shell
+ * version 2), which then drops its shadows and rounded corners there, as
+ * GTK and Chrome do.
+ */
+void _wlmaker_xdg_toplevel_handle_window_tiled_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    struct wlmaker_xdg_toplevel *wxt_ptr = BS_CONTAINER_OF(
+        listener_ptr, struct wlmaker_xdg_toplevel, window_tiled_changed_listener);
+    const uint32_t *edges_ptr = data_ptr;
+    wxt_ptr->tiled_edges = *edges_ptr;
+    _wlmaker_xdg_toplevel_send_tiled(wxt_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tells the client its tiled edges: Those of the zone or the tiling, or all
+ * of them while wlmaker frames a client that decorates itself.
+ */
+void _wlmaker_xdg_toplevel_send_tiled(struct wlmaker_xdg_toplevel *wxt_ptr)
+{
+    struct wlr_xdg_toplevel *t = wxt_ptr->wlr_xdg_toplevel_ptr;
+    if (NULL == t || NULL == t->resource ||
+        wl_resource_get_version(t->resource) <
+        XDG_TOPLEVEL_STATE_TILED_LEFT_SINCE_VERSION) return;
+    if (!t->base->initialized) return;
+    uint32_t edges = wxt_ptr->tiled_edges;
+    if (wxt_ptr->forced_frame) {
+        edges = WLR_EDGE_TOP | WLR_EDGE_BOTTOM | WLR_EDGE_LEFT |
+            WLR_EDGE_RIGHT;
+    }
+    wlr_xdg_toplevel_set_tiled(t, edges);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Frames the window as the client negotiated, unless the window attribute
+ * `ServerDecoration` of its app ID says otherwise.
+ */
+void _wlmaker_xdg_toplevel_apply_decoration(
+    struct wlmaker_xdg_toplevel *wxt_ptr)
+{
+    int override = wlmaker_xdg_toplevel_decoration_override(wxt_ptr);
+    bool ssd = 0 <= override ? 1 == override : wxt_ptr->client_server_side;
+    bool forced = ssd && !wxt_ptr->client_server_side;
+
+    wxt_ptr->server_side_decorated = ssd;
+    // In the window's frame, only the window geometry: A client that keeps
+    // its client-side shadows (Chrome does) shows no gap inside the frame.
+    if (NULL != wxt_ptr->surface_ptr) {
+        wlmtk_surface_set_clip_to_geometry(wxt_ptr->surface_ptr, ssd);
+    }
+    if (NULL != wxt_ptr->window_ptr) {
+        wlmtk_window_set_server_side_decorated(wxt_ptr->window_ptr, ssd);
+    }
+    if (forced != wxt_ptr->forced_frame) {
+        wxt_ptr->forced_frame = forced;
+        _wlmaker_xdg_toplevel_send_tiled(wxt_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** The window's buttons and resize bar: Window attributes and fixed size. */
+void _wlmaker_xdg_toplevel_update_window_properties(
+    struct wlmaker_xdg_toplevel *wxt_ptr)
+{
+    if (NULL == wxt_ptr->window_ptr) return;
+    const struct wlr_xdg_toplevel_state *s_ptr =
+        &wxt_ptr->wlr_xdg_toplevel_ptr->current;
+    bool fixed = 0 < s_ptr->min_width && 0 < s_ptr->min_height &&
+        s_ptr->min_width == s_ptr->max_width &&
+        s_ptr->min_height == s_ptr->max_height;
+    const char *app_id_ptr = wxt_ptr->wlr_xdg_toplevel_ptr->app_id;
+    wlmtk_window_set_properties(
+        wxt_ptr->window_ptr,
+        wlmaker_window_attributes_properties(
+            NULL != wxt_ptr->server_ptr ?
+            wxt_ptr->server_ptr->config_dict_ptr : NULL,
+            app_id_ptr, app_id_ptr, fixed));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -716,7 +880,8 @@ void _wlmaker_xdg_toplevel_handle_new_popup(
 
     wlmaker_xdg_popup_t *xdg_popup_ptr = wlmaker_xdg_popup_create(
         wlr_xdg_popup_ptr,
-        wlmaker_xdg_toplevel_ptr->server_ptr->wlr_seat_ptr);
+        wlmaker_xdg_toplevel_ptr->server_ptr->wlr_seat_ptr,
+        wlmaker_xdg_toplevel_ptr->server_ptr->wlr_output_layout_ptr);
     if (NULL == xdg_popup_ptr) {
         wl_resource_post_error(
             wlr_xdg_popup_ptr->resource,
@@ -777,9 +942,26 @@ void _wlmaker_xdg_toplevel_handle_surface_commit(
         wxt_ptr->_get_extents(
             wxt_ptr->wlr_xdg_toplevel_ptr->base->surface,
             &geo);
+        // The extents may start left or above the surface's origin.
+        geo.width -= geo.x;
+        geo.height -= geo.y;
     }
-    wlmtk_window_commit_size(
-        wxt_ptr->window_ptr, geo.width - geo.x, geo.height - geo.y);
+    // With a window geometry (client-side shadows and resize margins, eg.
+    // Chrome, GTK), the window is the geometry: Its size, not the buffer's.
+    wlmtk_window_commit_size(wxt_ptr->window_ptr, geo.width, geo.height);
+    // The client's minimum (GTK4/libadwaita ask for large ones): Tiling
+    // checks it before putting the window into a cell.
+    wlmtk_window_set_min_size(
+        wxt_ptr->window_ptr,
+        wxt_ptr->wlr_xdg_toplevel_ptr->current.min_width,
+        wxt_ptr->wlr_xdg_toplevel_ptr->current.min_height);
+    _wlmaker_xdg_toplevel_update_window_properties(wxt_ptr);
+    if (wlr_xdg_surface_ptr->initial_commit) {
+        // The app ID is known now; a framed client that decorates itself
+        // is told it is tiled in its first configure.
+        _wlmaker_xdg_toplevel_apply_decoration(wxt_ptr);
+        if (wxt_ptr->forced_frame) _wlmaker_xdg_toplevel_send_tiled(wxt_ptr);
+    }
 
     if (0 != wxt_ptr->pending.properties) {
         _wlmaker_xdg_toplevel_flush_properties(wxt_ptr);

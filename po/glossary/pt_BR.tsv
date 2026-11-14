@@ -1,0 +1,145 @@
+source	translation	source of the choice
+Window Maker	Window Maker	nome próprio (não traduzir)
+WPrefs	WPrefs	nome próprio
+Dock	Dock	termo histórico do Window Maker (catálogos do projeto)
+Clip	Clip	termo histórico do Window Maker
+DockApp	dockapp	termo do projeto (welcome, docs): substantivo comum, minúsculo no meio da frase
+dock-app	dockapp	idem
+Drawer	gaveta	wlmaker (i18n.c), menus do projeto
+appicon	ícone do aplicativo	welcome/docs; "appicon" só em texto técnico
+application icon	ícone do aplicativo	idem
+OPENSTEP	OPENSTEP	nome próprio
+NeXTSTEP	NeXTSTEP	nome próprio
+wlmaker	wlmaker	nome próprio
+Preferences	Preferências	GTK 3 / projeto
+Settings	Configurações	GTK 3 / KDE / projeto
+Appearance	Aparência	GTK 3 / projeto
+Window	Janela	GTK 3
+window	janela	GTK 3
+Workspace	Área de trabalho	wmaker pt_BR.po, welcome; "Área" sozinho só em rótulo muito curto (decisão: evitar)
+workspace	área de trabalho	idem
+Window Management	Gerenciamento de janelas	sugestão do usuário
+Window Focus	Foco das janelas	sugestão do usuário
+focus	foco	wmaker pt_BR.po
+Keyboard Shortcuts	Atalhos de teclado	GTK 3 / KDE
+Shortcut	Atalho	wmake-zones (preferido a "Tecla de Atalho" do pt europeu)
+shortcut	atalho	idem
+Mouse	Mouse	pt_BR (pt europeu usa "rato": não usar)
+Mouse Settings	Configurações do mouse	sugestão do usuário
+Lock Screen	Tela de bloqueio	projeto (menu, docs)
+Display	Monitor	contexto de configurações de tela (Display Resolution); "Tela" quando é a superfície exibida
+Display Settings	Configurações de monitores	sugestão do usuário
+Monitors	Monitores	menu do projeto
+Output	Saída	wlmaker/wlroots (conector de vídeo)
+Refresh Rate	Taxa de atualização	GNOME/KDE
+Resolution	Resolução	GNOME/KDE
+Scale	Escala	display (preferido a "Escalonar")
+Orientation	Orientação	GNOME/KDE
+Mirror	Espelhar	GNOME/KDE
+Primary	Principal	GNOME/KDE
+Force Quit	Forçar encerramento	sugestão do usuário (o menu do projeto usa "Forçar o fechamento": manter no menu, usar "Forçar encerramento" em títulos novos)
+Kill	Encerrar	X11 xkill: "Encerrar à força" quando a ação é forçada
+Clipboard	Área de transferência	GTK 3 / KDE
+Clipboard History	Histórico da área de transferência	sugestão do usuário / big-wm-clipboard
+Start Automatically	Iniciar automaticamente	sugestão do usuário
+Launch	Executar	menu do appicon do Window Maker (wmaker pt_BR.po)
+Launcher	Lançador	projeto (wlmaker, docs)
+Apply	Aplicar	GTK 3
+Cancel	Cancelar	GTK 3
+OK	OK	GTK 3
+Close	Fechar	GTK 3
+Save	Salvar	GTK 3 (pt europeu "Gravar": não usar)
+Open	Abrir	GTK 3
+Delete	Excluir	GTK 3 / display (preferido a "Apagar")
+Remove	Remover	GTK 3
+Add	Adicionar	GTK 3
+Edit	Editar	GTK 3
+Browse	Procurar	GTK 3 (botão que abre seletor de arquivos); "Navegar" só para navegação
+Change	Alterar	GTK 3 (botão); "Trocar" quando é trocar uma coisa por outra
+Reset	Redefinir	GTK 3 / tabbed-dock; "Restaurar padrões" para Restore Defaults; "Desfazer" só para Undo
+Restore Defaults	Restaurar padrões	sugestão do usuário
+Restore	Restaurar	GTK 3
+Default	Padrão	GTK 3
+Undo	Desfazer	GTK 3
+Redo	Refazer	GTK 3
+Quit	Sair	GTK 3 (aplicativo); "Encerrar" para encerrar outro programa
+Exit	Sair	GTK 3
+Hide	Ocultar	GTK 3, menu raiz e Dock com abas; decisão do usuário (09/11/2026): "Esconder" do wmaker antigo trocado por "Ocultar" em todos os domínios
+Hide Others	Ocultar os outros	idem (aplicativos; o menu raiz X11 diz "Ocultar as outras")
+Destroy Last (workspace)	Remover a última	menu raiz; decisão do usuário (09/11/2026), também no wmaker e no Clip do wlmaker ("Destruir" descartado)
+Icon sets (menu)	Conjuntos de ícones	menu raiz Aparência; o submenu gerado (big-wm-appmenu) usa o mesmo nome
+Unhide	Mostrar	wmaker pt_BR.po
+Show	Mostrar	GTK 3
+Miniaturize	Minimizar	wmaker po/pt_BR.po instalado desde 2000 e wlmaker i18n.c (corrigido: o guia anterior dizia "Miniaturizar")
+Minimize	Minimizar	GTK 3 (fora do vocabulário do Window Maker)
+Maximize	Maximizar	GTK 3
+Shade	Sombrear	wmaker po/pt_BR.po instalado (corrigido)
+Unshade	Dessombrear	wmaker po/pt_BR.po instalado (corrigido)
+Keep on Top	Manter sobre outros	wmaker po/pt_BR.po instalado (corrigido)
+Omnipresent	Onipresente	wmaker pt_BR.po
+Icon	Ícone	GTK 3
+Theme	Tema	GTK 3
+Dark Theme	Tema escuro	sugestão do usuário
+Light Theme	Tema claro	sugestão do usuário
+Style	Estilo	wmaker pt_BR.po
+Background	Fundo	wmaker pt_BR.po; "Papel de parede" para wallpaper
+Wallpaper	Papel de parede	projeto
+Font	Fonte	GTK 3
+Texture	Textura	wmaker pt_BR.po
+Path	Caminho	GTK 3
+Tiling	Mosaico	wmake-zones (preferido a "Lado a lado")
+Tile	Mosaico	wmake-zones quando é o modo; "ladrilho" quando é o quadrado do Dock (wlmaker)
+Window Zones	Zonas de janelas	sugestão do usuário
+Zone	Zona	wmake-zones
+Layout	Layout	wmake-zones (termo técnico estabelecido)
+Screenshot	Captura de tela	projeto
+Top	Em cima	tabbed-dock / wmake-zones (posição); "Topo" quando substantivo
+Bottom	Embaixo	tabbed-dock / wmake-zones
+Left	Esquerda	posição; "Esquerdo" para botão do mouse
+Right	Direita	posição; "Direito" para botão do mouse
+On	Ligado	display / wmake-zones (adjetivo concordando com o substantivo)
+Off	Desligado	display / wmake-zones
+Enable	Ativar	GTK 3
+Disable	Desativar	GTK 3
+Enabled	Ativado	GTK 3
+Disabled	Desativado	GTK 3
+Error	Erro	GTK 3
+Warning	Aviso	GTK 3
+Failed to	Não foi possível	estilo do projeto ("Failed to save X" → "Não foi possível salvar X")
+Usage	Uso	wmaker pt_BR.po (uso: %s [opções])
+Keep these display settings?	Manter estas configurações de monitores?	sugestão do usuário
+Reverting in %d seconds	Revertendo em %d segundos	sugestão do usuário (plural (n > 1))
+Session	Sessão	GTK 3
+Log Out	Sair da sessão	GNOME
+Restart	Reiniciar	GTK 3
+Shut Down	Desligar	GTK 3
+Notification	Notificação	GTK 3
+Tray	Bandeja	projeto (big-wm-tray)
+System tray	Bandeja do sistema	KDE
+Magnifier	Lupa	projeto (menu)
+Zoom In	Aumentar escala	projeto (menu Aparência: "Aumentar Escala"); ampliar a área de trabalho
+Zoom Out	Diminuir escala	projeto
+Locate pointer	Localizar o ponteiro	projeto
+Pointer	Ponteiro	projeto
+Cursor	Cursor	GTK 3
+Add/Remove Software	Adicionar/remover programas	projeto (menu)
+Kill (appicon)	Terminar	wmaker po/pt_BR.po instalado ("Terminar aplicação")
+OK	OK	GTK 3 (não "Ok")
+Collapsed (Clip/drawer)	Recolhido	i18n-wmaker (antes "Minimizado")
+directory	diretório	domínios do wmaker (não "pasta")
+Kill Application	Terminar aplicação	wmaker po/pt_BR.po (catálogo do agente do Window Maker, 09/11) e tabela antiga do wlmaker
+Force Close	Forçar encerramento	glossário "Force Quit" (títulos novos); a tabela antiga usava "Forçar o fechamento"
+Collapsed	Recolhido	wmaker po/pt_BR.po (09/11): Clip/gaveta recolhidos (a tabela antiga tinha "Minimizado")
+Autocollapse	Recolher automaticamente	wmaker po/pt_BR.po (09/11)
+Autoraise	Trazer à frente ao apontar	wmaker po/pt_BR.po (09/11)
+Auto raise & lower	Trazer à frente ao apontar	wmaker po/pt_BR.po (09/11)
+Unmaximize	Desmaximizar	wmaker po/pt_BR.po; GNOME/mutter pt_BR
+Fullscreen	Tela cheia	GTK 3 / GNOME
+Bring Here	Trazer aqui	wmaker po/pt_BR.po
+Unhide Here	Mostrar aqui	wmaker po/pt_BR.po (09/11)
+Set Icon...	Colocar ícone...	wmaker po/pt_BR.po
+Dock position	Posição do Dock	wmaker po/pt_BR.po
+Clip Options	Opções do Clip	wmaker po/pt_BR.po
+Restore Default Launchers	Restaurar lançadores padrão	tabela antiga do wlmaker
+Update (interval)	Atualização	wlmaker: título do submenu de intervalos dos dockapps (substantivo)
+Unnamed	Sem nome	GNOME

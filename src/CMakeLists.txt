@@ -18,8 +18,12 @@ pkg_check_modules(WAYLAND_SERVER REQUIRED IMPORTED_TARGET wayland-server>=1.22.0
 # We build for wlroots 0.20.
 pkg_check_modules(WLROOTS REQUIRED IMPORTED_TARGET wlroots-0.20>=0.20)
 pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb>=1.15)
+# The shape of X11 dock-apps' icon windows (part of libxcb).
+pkg_check_modules(XCB_SHAPE REQUIRED IMPORTED_TARGET xcb-shape)
 # XWayland considered optional.
 pkg_check_modules(XWAYLAND xwayland>=22.1.9)
+# Optional: wmake-zones (window zones and tiling), shared engine and config.
+pkg_check_modules(WMAKE_ZONES IMPORTED_TARGET wmake-zones-engine)
 add_subdirectory(backend)
 add_subdirectory(dock)
 add_subdirectory(input)
@@ -31,16 +35,33 @@ set(public_header_files
   action_item.h
   clip.h
   config.h
+  context_menu.h
   corner.h
+  dialog.h
+  dnd.h
+  drawer.h
+  dock_fx.h
+  appicons.h
+  dock_launchers.h
+  dock_menu.h
+  app_icon.h
+  dock_position.h
+  window_attributes.h
+  dockapp_prefs.h
+  i18n.h
+  dockapps.h
   icon_manager.h
   idle.h
   input_observation.h
   layer_panel.h
   layer_shell.h
   lock_mgr.h
+  menu_scroll.h
   root_menu.h
   server.h
   task_list.h
+  zones.h
+  tile_drag.h
   toplevel_tracker.h
   tl_menu.h
   xdg_decoration.h
@@ -55,16 +76,35 @@ target_sources(wlmaker_lib PRIVATE
   action_item.c
   clip.c
   config.c
+  context_menu.c
   corner.c
+  dialog.c
+  dnd.c
+  drawer.c
+  dock_fx.c
+  appicons.c
+  dock_launchers.c
+  dock_menu.c
+  app_icon.c
+  dock_position.c
+  window_attributes.c
+  dockapp_prefs.c
+  i18n.c
+  dockapps.c
   icon_manager.c
+  force_close.c
   idle.c
   input_observation.c
   layer_panel.c
   layer_shell.c
+  locate_pointer.c
   lock_mgr.c
+  menu_scroll.c
   root_menu.c
   server.c
   task_list.c
+  zones.c
+  tile_drag.c
   toplevel_tracker.c
   tl_menu.c
   x11_cursor.xpm
@@ -112,9 +152,11 @@ target_link_libraries(
   wlmutil_lib
   wlmaker_protocols
   PkgConfig::CAIRO
+  PkgConfig::LIBRSVG
   PkgConfig::WAYLAND_SERVER
   PkgConfig::WLROOTS
-  PkgConfig::XCB)
+  PkgConfig::XCB
+  PkgConfig::XCB_SHAPE)
 target_include_directories(
   wlmaker_lib PUBLIC
   # Keep wlroots first -- multiple versions may interfere (#117).
@@ -130,13 +172,36 @@ target_compile_definitions(
   wlmaker_lib PRIVATE "WLMAKER_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 target_compile_definitions(
   wlmaker_lib PRIVATE "WLMAKER_BINARY_DIR=\"${PROJECT_BINARY_DIR}\"")
+# Where the gettext catalogs (wlmaker.mo) are installed. See po/.
+target_compile_definitions(
+  wlmaker_lib PRIVATE
+  "WLMAKER_LOCALEDIR=\"${CMAKE_INSTALL_FULL_LOCALEDIR}\"")
+target_include_directories(wlmaker_lib PRIVATE ${Intl_INCLUDE_DIRS})
+target_link_libraries(wlmaker_lib ${Intl_LIBRARIES})
 if(wmmenugen_executable)
   target_compile_definitions(
     wlmaker_lib PRIVATE "WLMAKER_WMMENUGEN_PATH=\"${wmmenugen_executable}\"")
 endif()
+if(WMAKE_ZONES_FOUND)
+  target_compile_definitions(wlmaker_lib PUBLIC WLMAKER_HAVE_ZONES)
+  target_link_libraries(wlmaker_lib PkgConfig::WMAKE_ZONES)
+endif()
+
 if(XWAYLAND_FOUND)
   target_compile_definitions(wlmaker_lib PUBLIC WLMAKER_HAVE_XWAYLAND)
 endif()
+# Defaults for 'Restore Default Launchers', eg. a distribution's State.plist.
+set(WLMAKER_DEFAULT_STATE_FILE "" CACHE STRING
+  "State file with the defaults, preferred over \${XDG_CONFIG_DIRS}.")
+target_compile_definitions(
+  wlmaker_lib PRIVATE
+  "WLMAKER_DEFAULT_STATE_FILE=\"${WLMAKER_DEFAULT_STATE_FILE}\"")
+# Icon of the Clip, when the state has no 'Clip.Icon'.
+set(WLMAKER_CLIP_DEFAULT_ICON "" CACHE STRING
+  "Clip icon: A path, or a name in \${XDG_DATA_DIRS}/wlmaker/icons.")
+target_compile_definitions(
+  wlmaker_lib PRIVATE
+  "WLMAKER_CLIP_DEFAULT_ICON=\"${WLMAKER_CLIP_DEFAULT_ICON}\"")
 
 
 add_executable(

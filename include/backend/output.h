@@ -25,6 +25,7 @@
 #include <stdbool.h>
 
 #include "output_config.h"
+#include "zoom.h"
 
 /** Handle for an output device. */
 typedef struct _wlmbe_output_t wlmbe_output_t;
@@ -45,6 +46,7 @@ extern "C" {
  * @param wlr_allocator_ptr
  * @param wlr_renderer_ptr
  * @param wlr_scene_ptr
+ * @param zoom_ptr            The accessibility zoom.
  * @param config_ptr
  * @param width
  * @param height
@@ -56,6 +58,7 @@ wlmbe_output_t *wlmbe_output_create(
     struct wlr_allocator *wlr_allocator_ptr,
     struct wlr_renderer *wlr_renderer_ptr,
     struct wlr_scene *wlr_scene_ptr,
+    wlmbe_zoom_t *zoom_ptr,
     wlmbe_output_config_t *config_ptr,
     int width,
     int height);
@@ -90,6 +93,15 @@ void wlmbe_output_update_attributes(
     int x,
     int y,
     bool has_position);
+
+/**
+ * Makes the output a member of `dllist_ptr` (and removes it from the list it
+ * was a member of). The output leaves the list when destroyed.
+ *
+ * @param output_ptr
+ * @param dllist_ptr          The list, or NULL to just leave the list.
+ */
+void wlmbe_output_set_list(wlmbe_output_t *output_ptr, bs_dllist_t *dllist_ptr);
 
 /** Returns a pointer to @ref wlmbe_output_t::dlnode. */
 bs_dllist_node_t *wlmbe_dlnode_from_output(wlmbe_output_t *output_ptr);

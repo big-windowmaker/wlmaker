@@ -13,16 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 cmake_minimum_required(VERSION 3.13)
+# The zoom builds damage regions for the magnified frames.
+pkg_check_modules(PIXMAN REQUIRED IMPORTED_TARGET pixman-1)
 set(public_header_files
   backend.h
   output.h
   output_config.h
-  output_manager.h)
+  output_manager.h
+  zoom.h)
 add_library(wlmbackend_lib STATIC
   backend.c
   output.c
   output_config.c
-  output_manager.c)
+  output_manager.c
+  zoom.c)
 target_include_directories(
   wlmbackend_lib
   PUBLIC
@@ -31,6 +35,7 @@ target_include_directories(
   "${WAYLAND_SERVER_INCLUDE_DIRS}"
   "${WLROOTS_INCLUDE_DIRS}"
   "${PROJECT_SOURCE_DIR}/include"
+  "${PROJECT_BINARY_DIR}/third_party/protocols"
 )
 target_include_directories(
   wlmbackend_lib
@@ -55,7 +60,19 @@ target_link_libraries(
   PkgConfig::WAYLAND_SERVER
   PRIVATE
   wlmtoolkit_lib
+  PkgConfig::PIXMAN
   PkgConfig::WLROOTS)
+
+# EGL and GLESv2: To identify a software rasterizer (llvmpipe) as wlroots'
+# automatically chosen renderer, and use pixman instead. Optional.
+pkg_check_modules(EGL IMPORTED_TARGET egl)
+pkg_check_modules(GLESV2 IMPORTED_TARGET glesv2)
+if(EGL_FOUND AND GLESV2_FOUND)
+  target_compile_definitions(wlmbackend_lib PRIVATE WLMBE_HAVE_GL_PROBE)
+  target_link_libraries(
+    wlmbackend_lib PRIVATE PkgConfig::EGL PkgConfig::GLESV2)
+endif()
+add_dependencies(wlmbackend_lib protocol_headers)
 if(iwyu_path_and_options)
   set_target_properties(
     wlmbackend_lib PROPERTIES

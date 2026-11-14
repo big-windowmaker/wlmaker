@@ -57,11 +57,60 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
  */
 void wlmaker_root_menu_destroy(wlmaker_root_menu_t *root_menu_ptr);
 
+/**
+ * After a theme change: Restyles the torn-off submenus and the submenus'
+ * titles (the title bar's look).
+ *
+ * @param root_menu_ptr
+ */
+void wlmaker_root_menu_restyle(wlmaker_root_menu_t *root_menu_ptr);
+
+/**
+ * Replaces the server's root menu with one loaded anew, eg. after the menu
+ * file changed. Uses the server's current styles. Does nothing while the
+ * root menu is open.
+ *
+ * @param server_ptr
+ * @param arg_root_menu_file_ptr  As for @ref wlmaker_root_menu_create.
+ *
+ * @return true if replaced. On error, the current root menu stays.
+ */
+bool wlmaker_root_menu_reload(
+    wlmaker_server_t *server_ptr,
+    const char *arg_root_menu_file_ptr);
+
 /** @return the window holding the root menu. */
 wlmtk_window_t *wlmaker_root_menu_window(wlmaker_root_menu_t *root_menu_ptr);
 
 /** @return Pointer to @ref wlmtk_menu_t of the root menu. */
 wlmtk_menu_t *wlmaker_root_menu_menu(wlmaker_root_menu_t *root_menu_ptr);
+
+/**
+ * @return Whether the root menu is pinned (its title bar was dragged, as in
+ *     Window Maker): It stays open after an action.
+ */
+bool wlmaker_root_menu_pinned(wlmaker_root_menu_t *root_menu_ptr);
+
+/**
+ * Opens the root menu at the pointer, on the current workspace. It is kept
+ * within the usable area of the output: Not under docks and panels. That is
+ * also the bounds for its submenus, see @ref wlmtk_menu_set_bounds.
+ *
+ * @param root_menu_ptr
+ * @param mode
+ */
+void wlmaker_root_menu_open(wlmaker_root_menu_t *root_menu_ptr,
+                            enum wlmtk_menu_mode mode);
+
+/**
+ * Opens the root menu at the cursor, by a press of `button`: Held, its
+ * release over an item runs it; a click leaves the menu open (Window Maker).
+ *
+ * @param root_menu_ptr
+ * @param button              BTN_RIGHT, BTN_LEFT...
+ */
+void wlmaker_root_menu_open_by_button(wlmaker_root_menu_t *root_menu_ptr,
+                                      uint32_t button);
 
 /** Unit test set. */
 extern const bs_test_set_t wlmaker_root_menu_test_set;

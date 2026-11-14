@@ -38,18 +38,24 @@
 
 #include "wlclient/dblbuf.h"
 #include "wlclient/icon.h"
+#include "wlm_settings.h"
 
 /** State of the client. */
 static wlmcl_client_t *wlclient_ptr;
 /** Double buffer. */
 static wlmcl_dblbuf_t *dblbuf_ptr;
 
-/** Foreground color of a LED in the VFD-style display. */
-static const uint32_t color_led = 0xff55ffff;
-/** Color of a turned-off element in the VFD-style display. */
-static const uint32_t color_off = 0xff114444;
-/** Background color in the VFD-style display. */
-static const uint32_t color_background = 0xff111111;
+/** The app's own colors: A VFD-style display. */
+static const wlm_theme_t default_theme = {
+    .name_ptr = "Default",
+    .background = 0xff111111,
+    .led = 0xff55ffff,
+    .off = 0xff114444,
+};
+/** Preferences: Just the `Theme`. */
+static wlm_settings_t *settings_ptr;
+/** The colors, from the `Theme`. */
+static const wlm_theme_t *theme_ptr = &default_theme;
 
 /* ------------------------------------------------------------------------- */
 /** Returns the next full second for when to draw the clock. */
@@ -86,7 +92,7 @@ bool icon_callback(
     }
 
     float r, g, b, alpha;
-    bs_gfxbuf_argb8888_to_floats(color_background, &r, &g, &b, &alpha);
+    bs_gfxbuf_argb8888_to_floats(theme_ptr->background, &r, &g, &b, &alpha);
     cairo_pattern_t *pattern_ptr = cairo_pattern_create_rgba(r, g, b, alpha);
     BS_ASSERT(NULL != pattern_ptr);
     cairo_set_source(cairo_ptr, pattern_ptr);
@@ -112,13 +118,13 @@ bool icon_callback(
             &wlm_cairo_7segment_param_8x12,
             width / 2 - 26 + i * 8 + (i / 2) * 2,
             width - 2,
-            color_led,
-            color_off,
+            theme_ptr->led,
+            theme_ptr->off,
             time_buf[i] - '0');
     }
 
     // The dots between "HH:MM:SS"
-    cairo_set_source_argb8888(cairo_ptr, color_led);
+    cairo_set_source_argb8888(cairo_ptr, theme_ptr->led);
     cairo_rectangle(cairo_ptr, width / 2 - 10, width - 10, 1, 1.25);
     cairo_rectangle(cairo_ptr, width / 2 - 10, width - 6, 1, 1.25);
     cairo_rectangle(cairo_ptr, width / 2 + 8, width - 10, 1, 1.25);
@@ -132,12 +138,12 @@ bool icon_callback(
 
     wlm_primitives_draw_bezel_at(
         cairo_ptr, 0, 0, width, 40.0 * width / 56.0, 1, false);
-    cairo_set_source_argb8888(cairo_ptr, color_background);
+    cairo_set_source_argb8888(cairo_ptr, theme_ptr->background);
     cairo_rectangle(
         cairo_ptr, 1, 1, width - 2, 38.0 * width / 56.0);
     cairo_fill(cairo_ptr);
 
-    cairo_set_source_argb8888(cairo_ptr, color_led);
+    cairo_set_source_argb8888(cairo_ptr, theme_ptr->led);
     for (int i = 0; i < 12; ++i) {
         // ... and larger ticks every 3 hours.
         double ratio = 0.9;
@@ -225,14 +231,33 @@ static void _handle_configure(void *ud_ptr, uint32_t width, uint32_t height)
     wlmcl_dblbuf_register_ready_callback(dblbuf_ptr, icon_callback, NULL);
 }
 
+/* ------------------------------------------------------------------------- */
+/** The preferences file changed: Applies the theme, and redraws. */
+static void _handle_settings_fd(__UNUSED__ wlmcl_client_t *client_ptr,
+                                __UNUSED__ void *ud_ptr)
+{
+    if (!wlm_settings_handle_fd(settings_ptr)) return;
+    theme_ptr = wlm_settings_theme(settings_ptr, &default_theme);
+    if (NULL != dblbuf_ptr) {
+        wlmcl_dblbuf_register_ready_callback(dblbuf_ptr, icon_callback, NULL);
+    }
+}
+
 /* == Main program ========================================================= */
 /** Main program. */
 int main(__UNUSED__ int argc, __UNUSED__ char **argv)
 {
     bs_log_settings.severity = BS_DEBUG;
 
+    settings_ptr = wlm_settings_create("wlmclock", NULL);
+    if (NULL == settings_ptr) return EXIT_FAILURE;
+    theme_ptr = wlm_settings_theme(settings_ptr, &default_theme);
+
     wlclient_ptr = wlmcl_client_create("wlmaker.wlmeyes");
-    if (NULL == wlclient_ptr) return EXIT_FAILURE;
+    if (NULL == wlclient_ptr) {
+        wlm_settings_destroy(settings_ptr);
+        return EXIT_FAILURE;
+    }
 
     // TODO(kaeser@gubbe.ch): Move icon_protocol to @ref wlmcl_client_register,
     // and permit clients to be registerd as 'required'.
@@ -250,8 +275,14 @@ int main(__UNUSED__ int argc, __UNUSED__ char **argv)
 
             wlmcl_client_register_timer(
                 wlclient_ptr, next_draw_time(), timer_callback, icon_ptr);
+            const int fd = wlm_settings_watch(settings_ptr);
+            if (0 <= fd) {
+                wlmcl_client_register_fd(
+                    wlclient_ptr, fd, _handle_settings_fd, NULL);
+            }
 
             wlmcl_client_run(wlclient_ptr);
+            if (0 <= fd) wlmcl_client_unregister_fd(wlclient_ptr, fd);
             wlmcl_icon_destroy(icon_ptr);
             if (NULL != dblbuf_ptr) {
                 wlmcl_dblbuf_destroy(dblbuf_ptr);
@@ -263,6 +294,7 @@ int main(__UNUSED__ int argc, __UNUSED__ char **argv)
     }
 
     wlmcl_client_destroy(wlclient_ptr);
+    wlm_settings_destroy(settings_ptr);
     return EXIT_SUCCESS;
 }
 /* == End of wlmclock.c ==================================================== */

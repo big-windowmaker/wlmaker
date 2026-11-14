@@ -41,6 +41,7 @@
 #include "primitives.h"
 #include "style.h"
 #include "test.h"  // IWYU pragma: keep
+#include "titlebar.h"
 #include "tile.h"
 #include "workspace.h"
 
@@ -57,6 +58,11 @@ struct _wlmtk_titlebar_title_t {
     struct wlr_buffer         *focussed_wlr_buffer_ptr;
     /** The drawn title, when blurred. */
     struct wlr_buffer         *blurred_wlr_buffer_ptr;
+
+    /** Whether @ref wlmtk_titlebar_title_t::last_press_msec is set. */
+    bool                      has_last_press;
+    /** Time of the last left-button press, to detect double-clicks. */
+    uint32_t                  last_press_msec;
 };
 
 static void _wlmtk_titlebar_title_element_destroy(
@@ -78,6 +84,14 @@ struct wlr_buffer *title_create_buffer(
     uint32_t text_color,
     const char *title_ptr,
     const struct wlmtk_titlebar_style *style_ptr);
+
+/**
+ * Maximum time between two left-button presses on the title, to be taken as
+ * a double-click (which toggles shading the window). See
+ * @ref wlmtk_titlebar_set_double_click_msec.
+ */
+static uint32_t _wlmtk_titlebar_title_double_click_msec =
+    WLMTK_TITLEBAR_DOUBLE_CLICK_MSEC;
 
 /* == Data ================================================================= */
 
@@ -175,6 +189,13 @@ wlmtk_element_t *wlmtk_titlebar_title_element(
     return &titlebar_title_ptr->super_buffer.super_element;
 }
 
+/* ------------------------------------------------------------------------- */
+void wlmtk_titlebar_set_double_click_msec(uint32_t msec)
+{
+    _wlmtk_titlebar_title_double_click_msec =
+        0 < msec ? msec : WLMTK_TITLEBAR_DOUBLE_CLICK_MSEC;
+}
+
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -198,9 +219,26 @@ bool _wlmtk_titlebar_title_element_pointer_button(
 
     if (BTN_LEFT == button_event_ptr->button &&
         WLMTK_BUTTON_DOWN == button_event_ptr->type) {
-        wlmtk_workspace_begin_window_move(
-            wlmtk_window_get_workspace(titlebar_title_ptr->window_ptr),
+        // Second press within the double-click time: Toggle shade, like
+        // Window Maker does. Otherwise, the press begins a move.
+        if (titlebar_title_ptr->has_last_press &&
+            button_event_ptr->time_msec - titlebar_title_ptr->last_press_msec <=
+            _wlmtk_titlebar_title_double_click_msec) {
+            titlebar_title_ptr->has_last_press = false;
+            wlmtk_window_request_shaded(
+                titlebar_title_ptr->window_ptr,
+                !wlmtk_window_is_shaded(titlebar_title_ptr->window_ptr));
+            return true;
+        }
+        titlebar_title_ptr->has_last_press = true;
+        titlebar_title_ptr->last_press_msec = button_event_ptr->time_msec;
+
+        wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
             titlebar_title_ptr->window_ptr);
+        if (NULL != workspace_ptr) {
+            wlmtk_workspace_begin_window_move(
+                workspace_ptr, titlebar_title_ptr->window_ptr);
+        }
         return true;
     }
 
@@ -308,8 +346,9 @@ struct wlr_buffer *title_create_buffer(
     wlmaker_primitives_draw_bezel_at(
         cairo_ptr, 0, 0, width,
         style_ptr->height, style_ptr->bezel_width, true);
-    wlmaker_primitives_draw_window_title(
-        cairo_ptr, &style_ptr->font, title_ptr, text_color);
+    wlmaker_primitives_draw_justified_window_title(
+        cairo_ptr, &style_ptr->font, title_ptr, text_color,
+        width, style_ptr->justify);
     cairo_destroy(cairo_ptr);
 
     return wlr_buffer_ptr;
@@ -319,6 +358,7 @@ struct wlr_buffer *title_create_buffer(
 
 static void test_title(bs_test_t *test_ptr);
 static void test_shade(bs_test_t *test_ptr);
+static void test_double_click_shade(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_titlebar_title_test_cases[] = {
@@ -326,6 +366,7 @@ static const bs_test_case_t _wlmtk_titlebar_title_test_cases[] = {
     // Trixie when running as a github action.
     { 0, "title", test_title },
     { 1, "shade", test_shade },
+    { 1, "double_click_shade", test_double_click_shade },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -495,6 +536,48 @@ void test_shade(bs_test_t *test_ptr)
     axis_event.source = WL_POINTER_AXIS_SOURCE_WHEEL_TILT;
     axis_event.delta = -0.01;
     wlmtk_element_pointer_axis(element_ptr, &axis_event);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_shaded(w));
+
+    wlmtk_titlebar_title_destroy(title_ptr);
+    wlmtk_window_destroy(w);
+    wlmtk_element_destroy(&fe_ptr->element);
+}
+
+
+/* ------------------------------------------------------------------------- */
+/** Tests that a double-click on the title toggles 'shade'. */
+void test_double_click_shade(bs_test_t *test_ptr)
+{
+    wlmtk_fake_element_t *fe_ptr = wlmtk_fake_element_create();
+    wlmtk_window_t *w = wlmtk_test_window_create(&fe_ptr->element);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w);
+    wlmtk_window_set_server_side_decorated(w, true);
+    wlmtk_titlebar_title_t *title_ptr = wlmtk_titlebar_title_create(w);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, title_ptr);
+    wlmtk_element_t *element_ptr = wlmtk_titlebar_title_element(title_ptr);
+    wlmtk_button_event_t b = {
+        .button = BTN_LEFT, .type = WLMTK_BUTTON_DOWN, .time_msec = 1000 };
+
+    // Two presses, too far apart: No shade.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(element_ptr, &b));
+    b.time_msec = 1500;
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(element_ptr, &b));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_shaded(w));
+
+    // Next press within the double-click time: Shades.
+    b.time_msec = 1700;
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(element_ptr, &b));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_shaded(w));
+
+    // A third press right after does not unshade: It starts a new sequence.
+    b.time_msec = 1800;
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(element_ptr, &b));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_is_shaded(w));
+
+    // Another double-click (here, right-button events in between don't
+    // matter): Unshades.
+    b.time_msec = 1900;
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(element_ptr, &b));
     BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_shaded(w));
 
     wlmtk_titlebar_title_destroy(title_ptr);

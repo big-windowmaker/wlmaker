@@ -133,6 +133,12 @@ static const char *xwl_atom_name_map[XWL_MAX_ATOM_ID] = {
 #endif  // defined(WLMAKER_HAVE_XWAYLAND)
 
 /* ------------------------------------------------------------------------- */
+struct wlr_xwayland *wlmaker_xwl_wlr_xwayland(wlmaker_xwl_t *xwl_ptr)
+{
+    return xwl_ptr->wlr_xwayland_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 wlmaker_xwl_t *wlmaker_xwl_create(wlmaker_server_t *server_ptr)
 {
     wlmaker_xwl_t *xwl_ptr = logged_calloc(1, sizeof(wlmaker_xwl_t));
@@ -140,17 +146,26 @@ wlmaker_xwl_t *wlmaker_xwl_create(wlmaker_server_t *server_ptr)
     xwl_ptr->server_ptr = server_ptr;
 
 #if defined(WLMAKER_HAVE_XWAYLAND)
+    // In lazy mode, wlroots reserves the X11 display socket right away (so
+    // DISPLAY can be set), but starts the server only on first connection.
+    bool lazy = server_ptr->options_ptr->lazy_xwayland;
     xwl_ptr->wlr_xwayland_ptr = wlr_xwayland_create(
         server_ptr->wl_display_ptr,
         wlmbe_backend_compositor(server_ptr->backend_ptr),
-        false);
+        lazy);
     if (NULL == xwl_ptr->wlr_xwayland_ptr) {
-        bs_log(BS_ERROR, "Failed wlr_xwayland_create(%p, %p, false).",
+        bs_log(BS_ERROR, "Failed wlr_xwayland_create(%p, %p, %d).",
                server_ptr->wl_display_ptr,
-               wlmbe_backend_compositor(server_ptr->backend_ptr));
+               wlmbe_backend_compositor(server_ptr->backend_ptr),
+               lazy);
         wlmaker_xwl_destroy(xwl_ptr);
         return NULL;
     }
+    // Without a seat, wlroots bridges neither the selections (clipboard,
+    // primary) nor drag and drop between X11 and Wayland clients. The seat
+    // is applied once the XWM is up (also in lazy mode), and released by
+    // wlr_xwayland_destroy() -- or by wlroots, if the seat goes first.
+    wlr_xwayland_set_seat(xwl_ptr->wlr_xwayland_ptr, server_ptr->wlr_seat_ptr);
 
     wlmtk_util_connect_listener_signal(
         &xwl_ptr->wlr_xwayland_ptr->events.ready,

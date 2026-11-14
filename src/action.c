@@ -25,24 +25,30 @@
 #include <libbase/plist.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <wayland-server-core.h>
 #include <xkbcommon/xkbcommon-keysyms.h>
 #include <xkbcommon/xkbcommon.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_pointer.h>
 #undef WLR_USE_UNSTABLE
 
 #include "backend/backend.h"
 #include "config.h"
 #include "default_configuration.h"
+#include "i18n.h"
 #include "idle.h"
 #include "input/keyboard.h"
 #include "input/manager.h"
 #include "root_menu.h"
 #include "server.h"
+#include "zones.h"
 #include "util/subprocess_monitor.h"
 #include "toolkit/toolkit.h"
 
@@ -58,6 +64,15 @@ struct _wlmaker_action_handle_t {
     bool                      add_logo;
 };
 
+/** Pseudo-keys for the wheel. Bound like keys, eg. "Ctrl+Alt+WheelUp". */
+typedef enum {
+    _WLMAKER_ACTION_AXIS_NONE = 0,
+    _WLMAKER_ACTION_AXIS_WHEEL_UP,
+    _WLMAKER_ACTION_AXIS_WHEEL_DOWN,
+    _WLMAKER_ACTION_AXIS_WHEEL_LEFT,
+    _WLMAKER_ACTION_AXIS_WHEEL_RIGHT,
+} _wlmaker_action_axis_t;
+
 /** Key binding for a standard action. */
 typedef struct {
     /** Node of @ref wlmaker_action_handle_t::bindings. */
@@ -68,8 +83,12 @@ typedef struct {
     wlmaker_action_t          action;
     /** Optional argument for the action (eg. command to execute, NULL when unset). */
     char                      *action_arg_ptr;
-    /** The key binding it to this node. */
+    /** The key binding it to this node. NULL for wheel bindings. */
     wlmim_keybinding_t        *keybinding_ptr;
+    /** The wheel direction, for wheel bindings. */
+    _wlmaker_action_axis_t    axis;
+    /** Scrolled amount not yet run, for wheel bindings of other actions. */
+    double                    axis_accumulated;
     /** State of the bound actions. */
     wlmaker_action_handle_t   *handle_ptr;
 } _wlmaker_action_binding_t;
@@ -77,7 +96,11 @@ typedef struct {
 static bool _wlmaker_keybindings_parse(
     const char *string_ptr,
     uint32_t *modifiers_ptr,
-    xkb_keysym_t *keysym_ptr);
+    xkb_keysym_t *keysym_ptr,
+    _wlmaker_action_axis_t *axis_ptr);
+static double _wlmaker_action_axis_value(
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    _wlmaker_action_axis_t *axis_ptr);
 
 static bool _wlmaker_keybindings_bind_item(
     const char *key_ptr,
@@ -87,9 +110,11 @@ static bool _wlmaker_keybindings_bind_item(
 static bool _wlmaker_action_bound_callback(
     const struct wlmim_keybinding_combo *binding_ptr);
 
-static bool _wlmaker_action_theme_load_from_file(
-    wlmaker_server_t *server_ptr,
-    const char *fname_ptr);
+
+static void _wlmaker_action_reload_idle(void *data_ptr);
+static bool _wlmaker_action_workspace_index(
+    const char *arg_ptr,
+    size_t *index_ptr);
 
 /* == Data ================================================================= */
 
@@ -111,6 +136,7 @@ const bspl_enum_desc_t wlmaker_action_desc[] = {
     BSPL_ENUM("WorkspaceNext", WLMAKER_ACTION_WORKSPACE_TO_NEXT),
     BSPL_ENUM("WorkspaceAdd", WLMAKER_ACTION_WORKSPACE_ADD),
     BSPL_ENUM("WorkspaceDestroyLast", WLMAKER_ACTION_WORKSPACE_DESTROY_LAST),
+    BSPL_ENUM("WorkspaceSwitchTo", WLMAKER_ACTION_WORKSPACE_SWITCH_TO),
 
     BSPL_ENUM("TaskPrevious", WLMAKER_ACTION_TASK_TO_PREVIOUS),
     BSPL_ENUM("TaskNext", WLMAKER_ACTION_TASK_TO_NEXT),
@@ -125,13 +151,17 @@ const bspl_enum_desc_t wlmaker_action_desc[] = {
     BSPL_ENUM("WindowFullscreen", WLMAKER_ACTION_WINDOW_FULLSCREEN),
     BSPL_ENUM("WindowShade", WLMAKER_ACTION_WINDOW_SHADE),
     BSPL_ENUM("WindowUnshade", WLMAKER_ACTION_WINDOW_UNSHADE),
+    BSPL_ENUM("WindowToggleShaded", WLMAKER_ACTION_WINDOW_TOGGLE_SHADED),
+    BSPL_ENUM("WindowMinimize", WLMAKER_ACTION_WINDOW_MINIMIZE),
     BSPL_ENUM("WindowClose", WLMAKER_ACTION_WINDOW_CLOSE),
     BSPL_ENUM("WindowToNextWorkspace", WLMAKER_ACTION_WINDOW_TO_NEXT_WORKSPACE),
     BSPL_ENUM("WindowToPreviousWorkspace", WLMAKER_ACTION_WINDOW_TO_PREVIOUS_WORKSPACE),
+    BSPL_ENUM("WindowToWorkspace", WLMAKER_ACTION_WINDOW_TO_WORKSPACE),
 
     BSPL_ENUM("RootMenu", WLMAKER_ACTION_ROOT_MENU),
 
     BSPL_ENUM("ThemeLoadFromFile", WLMAKER_ACTION_THEME_LOAD_FROM_FILE),
+    BSPL_ENUM("ReloadConfiguration", WLMAKER_ACTION_RELOAD_CONFIGURATION),
 
     BSPL_ENUM("OutputMagnify", WLMAKER_ACTION_OUTPUT_MAGNIFY),
     BSPL_ENUM("OutputReduce", WLMAKER_ACTION_OUTPUT_REDUCE),
@@ -150,6 +180,16 @@ const bspl_enum_desc_t wlmaker_action_desc[] = {
     BSPL_ENUM("SwitchToVT11", WLMAKER_ACTION_SWITCH_TO_VT11),
     BSPL_ENUM("SwitchToVT12", WLMAKER_ACTION_SWITCH_TO_VT12),
 
+    // Window zones and tiling (wmake-zones): (Zones, "move left") etc.
+    BSPL_ENUM("Zones", WLMAKER_ACTION_ZONES),
+
+    BSPL_ENUM("ZoomIn", WLMAKER_ACTION_ZOOM_IN),
+    BSPL_ENUM("ZoomOut", WLMAKER_ACTION_ZOOM_OUT),
+    BSPL_ENUM("ZoomReset", WLMAKER_ACTION_ZOOM_RESET),
+
+    BSPL_ENUM("LocatePointer", WLMAKER_ACTION_LOCATE_POINTER),
+    BSPL_ENUM("ForceCloseSelect", WLMAKER_ACTION_FORCE_CLOSE_SELECT),
+
     // A duplicate to ShellExecute, permits `wmmenugen` compatibility.
     BSPL_ENUM("SHEXEC", WLMAKER_ACTION_SHELL_EXECUTE),
     // A duplicate to Execute, permits compatibility with Window Maker.
@@ -159,6 +199,15 @@ const bspl_enum_desc_t wlmaker_action_desc[] = {
 };
 
 /* == Exported methods ===================================================== */
+
+/* ------------------------------------------------------------------------- */
+/** Counts workspaces, for @ref wlmtk_desktop_for_each_workspace. */
+static void _wlmaker_action_count_workspace(
+    __UNUSED__ bs_dllist_node_t *dlnode_ptr,
+    void *ud_ptr)
+{
+    ++*(size_t*)ud_ptr;
+}
 
 /* ------------------------------------------------------------------------- */
 wlmaker_action_handle_t *wlmaker_action_bind_keys(
@@ -191,9 +240,11 @@ void wlmaker_action_unbind_keys(wlmaker_action_handle_t *handle_ptr)
         _wlmaker_action_binding_t *binding_ptr = BS_CONTAINER_OF(
             qnode_ptr, _wlmaker_action_binding_t, qnode);
         qnode_ptr = qnode_ptr->next_ptr;
-        wlmim_unbind_key(
-            handle_ptr->server_ptr->input_manager_ptr,
-            binding_ptr->keybinding_ptr);
+        if (NULL != binding_ptr->keybinding_ptr) {
+            wlmim_unbind_key(
+                handle_ptr->server_ptr->input_manager_ptr,
+                binding_ptr->keybinding_ptr);
+        }
         free(binding_ptr->action_arg_ptr);
         free(binding_ptr);
     }
@@ -209,6 +260,8 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
     wlmtk_workspace_t *workspace_ptr, *next_workspace_ptr;
     wlmtk_window_t *window_ptr;
     const char **argv;
+    size_t workspaces;
+    char name[64];
 
     switch (action) {
     case WLMAKER_ACTION_NONE:
@@ -239,6 +292,10 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
             bs_subprocess_create(argv[0], argv, NULL));
         break;
 
+    case WLMAKER_ACTION_ZONES:
+        wlmaker_zones_command(server_ptr->zones_ptr, arg_ptr, NULL, 0);
+        break;
+
     case WLMAKER_ACTION_SHELL_EXECUTE:
         argv = (const char*[]){ "/bin/sh", "-c", arg_ptr, NULL };
         wlm_util_subprocess_monitor_run(
@@ -261,9 +318,18 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         break;
 
     case WLMAKER_ACTION_WORKSPACE_ADD:
+        // Named like on Window Maker: By its number.
+        workspaces = 0;
+        wlmtk_desktop_for_each_workspace(
+            server_ptr->desktop_ptr, _wlmaker_action_count_workspace,
+            &workspaces);
+        // TRANSLATORS: Name of a new workspace, with its number. As
+        // Window Maker's "Workspace %i".
+        snprintf(name, sizeof(name), wlmaker_i18n("Workspace %zu"),
+                 workspaces + 1);
         workspace_ptr = wlmtk_workspace_create(
             server_ptr->wlr_output_layout_ptr,
-            "New",
+            name,
             &server_ptr->style_ptr->tile);
         if (NULL != workspace_ptr) {
             wlmtk_desktop_add_workspace(server_ptr->desktop_ptr, workspace_ptr);
@@ -277,13 +343,22 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         wlmtk_desktop_destroy_last_workspace(server_ptr->desktop_ptr);
         break;
 
+    case WLMAKER_ACTION_WORKSPACE_SWITCH_TO:
+        if (_wlmaker_action_workspace_index(arg_ptr, &workspaces)) {
+            wlmtk_desktop_switch_to_workspace_at(
+                server_ptr->desktop_ptr, workspaces);
+        }
+        break;
+
     case WLMAKER_ACTION_TASK_TO_PREVIOUS:
+        wlmaker_server_task_list_begin(server_ptr);
         wlmtk_workspace_activate_previous_window(
             wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr));
         wlmaker_server_activate_task_list(server_ptr);
         break;
 
     case WLMAKER_ACTION_TASK_TO_NEXT:
+        wlmaker_server_task_list_begin(server_ptr);
         wlmtk_workspace_activate_next_window(
             wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr));
         wlmaker_server_activate_task_list(server_ptr);
@@ -364,6 +439,25 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         }
         break;
 
+    case WLMAKER_ACTION_WINDOW_TOGGLE_SHADED:
+        workspace_ptr = wlmtk_desktop_get_current_workspace(
+            server_ptr->desktop_ptr);
+        window_ptr = wlmtk_workspace_get_activated_window(workspace_ptr);
+        if (NULL != window_ptr) {
+            wlmtk_window_request_shaded(
+                window_ptr, !wlmtk_window_is_shaded(window_ptr));
+        }
+        break;
+
+    case WLMAKER_ACTION_WINDOW_MINIMIZE:
+        workspace_ptr = wlmtk_desktop_get_current_workspace(
+            server_ptr->desktop_ptr);
+        window_ptr = wlmtk_workspace_get_activated_window(workspace_ptr);
+        if (NULL != window_ptr) {
+            wlmtk_window_request_minimize(window_ptr);
+        }
+        break;
+
     case WLMAKER_ACTION_WINDOW_TO_NEXT_WORKSPACE:
         workspace_ptr = wlmtk_desktop_get_current_workspace(
             server_ptr->desktop_ptr);
@@ -390,6 +484,23 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         }
         break;
 
+    case WLMAKER_ACTION_WINDOW_TO_WORKSPACE:
+        workspace_ptr = wlmtk_desktop_get_current_workspace(
+            server_ptr->desktop_ptr);
+        window_ptr = wlmtk_workspace_get_activated_window(workspace_ptr);
+        next_workspace_ptr = NULL;
+        if (_wlmaker_action_workspace_index(arg_ptr, &workspaces)) {
+            next_workspace_ptr = wlmtk_desktop_get_workspace_at(
+                server_ptr->desktop_ptr, workspaces);
+        }
+        if (NULL != window_ptr &&
+            NULL != next_workspace_ptr &&
+            workspace_ptr != next_workspace_ptr) {
+            wlmtk_workspace_unmap_window(workspace_ptr, window_ptr);
+            wlmtk_workspace_map_window(next_workspace_ptr, window_ptr);
+        }
+        break;
+
     case WLMAKER_ACTION_WINDOW_CLOSE:
         workspace_ptr = wlmtk_desktop_get_current_workspace(
             server_ptr->desktop_ptr);
@@ -400,32 +511,25 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         break;
 
     case WLMAKER_ACTION_ROOT_MENU:
-        // TODO(kaeser@gubbe.ch): Clean up.
         if (NULL != server_ptr->root_menu_ptr &&
             NULL == wlmtk_window_get_workspace(
                 wlmaker_root_menu_window(server_ptr->root_menu_ptr))) {
-            wlmtk_workspace_map_window(
-                wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr),
-                wlmaker_root_menu_window(server_ptr->root_menu_ptr));
-            wlmtk_workspace_set_window_position(
-                wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr),
-                wlmaker_root_menu_window(server_ptr->root_menu_ptr),
-                wlmim_wlr_cursor(server_ptr->input_manager_ptr)->x,
-                wlmim_wlr_cursor(server_ptr->input_manager_ptr)->y);
-            wlmtk_workspace_confine_within(
-                wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr),
-                wlmaker_root_menu_window(server_ptr->root_menu_ptr));
-            wlmtk_menu_set_mode(
-                wlmaker_root_menu_menu(server_ptr->root_menu_ptr),
-                WLMTK_MENU_MODE_NORMAL);
-            wlmtk_menu_set_open(
-                wlmaker_root_menu_menu(server_ptr->root_menu_ptr),
-                true);
+            wlmaker_root_menu_open(server_ptr->root_menu_ptr,
+                                   WLMTK_MENU_MODE_NORMAL);
         }
         break;
 
     case WLMAKER_ACTION_THEME_LOAD_FROM_FILE:
-        _wlmaker_action_theme_load_from_file(server_ptr, arg_ptr);
+        wlmaker_action_theme_load_from_file(server_ptr, arg_ptr);
+        break;
+
+    case WLMAKER_ACTION_RELOAD_CONFIGURATION:
+        // Deferred: The key binding (or menu item) running this action
+        // gets replaced by the reload.
+        wl_event_loop_add_idle(
+            wl_display_get_event_loop(server_ptr->wl_display_ptr),
+            _wlmaker_action_reload_idle,
+            server_ptr);
         break;
 
     case WLMAKER_ACTION_OUTPUT_MAGNIFY:
@@ -437,6 +541,28 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
 
     case WLMAKER_ACTION_OUTPUT_SAVE_STATE:
         wlmbe_backend_save_ephemeral_output_configs(server_ptr->backend_ptr);
+        break;
+
+    case WLMAKER_ACTION_ZOOM_IN:
+        wlmbe_zoom_scroll(wlmbe_backend_zoom(server_ptr->backend_ptr), 1.0);
+        break;
+    case WLMAKER_ACTION_ZOOM_OUT:
+        wlmbe_zoom_scroll(wlmbe_backend_zoom(server_ptr->backend_ptr), -1.0);
+        break;
+    case WLMAKER_ACTION_ZOOM_RESET:
+        wlmbe_zoom_reset(wlmbe_backend_zoom(server_ptr->backend_ptr));
+        break;
+
+    case WLMAKER_ACTION_LOCATE_POINTER:
+        if (NULL != server_ptr->locate_pointer_ptr) {
+            wlmaker_locate_pointer_show(server_ptr->locate_pointer_ptr);
+        }
+        break;
+
+    case WLMAKER_ACTION_FORCE_CLOSE_SELECT:
+        if (NULL != server_ptr->force_close_ptr) {
+            wlmaker_force_close_toggle(server_ptr->force_close_ptr);
+        }
         break;
 
     case WLMAKER_ACTION_SWITCH_TO_VT1:
@@ -522,7 +648,8 @@ bool _wlmaker_keybindings_bind_item(
     // Parse the key binding string into modifiers and keysym.
     uint32_t modifiers;
     xkb_keysym_t keysym;
-    if (!_wlmaker_keybindings_parse(key_ptr, &modifiers, &keysym)) {
+    _wlmaker_action_axis_t axis;
+    if (!_wlmaker_keybindings_parse(key_ptr, &modifiers, &keysym, &axis)) {
         bs_log(BS_WARNING,
                "Failed to parse binding '%s' for keybinding action '%s'",
                key_ptr, action_name_ptr);
@@ -555,6 +682,13 @@ bool _wlmaker_keybindings_bind_item(
     action_binding_ptr->combo.ignore_case = true;
     action_binding_ptr->combo.modifiers = modifiers;
     action_binding_ptr->combo.modifiers_mask = wlmim_modifiers_default_mask;
+    action_binding_ptr->axis = axis;
+
+    // Wheel bindings are looked up by wlmaker_action_process_axis.
+    if (_WLMAKER_ACTION_AXIS_NONE != axis) {
+        bs_dequeue_push_back(&handle_ptr->bindings, &action_binding_ptr->qnode);
+        return true;
+    }
 
     // Register the key binding with the server.
     action_binding_ptr->keybinding_ptr = wlmim_bind_key(
@@ -573,21 +707,34 @@ bool _wlmaker_keybindings_bind_item(
 
 /* ------------------------------------------------------------------------- */
 /**
- * Parses a keybinding string: Tokenizes into modifiers and keysym.
+ * Parses a keybinding string: Tokenizes into modifiers and keysym, or
+ * modifiers and a wheel direction (`WheelUp`, `WheelDown`, `WheelLeft`,
+ * `WheelRight`).
  *
  * @param string_ptr
  * @param modifiers_ptr
  * @param keysym_ptr
+ * @param axis_ptr            Set to the wheel direction, or
+ *                            _WLMAKER_ACTION_AXIS_NONE for keys.
  *
  * @return true on success.
  */
 bool _wlmaker_keybindings_parse(
     const char *string_ptr,
     uint32_t *modifiers_ptr,
-    xkb_keysym_t *keysym_ptr)
+    xkb_keysym_t *keysym_ptr,
+    _wlmaker_action_axis_t *axis_ptr)
 {
+    static const struct { const char *name_ptr; _wlmaker_action_axis_t axis; }
+    wheel[] = {
+        { "WheelUp", _WLMAKER_ACTION_AXIS_WHEEL_UP },
+        { "WheelDown", _WLMAKER_ACTION_AXIS_WHEEL_DOWN },
+        { "WheelLeft", _WLMAKER_ACTION_AXIS_WHEEL_LEFT },
+        { "WheelRight", _WLMAKER_ACTION_AXIS_WHEEL_RIGHT },
+    };
     *keysym_ptr = XKB_KEY_NoSymbol;
     *modifiers_ptr = 0;
+    *axis_ptr = _WLMAKER_ACTION_AXIS_NONE;
     bool rv = true;
 
     // Tokenize along '+', then lookup each of the keys.
@@ -603,11 +750,23 @@ bool _wlmaker_keybindings_parse(
 
         start_ptr = end_ptr;
 
+        _wlmaker_action_axis_t axis = _WLMAKER_ACTION_AXIS_NONE;
+        for (size_t i = 0; i < sizeof(wheel) / sizeof(wheel[0]); ++i) {
+            if (0 == strcasecmp(token_ptr, wheel[i].name_ptr)) {
+                axis = wheel[i].axis;
+            }
+        }
+
         int new_modifier;
         if (bspl_enum_name_to_value(
                 wlmim_keyboard_modifiers, token_ptr, &new_modifier)) {
             *modifiers_ptr |= new_modifier;
-        } else if (*keysym_ptr == XKB_KEY_NoSymbol) {
+        } else if (_WLMAKER_ACTION_AXIS_NONE != axis &&
+                   _WLMAKER_ACTION_AXIS_NONE == *axis_ptr &&
+                   XKB_KEY_NoSymbol == *keysym_ptr) {
+            *axis_ptr = axis;
+        } else if (*keysym_ptr == XKB_KEY_NoSymbol &&
+                   _WLMAKER_ACTION_AXIS_NONE == *axis_ptr) {
             *keysym_ptr = xkb_keysym_to_upper(
                 xkb_keysym_from_name(token_ptr, XKB_KEYSYM_CASE_INSENSITIVE));
         } else {
@@ -618,7 +777,96 @@ bool _wlmaker_keybindings_parse(
         if (!*start_ptr) break;
     }
 
-    return rv && (XKB_KEY_NoSymbol != *keysym_ptr);
+    return rv && (XKB_KEY_NoSymbol != *keysym_ptr ||
+                  _WLMAKER_ACTION_AXIS_NONE != *axis_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Computes the scrolled amount of an axis event, in wheel notches.
+ *
+ * @param wlr_pointer_axis_event_ptr
+ * @param axis_ptr            Set to the direction scrolled. NONE if none.
+ *
+ * @return The amount scrolled, in (possibly fractional) notches, >= 0.
+ *     A notch of a high-resolution wheel comes in parts, touchpads count
+ *     15 units as a notch (like libinput's wheel click angle).
+ */
+double _wlmaker_action_axis_value(
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    _wlmaker_action_axis_t *axis_ptr)
+{
+    const struct wlr_pointer_axis_event *ev_ptr = wlr_pointer_axis_event_ptr;
+    double v = (0 != ev_ptr->delta_discrete) ?
+        ev_ptr->delta_discrete / (double)WLR_POINTER_AXIS_DISCRETE_STEP :
+        ev_ptr->delta / 15.0;
+    *axis_ptr = _WLMAKER_ACTION_AXIS_NONE;
+    if (0 == v) return 0;
+    if (WL_POINTER_AXIS_VERTICAL_SCROLL == ev_ptr->orientation) {
+        *axis_ptr = v < 0 ?
+            _WLMAKER_ACTION_AXIS_WHEEL_UP : _WLMAKER_ACTION_AXIS_WHEEL_DOWN;
+    } else {
+        *axis_ptr = v < 0 ?
+            _WLMAKER_ACTION_AXIS_WHEEL_LEFT : _WLMAKER_ACTION_AXIS_WHEEL_RIGHT;
+    }
+    return fabs(v);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_action_process_axis(
+    wlmaker_action_handle_t *handle_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers)
+{
+    if (NULL == handle_ptr) return false;
+
+    // Caps Lock and Num Lock (Mod2) are states, not held modifiers.
+    const uint32_t mask = (WLR_MODIFIER_SHIFT | WLR_MODIFIER_CTRL |
+                           WLR_MODIFIER_ALT | WLR_MODIFIER_LOGO |
+                           WLR_MODIFIER_MOD3 | WLR_MODIFIER_MOD5);
+    _wlmaker_action_axis_t axis;
+    double value = _wlmaker_action_axis_value(wlr_pointer_axis_event_ptr, &axis);
+    bool vertical = (WL_POINTER_AXIS_VERTICAL_SCROLL ==
+                     wlr_pointer_axis_event_ptr->orientation);
+
+    for (bs_dequeue_node_t *qnode_ptr = handle_ptr->bindings.head_ptr;
+         NULL != qnode_ptr;
+         qnode_ptr = qnode_ptr->next_ptr) {
+        _wlmaker_action_binding_t *b = BS_CONTAINER_OF(
+            qnode_ptr, _wlmaker_action_binding_t, qnode);
+        if (_WLMAKER_ACTION_AXIS_NONE == b->axis) continue;
+        if ((modifiers & mask) != (b->combo.modifiers & mask)) continue;
+        bool b_vertical = (_WLMAKER_ACTION_AXIS_WHEEL_UP == b->axis ||
+                           _WLMAKER_ACTION_AXIS_WHEEL_DOWN == b->axis);
+        if (b_vertical != vertical) continue;
+
+        // The end of a touchpad scroll: Taken where the scroll was taken.
+        if (_WLMAKER_ACTION_AXIS_NONE == axis) return true;
+        if (b->axis != axis) continue;
+
+        wlmaker_server_t *server_ptr = handle_ptr->server_ptr;
+        switch (b->action) {
+        case WLMAKER_ACTION_ZOOM_IN:
+            wlmbe_zoom_scroll(
+                wlmbe_backend_zoom(server_ptr->backend_ptr), value);
+            break;
+        case WLMAKER_ACTION_ZOOM_OUT:
+            wlmbe_zoom_scroll(
+                wlmbe_backend_zoom(server_ptr->backend_ptr), -value);
+            break;
+        default:
+            // Other actions run once per notch.
+            b->axis_accumulated += value;
+            while (b->axis_accumulated >= 1.0 - 1e-6) {
+                b->axis_accumulated -= 1.0;
+                wlmaker_action_execute(server_ptr, b->action, b->action_arg_ptr);
+            }
+            if (b->axis_accumulated < 0) b->axis_accumulated = 0;
+            break;
+        }
+        return true;
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -644,8 +892,40 @@ bool _wlmaker_action_bound_callback(
 }
 
 /* ------------------------------------------------------------------------- */
-/** Loads a theme file and applies it. */
-bool _wlmaker_action_theme_load_from_file(
+/** Idle callback for ReloadConfiguration. */
+void _wlmaker_action_reload_idle(void *data_ptr)
+{
+    wlmaker_server_reload(data_ptr);
+    wlmaker_zones_reload(((wlmaker_server_t*)data_ptr)->zones_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Parses the workspace number of WorkspaceSwitchTo and WindowToWorkspace.
+ *
+ * @param arg_ptr             The workspace's number, counting from 1.
+ * @param index_ptr           Set to the workspace's index, counting from 0.
+ *
+ * @return true if `arg_ptr` holds a valid number.
+ */
+bool _wlmaker_action_workspace_index(const char *arg_ptr, size_t *index_ptr)
+{
+    if (NULL == arg_ptr) {
+        bs_log(BS_WARNING, "Missing workspace number.");
+        return false;
+    }
+    char *end_ptr = NULL;
+    unsigned long number = strtoul(arg_ptr, &end_ptr, 10);
+    if (end_ptr == arg_ptr || '\0' != *end_ptr || 0 == number) {
+        bs_log(BS_WARNING, "Invalid workspace number \"%s\"", arg_ptr);
+        return false;
+    }
+    *index_ptr = number - 1;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_action_theme_load_from_file(
     wlmaker_server_t *server_ptr,
     const char *fname_ptr)
 {
@@ -675,6 +955,7 @@ bool _wlmaker_action_theme_load_from_file(
             wlmaker_root_menu_window(server_ptr->root_menu_ptr),
             wlmtk_window_style_to_ref(server_ptr->style_ptr->window_style_ptr),
             wlmtk_menu_style_to_ref(server_ptr->style_ptr->menu_style_ptr));
+        wlmaker_root_menu_restyle(server_ptr->root_menu_ptr);
     }
 
     rv &= wlmim_set_style(
@@ -691,17 +972,33 @@ bool _wlmaker_action_theme_load_from_file(
 static void test_keybindings_parse(bs_test_t *test_ptr);
 static void test_default_keybindings(bs_test_t *test_ptr);
 static void test_keybindings_formats(bs_test_t *test_ptr);
+static void test_workspace_index(bs_test_t *test_ptr);
+static void test_wheel_bindings(bs_test_t *test_ptr);
 
 /** Test cases for key bindings. */
 static const bs_test_case_t   wlmaker_action_test_cases[] = {
     { true, "parse", test_keybindings_parse },
     { true, "default_keybindings", test_default_keybindings },
     { true, "formats", test_keybindings_formats },
+    { true, "workspace_index", test_workspace_index },
+    { true, "wheel_bindings", test_wheel_bindings },
     BS_TEST_CASE_SENTINEL()
 };
 
 const bs_test_set_t wlmaker_action_test_set = BS_TEST_SET(
     true, "action", wlmaker_action_test_cases);
+
+/** Calls @ref _wlmaker_keybindings_parse, for keys: No wheel permitted. */
+static bool _wlmaker_keybindings_parse_test(
+    const char *string_ptr,
+    uint32_t *modifiers_ptr,
+    xkb_keysym_t *keysym_ptr)
+{
+    _wlmaker_action_axis_t axis;
+    bool rv = _wlmaker_keybindings_parse(
+        string_ptr, modifiers_ptr, keysym_ptr, &axis);
+    return rv && _WLMAKER_ACTION_AXIS_NONE == axis;
+}
 
 /* ------------------------------------------------------------------------- */
 /** Tests @ref _wlmaker_keybindings_parse. */
@@ -709,36 +1006,55 @@ void test_keybindings_parse(bs_test_t *test_ptr)
 {
     uint32_t m;
     xkb_keysym_t ks;
+    _wlmaker_action_axis_t axis;
+
+    // Wheel pseudo-keys.
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_keybindings_parse(
+                            "Ctrl+Alt+WheelUp", &m, &ks, &axis));
+    BS_TEST_VERIFY_EQ(test_ptr, WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT, m);
+    BS_TEST_VERIFY_EQ(test_ptr, _WLMAKER_ACTION_AXIS_WHEEL_UP, axis);
+    BS_TEST_VERIFY_EQ(test_ptr, XKB_KEY_NoSymbol, ks);
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_keybindings_parse(
+                            "wheeldown", &m, &ks, &axis));
+    BS_TEST_VERIFY_EQ(test_ptr, _WLMAKER_ACTION_AXIS_WHEEL_DOWN, axis);
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_keybindings_parse(
+                             "Ctrl+WheelUp+A", &m, &ks, &axis));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_keybindings_parse(
+                             "WheelUp+WheelDown", &m, &ks, &axis));
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_keybindings_parse(
+                            "Ctrl+Alt+0", &m, &ks, &axis));
+    BS_TEST_VERIFY_EQ(test_ptr, XKB_KEY_0, ks);
+    BS_TEST_VERIFY_EQ(test_ptr, _WLMAKER_ACTION_AXIS_NONE, axis);
 
     // Lower- and upper case.
-    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_keybindings_parse("A", &m, &ks));
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_keybindings_parse_test("A", &m, &ks));
     BS_TEST_VERIFY_EQ(test_ptr, 0, m);
     BS_TEST_VERIFY_EQ(test_ptr, XKB_KEY_A, ks);
-    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_keybindings_parse("a", &m, &ks));
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_keybindings_parse_test("a", &m, &ks));
     BS_TEST_VERIFY_EQ(test_ptr, 0, m);
     BS_TEST_VERIFY_EQ(test_ptr, XKB_KEY_A, ks);
 
     // Modifier.
     BS_TEST_VERIFY_TRUE(
-        test_ptr, _wlmaker_keybindings_parse("Ctrl+Logo+Q", &m, &ks));
+        test_ptr, _wlmaker_keybindings_parse_test("Ctrl+Logo+Q", &m, &ks));
     BS_TEST_VERIFY_EQ(test_ptr, WLR_MODIFIER_CTRL | WLR_MODIFIER_LOGO, m);
     BS_TEST_VERIFY_EQ(test_ptr, XKB_KEY_Q, ks);
 
     // Test some fancier keys.
     BS_TEST_VERIFY_TRUE(
-        test_ptr, _wlmaker_keybindings_parse("Escape", &m, &ks));
+        test_ptr, _wlmaker_keybindings_parse_test("Escape", &m, &ks));
     BS_TEST_VERIFY_EQ(test_ptr, XKB_KEY_Escape, ks);
     BS_TEST_VERIFY_TRUE(
-        test_ptr, _wlmaker_keybindings_parse("XF86AudioLowerVolume", &m, &ks));
+        test_ptr, _wlmaker_keybindings_parse_test("XF86AudioLowerVolume", &m, &ks));
     BS_TEST_VERIFY_EQ(test_ptr, XKB_KEY_XF86AudioLowerVolume, ks);
 
     // Not peritted: Empty, just modifiers, more than one keysym.
     BS_TEST_VERIFY_FALSE(
-        test_ptr, _wlmaker_keybindings_parse("", &m, &ks));
+        test_ptr, _wlmaker_keybindings_parse_test("", &m, &ks));
     BS_TEST_VERIFY_FALSE(
-        test_ptr, _wlmaker_keybindings_parse("A+B", &m, &ks));
+        test_ptr, _wlmaker_keybindings_parse_test("A+B", &m, &ks));
     BS_TEST_VERIFY_FALSE(
-        test_ptr, _wlmaker_keybindings_parse("Shift+Ctrl", &m, &ks));
+        test_ptr, _wlmaker_keybindings_parse_test("Shift+Ctrl", &m, &ks));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -854,6 +1170,115 @@ void test_keybindings_formats(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, NULL, handle_ptr);
     bspl_object_unref(obj_ptr);
 
+    wlmim_input_manager_destroy(server.input_manager_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests @ref _wlmaker_action_workspace_index. */
+void test_workspace_index(bs_test_t *test_ptr)
+{
+    size_t i = 42;
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_action_workspace_index("1", &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, i);
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmaker_action_workspace_index("10", &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 9, i);
+
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_action_workspace_index(NULL, &i));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_action_workspace_index("", &i));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_action_workspace_index("0", &i));
+    BS_TEST_VERIFY_FALSE(test_ptr, _wlmaker_action_workspace_index("2x", &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 9, i);
+
+    // Both actions take the workspace's number as argument.
+    wlmaker_server_t server = {
+        .input_manager_ptr = wlmim_input_manager_create(
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+    };
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.input_manager_ptr);
+    const char *s = "{ \"Alt+1\" = (WorkspaceSwitchTo, \"1\"); "
+        "\"Shift+Alt+1\" = (WindowToWorkspace, \"1\"); }";
+    bspl_object_t *obj_ptr = bspl_create_object_from_plist_data(
+        (const uint8_t*)s, strlen(s));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, obj_ptr);
+    wlmaker_action_handle_t *handle_ptr = wlmaker_action_bind_keys(
+        &server, bspl_dict_from_object(obj_ptr), false);
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, handle_ptr);
+    if (NULL != handle_ptr) wlmaker_action_unbind_keys(handle_ptr);
+    bspl_object_unref(obj_ptr);
+    wlmim_input_manager_destroy(server.input_manager_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests wheel bindings: Matching of modifiers, direction and amounts. */
+void test_wheel_bindings(bs_test_t *test_ptr)
+{
+    wlmaker_server_t server = {
+        .input_manager_ptr = wlmim_input_manager_create(
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+    };
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.input_manager_ptr);
+    const char *c = "{ \"Ctrl+Alt+WheelUp\" = None; \"Ctrl+Alt+0\" = None; }";
+    bspl_object_t *obj_ptr = bspl_create_object_from_plist_data(
+        (const uint8_t*)c, strlen(c));
+    wlmaker_action_handle_t *handle_ptr = wlmaker_action_bind_keys(
+        &server, bspl_dict_from_object(obj_ptr), false);
+    bspl_object_unref(obj_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, handle_ptr);
+
+    const uint32_t ca = WLR_MODIFIER_CTRL | WLR_MODIFIER_ALT;
+    struct wlr_pointer_axis_event up = {
+        .orientation = WL_POINTER_AXIS_VERTICAL_SCROLL,
+        .delta = -15, .delta_discrete = -WLR_POINTER_AXIS_DISCRETE_STEP };
+    struct wlr_pointer_axis_event down = up;
+    down.delta = 15;
+    down.delta_discrete = WLR_POINTER_AXIS_DISCRETE_STEP;
+    struct wlr_pointer_axis_event left = up;
+    left.orientation = WL_POINTER_AXIS_HORIZONTAL_SCROLL;
+    struct wlr_pointer_axis_event stop = up;
+    stop.delta = 0;
+    stop.delta_discrete = 0;
+
+    // Without the modifiers, or other ones: Passed on to the clients.
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_action_process_axis(
+                             handle_ptr, &up, 0));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_action_process_axis(
+                             handle_ptr, &up, WLR_MODIFIER_CTRL));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_action_process_axis(
+                             handle_ptr, &up, ca | WLR_MODIFIER_SHIFT));
+    // Bound: Taken. Num Lock and Caps Lock do not matter.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_action_process_axis(
+                            handle_ptr, &up, ca));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_action_process_axis(
+                            handle_ptr, &up,
+                            ca | WLR_MODIFIER_MOD2 | WLR_MODIFIER_CAPS));
+    // Unbound direction, other axis: Passed on. Scroll stop: Taken.
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_action_process_axis(
+                             handle_ptr, &down, ca));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_action_process_axis(
+                             handle_ptr, &left, ca));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_action_process_axis(
+                            handle_ptr, &stop, ca));
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_action_process_axis(
+                             NULL, &up, ca));
+
+    // Amounts: Notches, high-resolution parts, touchpad units.
+    _wlmaker_action_axis_t axis;
+    BS_TEST_VERIFY_EQ(test_ptr, 1.0, _wlmaker_action_axis_value(&up, &axis));
+    BS_TEST_VERIFY_EQ(test_ptr, _WLMAKER_ACTION_AXIS_WHEEL_UP, axis);
+    BS_TEST_VERIFY_EQ(test_ptr, 1.0, _wlmaker_action_axis_value(&left, &axis));
+    BS_TEST_VERIFY_EQ(test_ptr, _WLMAKER_ACTION_AXIS_WHEEL_LEFT, axis);
+    struct wlr_pointer_axis_event e = down;
+    e.delta_discrete = WLR_POINTER_AXIS_DISCRETE_STEP / 4;
+    BS_TEST_VERIFY_EQ(test_ptr, 0.25, _wlmaker_action_axis_value(&e, &axis));
+    BS_TEST_VERIFY_EQ(test_ptr, _WLMAKER_ACTION_AXIS_WHEEL_DOWN, axis);
+    e.delta_discrete = 0;
+    e.delta = -7.5;
+    BS_TEST_VERIFY_EQ(test_ptr, 0.5, _wlmaker_action_axis_value(&e, &axis));
+    BS_TEST_VERIFY_EQ(test_ptr, _WLMAKER_ACTION_AXIS_WHEEL_UP, axis);
+    BS_TEST_VERIFY_EQ(test_ptr, 0.0, _wlmaker_action_axis_value(&stop, &axis));
+    BS_TEST_VERIFY_EQ(test_ptr, _WLMAKER_ACTION_AXIS_NONE, axis);
+
+    wlmaker_action_unbind_keys(handle_ptr);
     wlmim_input_manager_destroy(server.input_manager_ptr);
 }
 

@@ -50,12 +50,14 @@ add_executable(
 target_link_libraries(
   wlmtool
   libwlmtool
-  libbase)
+  libbase
+  ${Intl_LIBRARIES})
 target_compile_definitions(
   wlmtool PRIVATE
   "WLMAKER_VERSION_MAJOR=\"${WLMAKER_VERSION_MAJOR}\""
   "WLMAKER_VERSION_MINOR=\"${WLMAKER_VERSION_MINOR}\""
-  "WLMAKER_VERSION_FULL=\"${WLMAKER_VERSION_FULL}\"")
+  "WLMAKER_VERSION_FULL=\"${WLMAKER_VERSION_FULL}\""
+  "WLMAKER_LOCALEDIR=\"${CMAKE_INSTALL_FULL_LOCALEDIR}\"")
 install(
   TARGETS wlmtool
   DESTINATION "${CMAKE_INSTALL_BINDIR}")

@@ -32,6 +32,7 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
 #undef WLR_USE_UNSTABLE
 
 #include "input/manager.h"
@@ -42,13 +43,17 @@ typedef struct _wlmaker_server_t wlmaker_server_t;
 #include "backend/backend.h"
 #include "config.h"
 #include "corner.h"  // IWYU pragma: keep
+#include "dock_fx.h"  // IWYU pragma: keep
 #include "cursor.h"  // IWYU pragma: keep
 #include "icon_manager.h"  // IWYU pragma: keep
 #include "idle.h"  // IWYU pragma: keep
 #include "input_observation.h"
 #include "layer_shell.h"  // IWYU pragma: keep
 #include "lock_mgr.h"  // IWYU pragma: keep
+#include "force_close.h"  // IWYU pragma: keep
+#include "locate_pointer.h"  // IWYU pragma: keep
 #include "root_menu.h"  // IWYU pragma: keep
+#include "context_menu.h"  // IWYU pragma: keep
 #include "toolkit/toolkit.h"
 #include "util/files.h"
 #include "util/subprocess_monitor.h"  // IWYU pragma: keep
@@ -64,6 +69,11 @@ extern "C" {
 typedef struct {
     /** Whether to start XWayland. */
     bool                      start_xwayland;
+    /**
+     * Whether to start the XWayland server only once the first X11 client
+     * connects. Applies only with @ref wlmaker_server_options_t::start_xwayland.
+     */
+    bool                      lazy_xwayland;
     /** Desired output width, for windowed mode. 0 for no preference. */
     uint32_t                  width;
     /** Desired output height, for windowed mode. 0 for no preference. */
@@ -76,6 +86,16 @@ typedef struct {
 struct _wlmaker_server_t {
     /** Files module handle. */
     wlm_util_files_t           *files_ptr;
+    /** The `--state_file` argument, or NULL. Where state gets stored. */
+    char                      *state_fname_ptr;
+    /** The `--config_file` argument, or NULL. Re-read when reloading. */
+    const char                *config_fname_ptr;
+    /** The `--theme_file` argument, or NULL. Re-read when reloading. */
+    const char                *theme_fname_ptr;
+    /** The `--root_menu_file` argument, or NULL. Re-read when reloading. */
+    const char                *root_menu_fname_ptr;
+    /** The bound key bindings. Replaced when reloading. */
+    struct _wlmaker_action_handle_t *action_handle_ptr;
     /** Configuration dictionnary. */
     bspl_dict_t               *config_dict_ptr;
     /** Copy of the options. */
@@ -119,6 +139,10 @@ struct _wlmaker_server_t {
     wlmaker_xdg_shell_t       *xdg_shell_ptr;
     /** The XDG decoration manager. */
     wlmaker_xdg_decoration_manager_t *xdg_decoration_manager_ptr;
+    /** The XDG activation manager. Permits clients to raise their windows. */
+    struct wlr_xdg_activation_v1 *wlr_xdg_activation_v1_ptr;
+    /** Listener for `request_activate` of `wlr_xdg_activation_v1::events`. */
+    struct wl_listener        xdg_activation_request_activate_listener;
     /** Layer shell handler. */
     wlmaker_layer_shell_t     *layer_shell_ptr;
     /** Backend handler. */
@@ -149,7 +173,14 @@ struct _wlmaker_server_t {
     wlmtk_root_t              *root_ptr;
     /** Whether the task list is currently shown. */
     bool                      task_list_enabled;
+    /** The window activated when the task list opened (Esc returns to it). */
+    wlmtk_window_t            *task_list_origin_ptr;
+    /** Whether the task list holds the keyboard grab. */
+    bool                      task_list_grab;
     /** Signal: When the task list is enabled. (to be shown) */
+    /** Window zones and tiling (wmake-zones). NULL if unavailable. */
+    struct _wlmaker_zones_t   *zones_ptr;
+
     struct wl_signal          task_list_enabled_event;
     /** Signal: When the task list is disabled. (to be hidden) */
     struct wl_signal          task_list_disabled_event;
@@ -165,6 +196,10 @@ struct _wlmaker_server_t {
 
     /** Montor & handler of 'hot corners'. */
     wlmaker_corner_t          *corner_ptr;
+    /** Locating the pointer by shaking the mouse. */
+    wlmaker_locate_pointer_t  *locate_pointer_ptr;
+    /** Selecting a window to close by force. */
+    wlmaker_force_close_t     *force_close_ptr;
 
     // TODO(kaeser@gubbe.ch): Move these events into a 'registry' struct, so
     // it can be more easily shared throughout the code.
@@ -175,13 +210,35 @@ struct _wlmaker_server_t {
 
     /** Temporary: Points to the @ref wlmtk_dock_t of the clip. */
     wlmtk_dock_t              *clip_dock_ptr;
+    /** Placement of dock-apps in the clip. Set by the clip, may be NULL. */
+    struct _wlmaker_dockapps_t *dockapps_ptr;
+    /** The Clip, also managing the dock-apps of the Dock. */
+    struct _wlmaker_clip_t    *clip_ptr;
+    /** Layer panel of the Dock (`wlmdock`). NULL if none. */
+    struct _wlmaker_layer_panel_t *dock_layer_panel_ptr;
+    /** Layer panel of the Clip's launchers (`wlmdock --clip`), or NULL. */
+    struct _wlmaker_layer_panel_t *clip_layer_panel_ptr;
+    /** The tile being dragged on or off the Dock or Clip, if any. */
+    struct _wlmaker_tile_drag_t *tile_drag_ptr;
+    /** Visual effects of Dock and Clip: Dragged icon, ghost, balloons. */
+    wlmaker_dock_fx_t         *dock_fx_ptr;
+    /** Drag and drop of clients. */
+    struct _wlmaker_dnd_t     *dnd_ptr;
+    /** Listener for @ref wlmaker_server_t::theme_changed_event. */
+    struct wl_listener        dock_fx_theme_changed_listener;
 
     /** Root menu, when active. NULL when not invoked. */
     wlmaker_root_menu_t       *root_menu_ptr;
+    /** The open context menu (eg. of the Clip), or NULL. */
+    wlmaker_context_menu_t    *context_menu_ptr;
     /** Parsed contents of the root menu definition, from plist. */
     bspl_array_t            *root_menu_array_ptr;
     /** Listener for `unclaimed_button_event` signal raised by `wlmtk_root`. */
     struct wl_listener        unclaimed_button_event_listener;
+    /** Listener for `unclaimed_axis_event` signal raised by `wlmtk_root`. */
+    struct wl_listener        unclaimed_axis_event_listener;
+    /** Wheel motion without notches (touchpad), towards the next notch. */
+    double                    root_axis_accumulated[2];
 
     /** The current configuration style. */
     wlmaker_config_style_t    *style_ptr;
@@ -214,11 +271,72 @@ wlmaker_server_t *wlmaker_server_create(
 void wlmaker_server_destroy(wlmaker_server_t *server_ptr);
 
 /**
+ * Reloads the configuration file and applies what can change while running:
+ * Key bindings, keyboard (layout, repeat), pointer (acceleration, touchpad),
+ * 'WindowPlacement', 'FocusMode', the hot corners, the theme (windows,
+ * menus, cursor) and the root menu. Triggered by SIGHUP or the action
+ * 'ReloadConfiguration'. What fails to load keeps its current setting.
+ *
+ * Other settings (outputs, decoration mode, screen lock, autostart, the
+ * state's workspaces) apply when wlmaker starts.
+ *
+ * @param server_ptr
+ *
+ * @return true if everything was reloaded.
+ */
+bool wlmaker_server_reload(wlmaker_server_t *server_ptr);
+
+/**
+ * Window Maker's mouse action on the root window (WPrefs > Mouse), from
+ * the `RootMouse` dict of the configuration (`DisableActions`,
+ * `LeftButton`, `MiddleButton`, `RightButton`, `BackwardButton`,
+ * `ForwardButton`, `Wheel`, `WheelTilt`).
+ *
+ * @param server_ptr
+ * @param key_ptr             Eg. "RightButton".
+ *
+ * @return The action, eg. "ApplicationsMenu", "SwitchWorkspaces" or "None".
+ */
+const char *wlmaker_server_root_mouse_action(
+    wlmaker_server_t *server_ptr,
+    const char *key_ptr);
+
+/**
+ * @return The root mouse action for the button `button` (BTN_LEFT...).
+ *
+ * @param server_ptr
+ * @param button
+ */
+const char *wlmaker_server_root_button_action(
+    wlmaker_server_t *server_ptr,
+    uint32_t button);
+
+/**
+ * Applies the desktop's settings from the configuration: 'WindowPlacement'
+ * (Smart or Center) and 'FocusMode' (Click, or Sloppy: windows get
+ * activated when the pointer enters them).
+ *
+ * @param server_ptr
+ * @param config_dict_ptr
+ */
+void wlmaker_server_configure_desktop(
+    wlmaker_server_t *server_ptr,
+    bspl_dict_t *config_dict_ptr);
+
+/**
  * Activates the task list.
  *
  * @param server_ptr
  */
 void wlmaker_server_activate_task_list(wlmaker_server_t *server_ptr);
+
+/**
+ * Before the first switch of a cycle (Alt+Tab): Notes the activated window,
+ * which Esc returns to, as Window Maker's switch panel does.
+ *
+ * @param server_ptr
+ */
+void wlmaker_server_task_list_begin(wlmaker_server_t *server_ptr);
 
 /**
  * Looks up which output serves the current cursor coordinates and returns that.

@@ -23,6 +23,7 @@
 
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
+#include <libintl.h>
 #include <linux/input-event-codes.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -53,6 +54,10 @@
 struct _wlmtk_window_t {
     /** Bordered, wraps around the box. */
     wlmtk_bordered_t          bordered;
+    /** Minimum content width asked by the client; 0: none. */
+    int                       min_width;
+    /** Minimum content height asked by the client; 0: none. */
+    int                       min_height;
     /** Original virtual method table of the window's element superclass. */
     wlmtk_element_vmt_t       orig_super_element_vmt;
 
@@ -92,9 +97,17 @@ struct _wlmtk_window_t {
 
     /** The window's title. */
     char                      *title_ptr;
+    /** Application ID (xdg app_id, or the X11 WM_CLASS class). May be NULL. */
+    char                      *app_id_ptr;
+    /** X11 WM_CLASS instance; the app ID for native clients. May be NULL. */
+    char                      *instance_ptr;
+    /** A dialog: has a parent, is modal, or says it is one. */
+    bool                      dialog;
 
     /** Properties of the window. See @ref wlmtk_window_property_t. */
     uint32_t                  properties;
+    /** Edges at which the window is tiled (WLR_EDGE_*), 0 if free. */
+    uint32_t                  tiled_edges;
     /** Modifier to trigger moving the window, on pointer drag. */
     uint32_t                  move_modifier;
 
@@ -136,8 +149,14 @@ struct _wlmtk_window_t {
     bool                      maximized;
     /** Whether this window is currently shaded. */
     bool                      shaded;
+    /** Whether this window is currently minimized (hidden). */
+    bool                      minimized;
+    /** Whether the window received its initial position. */
+    bool                      placed;
     /** Whether this window is currently activated (has keyboard focus). */
     bool                      activated;
+    /** Listener for `pointer_enter` of the window's element. */
+    struct wl_listener        pointer_enter_listener;
 };
 
 /** Type-safe holder for the window style's reference counter. */
@@ -177,6 +196,10 @@ static void _wlmtk_window_menu_request_close_handler(
     void *data_ptr);
 
 static void _wlmtk_window_style_destroy(bs_ref_t *ref_ptr);
+
+static void _wlmtk_window_handle_pointer_enter(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 
 static void _wlmtk_window_request_fullscreen_size(
     wlmtk_window_t *window_ptr,
@@ -230,6 +253,8 @@ wlmtk_window_t *wlmtk_window_create(
     window_ptr->menu_style_ref_ptr = menu_style_ref_ptr;
     wlmtk_menu_style_ref_retain(menu_style_ref_ptr);
     wl_signal_init(&window_ptr->events.state_changed);
+    wl_signal_init(&window_ptr->events.position_changed);
+    wl_signal_init(&window_ptr->events.tiled_changed);
     wl_signal_init(&window_ptr->events.request_close);
     wl_signal_init(&window_ptr->events.set_activated);
     wl_signal_init(&window_ptr->events.request_size);
@@ -255,6 +280,10 @@ wlmtk_window_t *wlmtk_window_create(
     window_ptr->orig_super_element_vmt = wlmtk_element_extend(
         &window_ptr->bordered.super_container.super_element,
         &window_element_vmt);
+    wlmtk_util_connect_listener_signal(
+        &window_ptr->bordered.super_container.super_element.events.pointer_enter,
+        &window_ptr->pointer_enter_listener,
+        _wlmtk_window_handle_pointer_enter);
 
     wlmtk_element_extend(
         &window_ptr->content_container.super_element,
@@ -296,6 +325,7 @@ error:
 /* ------------------------------------------------------------------------- */
 void wlmtk_window_destroy(wlmtk_window_t *window_ptr)
 {
+    wlmtk_util_disconnect_listener(&window_ptr->pointer_enter_listener);
     wlmtk_window_set_server_side_decorated(window_ptr, false);
 
     if (NULL != window_ptr->window_menu_ptr) {
@@ -329,6 +359,10 @@ void wlmtk_window_destroy(wlmtk_window_t *window_ptr)
         free(window_ptr->title_ptr);
         window_ptr->title_ptr = NULL;
     }
+    free(window_ptr->app_id_ptr);
+    window_ptr->app_id_ptr = NULL;
+    free(window_ptr->instance_ptr);
+    window_ptr->instance_ptr = NULL;
 
     if (NULL != window_ptr->style_ref_ptr) {
         wlmtk_window_style_ref_release(window_ptr->style_ref_ptr);
@@ -373,13 +407,82 @@ struct wlr_box wlmtk_window_get_bounding_box(wlmtk_window_t *window_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+uint32_t wlmtk_window_get_properties(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->properties;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_request_bounding_box(
+    wlmtk_window_t *window_ptr,
+    const struct wlr_box *box_ptr)
+{
+    if (window_ptr->fullscreen || NULL == window_ptr->workspace_ptr) return;
+
+    // Decorations: the bordered element minus the content, as for maximize.
+    struct wlr_box wbox = wlmtk_element_get_dimensions_box(
+        wlmtk_bordered_element(&window_ptr->bordered));
+    struct wlr_box cbox = wlmtk_element_get_dimensions_box(
+        window_ptr->content_element_ptr);
+    // Offset of the bounding box from the element's position (title bar).
+    struct wlr_box bbox = wlmtk_window_get_bounding_box(window_ptr);
+    int x, y;
+    wlmtk_element_get_position(wlmtk_window_element(window_ptr), &x, &y);
+
+    wlmtk_workspace_set_window_position(
+        window_ptr->workspace_ptr, window_ptr,
+        box_ptr->x - (bbox.x - x), box_ptr->y - (bbox.y - y));
+    struct wlr_box content = {
+        .width = BS_MAX(1, box_ptr->width - (wbox.width - cbox.width)),
+        .height = BS_MAX(1, box_ptr->height - (wbox.height - cbox.height)),
+    };
+    wlmtk_window_request_size(window_ptr, &content);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_set_min_size(
+    wlmtk_window_t *window_ptr,
+    int width,
+    int height)
+{
+    window_ptr->min_width = BS_MAX(0, width);
+    window_ptr->min_height = BS_MAX(0, height);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_get_min_bounding_size(
+    wlmtk_window_t *window_ptr,
+    int *width_ptr,
+    int *height_ptr)
+{
+    // Decorations as in wlmtk_window_request_bounding_box.
+    struct wlr_box wbox = wlmtk_element_get_dimensions_box(
+        wlmtk_bordered_element(&window_ptr->bordered));
+    struct wlr_box cbox = wlmtk_element_get_dimensions_box(
+        window_ptr->content_element_ptr);
+    *width_ptr = 0 < window_ptr->min_width ?
+        window_ptr->min_width + (wbox.width - cbox.width) : 0;
+    *height_ptr = 0 < window_ptr->min_height ?
+        window_ptr->min_height + (wbox.height - cbox.height) : 0;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmtk_window_position_changed(wlmtk_window_t *window_ptr)
 {
+    wl_signal_emit(&window_ptr->events.position_changed, window_ptr);
     if (window_ptr->inorganic_sizing) return;
     wlmtk_element_get_position(
         wlmtk_window_element(window_ptr),
         &window_ptr->organic_bounding_box.x,
         &window_ptr->organic_bounding_box.y);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_set_tiled_edges(wlmtk_window_t *window_ptr, uint32_t edges)
+{
+    if (window_ptr->tiled_edges == edges) return;
+    window_ptr->tiled_edges = edges;
+    wl_signal_emit(&window_ptr->events.tiled_changed, &edges);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -449,7 +552,9 @@ bool wlmtk_window_set_title(
         new_title_ptr = logged_strdup(title_ptr);
     } else {
         char buf[64];
-        snprintf(buf, sizeof(buf), "Unnamed window %p", window_ptr);
+        // In wlmaker's gettext domain: The toolkit is part of wlmaker.
+        snprintf(buf, sizeof(buf),
+                 dgettext("wlmaker", "Unnamed window %p"), window_ptr);
         new_title_ptr = logged_strdup(buf);
     }
     if (NULL == new_title_ptr) return false;
@@ -475,6 +580,54 @@ const char *wlmtk_window_get_title(wlmtk_window_t *window_ptr)
 {
     BS_ASSERT(NULL != window_ptr->title_ptr);
     return window_ptr->title_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Replaces `*dest_ptr_ptr` by a copy of `src_ptr` (NULL or "" clears). */
+static bool _wlmtk_window_set_str(char **dest_ptr_ptr, const char *src_ptr)
+{
+    char *copy_ptr = NULL;
+    if (NULL != src_ptr && '\0' != *src_ptr) {
+        copy_ptr = logged_strdup(src_ptr);
+        if (NULL == copy_ptr) return false;
+    }
+    free(*dest_ptr_ptr);
+    *dest_ptr_ptr = copy_ptr;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_window_set_app_id(
+    wlmtk_window_t *window_ptr,
+    const char *app_id_ptr,
+    const char *instance_ptr)
+{
+    return _wlmtk_window_set_str(&window_ptr->app_id_ptr, app_id_ptr) &&
+        _wlmtk_window_set_str(&window_ptr->instance_ptr, instance_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+const char *wlmtk_window_get_app_id(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->app_id_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+const char *wlmtk_window_get_instance(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->instance_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_set_dialog(wlmtk_window_t *window_ptr, bool dialog)
+{
+    window_ptr->dialog = dialog;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_window_is_dialog(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->dialog;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -573,7 +726,35 @@ void wlmtk_window_request_close(wlmtk_window_t *window_ptr)
 /* ------------------------------------------------------------------------- */
 void wlmtk_window_request_minimize(wlmtk_window_t *window_ptr)
 {
-    bs_log(BS_ERROR, "TODO: Request minimize for window %p", window_ptr);
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(window_ptr);
+    if (NULL == workspace_ptr) return;
+    wlmtk_workspace_minimize_window(workspace_ptr, window_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_window_is_placed(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->placed;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_set_placed(wlmtk_window_t *window_ptr)
+{
+    window_ptr->placed = true;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_window_is_minimized(wlmtk_window_t *window_ptr)
+{
+    return window_ptr->minimized;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_window_set_minimized(wlmtk_window_t *window_ptr, bool minimized)
+{
+    if (window_ptr->minimized == minimized) return;
+    window_ptr->minimized = minimized;
+    wl_signal_emit(&window_ptr->events.state_changed, window_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -739,7 +920,29 @@ void wlmtk_window_menu_set_enabled(wlmtk_window_t *window_ptr, bool enabled)
             menu_element_ptr->parent_container_ptr,
             menu_element_ptr);
 
+        wlmtk_element_set_position(menu_element_ptr, x_pos, 0);
+
+        // Keep it within the usable area of the output, and its submenus.
+        wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+            window_ptr);
+        if (NULL != workspace_ptr) {
+            struct wlr_box b = wlmtk_workspace_get_maximize_extents(
+                workspace_ptr, wlmtk_window_get_wlr_output(window_ptr));
+            wlmtk_menu_set_bounds(window_ptr->window_menu_ptr, &b);
+            int ax, ay;
+            wlmtk_element_get_absolute_position(menu_element_ptr, &ax, &ay);
+            struct wlr_box mbox = wlmtk_element_get_dimensions_box(
+                menu_element_ptr);
+            int left = ax + mbox.x, new_left = left;
+            if (!wlr_box_empty(&b)) {
+                if (new_left + mbox.width > b.x + b.width) {
+                    new_left = b.x + b.width - mbox.width;
+                }
+                if (new_left < b.x) new_left = b.x;
+            }
+            x_pos += new_left - left;
             wlmtk_element_set_position(menu_element_ptr, x_pos, 0);
+        }
     } else {
         wlmtk_container_pointer_grab_release(
             menu_element_ptr->parent_container_ptr,
@@ -1028,9 +1231,15 @@ void _wlmtk_window_element_layout(
         y += window_ptr->old_box.height - new_box.height;
     }
     // TODO: Should we rather use wlmtk_workspace_set_window_position ?
+    int old_x, old_y;
+    wlmtk_element_get_position(
+        wlmtk_bordered_element(&window_ptr->bordered), &old_x, &old_y);
     wlmtk_element_set_position(
         wlmtk_bordered_element(&window_ptr->bordered), x, y);
     window_ptr->old_box = new_box;
+    if (old_x != x || old_y != y) {
+        wl_signal_emit(&window_ptr->events.position_changed, window_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1255,6 +1464,29 @@ void _wlmtk_window_request_fullscreen_size(wlmtk_window_t *window_ptr,
     }
 
     wl_signal_emit(&window_ptr->events.request_size, &desired_size);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles `pointer_enter` of the window's element: With focus follows
+ * pointer, activates the window (without raising it), like Window Maker's
+ * 'sloppy' focus.
+ *
+ * @param listener_ptr
+ * @param data_ptr
+ */
+void _wlmtk_window_handle_pointer_enter(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmtk_window_t *window_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmtk_window_t, pointer_enter_listener);
+    wlmtk_workspace_t *workspace_ptr = window_ptr->workspace_ptr;
+    if (NULL == workspace_ptr || window_ptr->activated) return;
+    wlmtk_desktop_t *desktop_ptr = wlmtk_workspace_get_desktop(workspace_ptr);
+    if (NULL == desktop_ptr ||
+        !wlmtk_desktop_get_focus_follows_pointer(desktop_ptr)) return;
+    wlmtk_workspace_activate_window(workspace_ptr, window_ptr);
 }
 
 /* == Unit Tests =========================================================== */

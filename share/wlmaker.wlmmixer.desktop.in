@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=WLMMixer
+GenericName="Wayland Maker Volume Mixer dockapp"
+Comment="Display and change the audio volume"
+Exec=@CMAKE_INSTALL_PREFIX@/bin/wlmmixer
+Type=Application
+Categories=AudioVideo;Audio;Mixer;
+Keywords=volume;mixer;audio;sound;dockapp;wlmaker
+Icon=wlmmixer

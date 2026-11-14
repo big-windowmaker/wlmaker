@@ -21,10 +21,13 @@
 
 #include "server.h"
 
+#include "dnd.h"
+
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <linux/input-event-codes.h>
 #include <stdlib.h>
+#include <strings.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/backend.h>
 #include <wlr/types/wlr_viewporter.h>
@@ -38,24 +41,45 @@
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/types/wlr_xdg_activation_v1.h>
+#include <wlr/types/wlr_xdg_dialog_v1.h>
+#include <wlr/types/wlr_xdg_toplevel_tag_v1.h>
 #undef WLR_USE_UNSTABLE
 
+#include "action.h"
+#include "default_configuration.h"
 #include "input/manager.h"
 #include "task_list.h"
 #include "toolkit/toolkit.h"
 #include "toplevel_tracker.h"
+#include "xdg_toplevel.h"
 
 /* == Declarations ========================================================= */
 
 /** Name of the "seat". */
 static const char             *seat_name_ptr = "seat0";
 
+static bool _wlmaker_server_axis_filter(
+    void *ud_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers);
+static void _wlmaker_server_unclaimed_axis_event_handler(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 static void _wlmaker_server_unclaimed_button_event_handler(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_server_handle_dock_fx_theme_changed(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmaker_server_handle_input_activity(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static bool _wlmaker_server_task_list_key(xkb_keysym_t keysym,
+                                          uint32_t modifiers,
+                                          void *ud_ptr);
+static void _wlmaker_server_end_task_list(wlmaker_server_t *server_ptr,
+                                          bool commit);
 static void _wlmaker_server_handle_deactivate_task_list(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -63,6 +87,9 @@ static void handle_request_set_selection(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void handle_request_set_primary_selection(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_server_handle_xdg_activation_request_activate(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
@@ -181,6 +208,7 @@ wlmaker_server_t *wlmaker_server_create(
         wlmaker_server_destroy(server_ptr);
         return NULL;
     }
+    wlmaker_server_configure_desktop(server_ptr, server_ptr->config_dict_ptr);
 
     // root element wrapper.
     server_ptr->root_ptr = wlmtk_root_create(
@@ -194,6 +222,33 @@ wlmaker_server_t *wlmaker_server_create(
         &wlmtk_root_events(server_ptr->root_ptr)->unclaimed_button_event,
         &server_ptr->unclaimed_button_event_listener,
         _wlmaker_server_unclaimed_button_event_handler);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_root_events(server_ptr->root_ptr)->unclaimed_axis_event,
+        &server_ptr->unclaimed_axis_event_listener,
+        _wlmaker_server_unclaimed_axis_event_handler);
+
+    // Effects of Dock and Clip: Above the desktop.
+    server_ptr->dock_fx_ptr = wlmaker_dock_fx_create(
+        &server_ptr->wlr_scene_ptr->tree,
+        wl_display_get_event_loop(server_ptr->wl_display_ptr));
+    if (NULL == server_ptr->dock_fx_ptr) {
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
+    wlmaker_dock_fx_set_balloon_style(
+        server_ptr->dock_fx_ptr, &style_ptr->balloon);
+    wlmtk_util_connect_listener_signal(
+        &server_ptr->theme_changed_event,
+        &server_ptr->dock_fx_theme_changed_listener,
+        _wlmaker_server_handle_dock_fx_theme_changed);
+
+    // Drag and drop of clients: The dragged icons are above all.
+    server_ptr->dnd_ptr = wlmaker_dnd_create(
+        server_ptr, &server_ptr->wlr_scene_ptr->tree);
+    if (NULL == server_ptr->dnd_ptr) {
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
 
     server_ptr->input_manager_ptr = wlmim_input_manager_create(
         server_ptr->wl_display_ptr,
@@ -207,6 +262,14 @@ wlmaker_server_t *wlmaker_server_create(
         wlmaker_server_destroy(server_ptr);
         return NULL;
     }
+    // Wheel bindings (eg. Ctrl+Alt+wheel to zoom), and the zoom's pointer.
+    wlmim_set_axis_filter(
+        server_ptr->input_manager_ptr,
+        _wlmaker_server_axis_filter,
+        server_ptr);
+    wlmbe_zoom_set_cursor(
+        wlmbe_backend_zoom(server_ptr->backend_ptr),
+        wlmim_wlr_cursor(server_ptr->input_manager_ptr));
     wlmtk_util_connect_listener_signal(
         &wlmim_events(server_ptr->input_manager_ptr)->deactivate_task_list,
         &server_ptr->deactivate_task_list_listener,
@@ -286,6 +349,29 @@ wlmaker_server_t *wlmaker_server_create(
         return NULL;
     }
 
+    // Toplevel tags and dialog hints: Offered, not used yet. KDE's window
+    // system plugin (KF6) takes them for granted and crashed without them
+    // (Spectacle, as it shows its window).
+    if (NULL == wlr_xdg_toplevel_tag_manager_v1_create(
+            server_ptr->wl_display_ptr, 1)) {
+        bs_log(BS_WARNING, "Failed wlr_xdg_toplevel_tag_manager_v1_create()");
+    }
+    if (NULL == wlr_xdg_wm_dialog_v1_create(server_ptr->wl_display_ptr, 1)) {
+        bs_log(BS_WARNING, "Failed wlr_xdg_wm_dialog_v1_create()");
+    }
+
+    server_ptr->wlr_xdg_activation_v1_ptr = wlr_xdg_activation_v1_create(
+        server_ptr->wl_display_ptr);
+    if (NULL == server_ptr->wlr_xdg_activation_v1_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_xdg_activation_v1_create()");
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
+    wlmtk_util_connect_listener_signal(
+        &server_ptr->wlr_xdg_activation_v1_ptr->events.request_activate,
+        &server_ptr->xdg_activation_request_activate_listener,
+        _wlmaker_server_handle_xdg_activation_request_activate);
+
     server_ptr->layer_shell_ptr = wlmaker_layer_shell_create(server_ptr);
     if (NULL == server_ptr->layer_shell_ptr) {
         bs_log(BS_ERROR, "Failed wlmaker_layer_shell_create()");
@@ -333,6 +419,24 @@ wlmaker_server_t *wlmaker_server_create(
         return NULL;
     }
 
+    server_ptr->locate_pointer_ptr = wlmaker_locate_pointer_create(
+        server_ptr,
+        bspl_dict_get_dict(server_ptr->config_dict_ptr, "LocatePointer"));
+    if (NULL == server_ptr->locate_pointer_ptr) {
+        bs_log(BS_ERROR, "Failed wlmaker_locate_pointer_create()");
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
+
+    server_ptr->force_close_ptr = wlmaker_force_close_create(
+        server_ptr,
+        bspl_dict_get_dict(server_ptr->config_dict_ptr, "ForceClose"));
+    if (NULL == server_ptr->force_close_ptr) {
+        bs_log(BS_ERROR, "Failed wlmaker_force_close_create()");
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
+
     server_ptr->corner_ptr = wlmaker_corner_create(
         bspl_dict_get_dict(server_ptr->config_dict_ptr, "HotCorner"),
         wl_display_get_event_loop(server_ptr->wl_display_ptr),
@@ -356,8 +460,146 @@ wlmaker_server_t *wlmaker_server_create(
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmaker_server_reload(wlmaker_server_t *server_ptr)
+{
+    bs_log(BS_INFO, "Reloading configuration, theme and root menu.");
+    bspl_object_t *object_ptr = wlmaker_config_object_load(
+        server_ptr->files_ptr,
+        "wlmaker config",
+        server_ptr->config_fname_ptr,
+        "Config.plist",
+        embedded_binary_default_configuration_data,
+        embedded_binary_default_configuration_size);
+    bspl_dict_t *config_dict_ptr = bspl_dict_from_object(object_ptr);
+    if (NULL == config_dict_ptr) {
+        bs_log(BS_ERROR, "Failed to reload the configuration, keeping it.");
+        if (NULL != object_ptr) bspl_object_unref(object_ptr);
+        return false;
+    }
+    bool rv = true;
+
+    // Key bindings: The new ones replace the current, if they all bind.
+    wlmaker_action_handle_t *handle_ptr = wlmaker_action_bind_keys(
+        server_ptr,
+        bspl_dict_get_dict(config_dict_ptr, wlmaker_action_config_dict_key),
+        server_ptr->options_ptr->bind_with_logo);
+    if (NULL == handle_ptr) {
+        bs_log(BS_WARNING, "Failed to bind keys, keeping the key bindings.");
+        rv = false;
+    } else {
+        if (NULL != server_ptr->action_handle_ptr) {
+            wlmaker_action_unbind_keys(server_ptr->action_handle_ptr);
+        }
+        server_ptr->action_handle_ptr = handle_ptr;
+    }
+
+    if (!wlmim_input_manager_reconfigure(
+            server_ptr->input_manager_ptr, config_dict_ptr)) rv = false;
+    if (!wlmbe_zoom_configure(
+            wlmbe_backend_zoom(server_ptr->backend_ptr),
+            bspl_dict_get_dict(config_dict_ptr, "Zoom"))) rv = false;
+    wlmaker_server_configure_desktop(server_ptr, config_dict_ptr);
+    if (NULL != server_ptr->xdg_decoration_manager_ptr &&
+        !wlmaker_xdg_decoration_manager_reconfigure(
+            server_ptr->xdg_decoration_manager_ptr, config_dict_ptr)) {
+        rv = false;
+    }
+    if (NULL != server_ptr->locate_pointer_ptr &&
+        !wlmaker_locate_pointer_reconfigure(
+            server_ptr->locate_pointer_ptr,
+            bspl_dict_get_dict(config_dict_ptr, "LocatePointer"))) {
+        rv = false;
+    }
+    if (NULL != server_ptr->force_close_ptr &&
+        !wlmaker_force_close_reconfigure(
+            server_ptr->force_close_ptr,
+            bspl_dict_get_dict(config_dict_ptr, "ForceClose"))) {
+        rv = false;
+    }
+    bspl_dict_t *corner_dict_ptr = bspl_dict_get_dict(
+        config_dict_ptr, "HotCorner");
+    if (NULL != server_ptr->corner_ptr && NULL != corner_dict_ptr &&
+        !wlmaker_corner_reconfigure(server_ptr->corner_ptr, corner_dict_ptr)) {
+        rv = false;
+    }
+
+    bspl_dict_unref(server_ptr->config_dict_ptr);
+    server_ptr->config_dict_ptr = config_dict_ptr;
+
+    // Theme: As on start, the `--theme_file` argument or 'ThemeFile'.
+    const char *theme_fname_ptr = server_ptr->theme_fname_ptr;
+    if (NULL == theme_fname_ptr) {
+        theme_fname_ptr = bspl_dict_get_string_value(
+            config_dict_ptr, "ThemeFile");
+    }
+    if (!wlmaker_action_theme_load_from_file(server_ptr, theme_fname_ptr)) {
+        bs_log(BS_WARNING, "Failed to reload the theme, keeping it.");
+        rv = false;
+    }
+
+    // Root menu, after the theme: It takes the current styles.
+    if (!wlmaker_root_menu_reload(
+            server_ptr, server_ptr->root_menu_fname_ptr)) rv = false;
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_server_configure_desktop(
+    wlmaker_server_t *server_ptr,
+    bspl_dict_t *config_dict_ptr)
+{
+    const char *placement_ptr = bspl_dict_get_string_value(
+        config_dict_ptr, "WindowPlacement");
+    wlmtk_window_placement_t placement = WLMTK_WINDOW_PLACEMENT_SMART;
+    if (NULL != placement_ptr) {
+        if (0 == strcasecmp(placement_ptr, "Center")) {
+            placement = WLMTK_WINDOW_PLACEMENT_CENTER;
+        } else if (0 != strcasecmp(placement_ptr, "Smart")) {
+            bs_log(BS_WARNING, "Unknown WindowPlacement \"%s\", using Smart.",
+                   placement_ptr);
+        }
+    }
+    wlmtk_desktop_set_window_placement(server_ptr->desktop_ptr, placement);
+
+    // Window Maker's ViKeyMenus (WPrefs > Teclado).
+    const char *vi_ptr = bspl_dict_get_string_value(
+        config_dict_ptr, "ViKeyMenus");
+    wlmtk_menu_set_vi_keys(
+        NULL != vi_ptr && (0 == strcasecmp(vi_ptr, "Yes") ||
+                           0 == strcasecmp(vi_ptr, "True")));
+
+    const char *focus_ptr = bspl_dict_get_string_value(
+        config_dict_ptr, "FocusMode");
+    bool follows = false;
+    if (NULL != focus_ptr) {
+        if (0 == strcasecmp(focus_ptr, "Sloppy")) {
+            follows = true;
+        } else if (0 != strcasecmp(focus_ptr, "Click")) {
+            bs_log(BS_WARNING, "Unknown FocusMode \"%s\", using Click.",
+                   focus_ptr);
+        }
+    }
+    wlmtk_desktop_set_focus_follows_pointer(server_ptr->desktop_ptr, follows);
+
+    uint64_t msec = 0;
+    bspl_dict_t *mouse_dict_ptr = bspl_dict_get_dict(config_dict_ptr, "Mouse");
+    const char *msec_ptr = bspl_dict_get_string_value(
+        mouse_dict_ptr, "DoubleClickTime");
+    if (NULL != msec_ptr && !bs_strconvert_uint64(msec_ptr, &msec, 10)) {
+        bs_log(BS_WARNING, "Invalid Mouse.DoubleClickTime \"%s\"", msec_ptr);
+        msec = 0;
+    }
+    wlmtk_titlebar_set_double_click_msec(msec);
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
 {
+    wlmaker_context_menu_cancel(server_ptr, NULL);
+    if (NULL != server_ptr->state_fname_ptr) {
+        free(server_ptr->state_fname_ptr);
+        server_ptr->state_fname_ptr = NULL;
+    }
     if (NULL != server_ptr->root_menu_ptr) {
         wlmaker_root_menu_destroy(server_ptr->root_menu_ptr);
         server_ptr->root_menu_ptr = NULL;
@@ -372,6 +614,14 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
     if (NULL != server_ptr->corner_ptr) {
         wlmaker_corner_destroy(server_ptr->corner_ptr);
         server_ptr->corner_ptr = NULL;
+    }
+    if (NULL != server_ptr->locate_pointer_ptr) {
+        wlmaker_locate_pointer_destroy(server_ptr->locate_pointer_ptr);
+        server_ptr->locate_pointer_ptr = NULL;
+    }
+    if (NULL != server_ptr->force_close_ptr) {
+        wlmaker_force_close_destroy(server_ptr->force_close_ptr);
+        server_ptr->force_close_ptr = NULL;
     }
 
     if (NULL != server_ptr->monitor_ptr) {
@@ -399,6 +649,10 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
         wlmaker_layer_shell_destroy(server_ptr->layer_shell_ptr);
         server_ptr->layer_shell_ptr = NULL;
     }
+
+    // The activation manager is destroyed along with the display.
+    wlmtk_util_disconnect_listener(
+        &server_ptr->xdg_activation_request_activate_listener);
 
     if (NULL != server_ptr->xdg_decoration_manager_ptr) {
         wlmaker_xdg_decoration_manager_destroy(
@@ -435,9 +689,22 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
         server_ptr->input_manager_ptr = NULL;
     }
 
+    if (NULL != server_ptr->dock_fx_ptr) {
+        wlmtk_util_disconnect_listener(
+            &server_ptr->dock_fx_theme_changed_listener);
+        wlmaker_dock_fx_destroy(server_ptr->dock_fx_ptr);
+        server_ptr->dock_fx_ptr = NULL;
+    }
+    if (NULL != server_ptr->dnd_ptr) {
+        wlmaker_dnd_destroy(server_ptr->dnd_ptr);
+        server_ptr->dnd_ptr = NULL;
+    }
+
     if (NULL != server_ptr->root_ptr) {
         wlmtk_util_disconnect_listener(
             &server_ptr->unclaimed_button_event_listener);
+        wlmtk_util_disconnect_listener(
+            &server_ptr->unclaimed_axis_event_listener);
         wlmtk_root_destroy(server_ptr->root_ptr);
         server_ptr->root_ptr = NULL;
     }
@@ -471,10 +738,111 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmaker_server_task_list_begin(wlmaker_server_t *server_ptr)
+{
+    if (server_ptr->task_list_enabled) return;
+    server_ptr->task_list_origin_ptr = wlmtk_workspace_get_activated_window(
+        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr));
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_server_activate_task_list(wlmaker_server_t *server_ptr)
 {
     server_ptr->task_list_enabled = true;
+    // The switch panel's keys (Esc, Enter, arrows, Home, End): Not for the
+    // application under it.
+    if (!server_ptr->task_list_grab && NULL != server_ptr->input_manager_ptr) {
+        wlmim_set_key_grab(server_ptr->input_manager_ptr,
+                           _wlmaker_server_task_list_key, server_ptr);
+        server_ptr->task_list_grab = true;
+    }
     wl_signal_emit(&server_ptr->task_list_enabled_event, NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Closes the task list. Committed (Alt released, Enter): The selected window
+ * is raised (restored if minimized). Cancelled (Esc): The window active when
+ * the cycle began is activated again, not raised, as on Window Maker.
+ */
+void _wlmaker_server_end_task_list(wlmaker_server_t *server_ptr, bool commit)
+{
+    if (!server_ptr->task_list_enabled) return;
+    server_ptr->task_list_enabled = false;
+    if (server_ptr->task_list_grab) {
+        wlmim_set_key_grab(server_ptr->input_manager_ptr, NULL, NULL);
+        server_ptr->task_list_grab = false;
+    }
+    wl_signal_emit(&server_ptr->task_list_disabled_event, NULL);
+
+    wlmtk_workspace_t *workspace_ptr =
+        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr);
+    wlmtk_window_t *origin_ptr = server_ptr->task_list_origin_ptr;
+    server_ptr->task_list_origin_ptr = NULL;
+    if (NULL == workspace_ptr) return;
+    if (!commit) {
+        // Only if it is still a window of this workspace.
+        for (bs_dllist_node_t *d =
+                 wlmtk_workspace_get_windows_dllist(workspace_ptr)->head_ptr;
+             NULL != d; d = d->next_ptr) {
+            if (wlmtk_window_from_dlnode(d) == origin_ptr) {
+                wlmtk_workspace_activate_window(workspace_ptr, origin_ptr);
+                break;
+            }
+        }
+        return;
+    }
+    wlmtk_window_t *window_ptr =
+        wlmtk_workspace_get_activated_window(workspace_ptr);
+    if (NULL != window_ptr) {
+        wlmtk_workspace_raise_window(workspace_ptr, window_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Keys while the task list is shown, as in Window Maker's switch panel: Esc
+ * cancels, Enter confirms, the arrows move, Home and End go to the first and
+ * last window. Other keys (Tab with the bindings) go on as usual.
+ */
+bool _wlmaker_server_task_list_key(xkb_keysym_t keysym,
+                                   __UNUSED__ uint32_t modifiers,
+                                   void *ud_ptr)
+{
+    wlmaker_server_t *server_ptr = ud_ptr;
+    if (!server_ptr->task_list_enabled) return false;
+    wlmtk_workspace_t *workspace_ptr =
+        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr);
+    if (NULL == workspace_ptr) return false;
+    const bs_dllist_t *windows_ptr =
+        wlmtk_workspace_get_windows_dllist(workspace_ptr);
+    switch (keysym) {
+    case XKB_KEY_Escape:
+        _wlmaker_server_end_task_list(server_ptr, false);
+        return true;
+    case XKB_KEY_Return:
+    case XKB_KEY_KP_Enter:
+        _wlmaker_server_end_task_list(server_ptr, true);
+        return true;
+    case XKB_KEY_Right:
+        wlmtk_workspace_activate_next_window(workspace_ptr);
+        break;
+    case XKB_KEY_Left:
+        wlmtk_workspace_activate_previous_window(workspace_ptr);
+        break;
+    case XKB_KEY_Home:
+    case XKB_KEY_End:
+        if (bs_dllist_empty(windows_ptr)) return true;
+        wlmtk_workspace_activate_window(
+            workspace_ptr, wlmtk_window_from_dlnode(
+                XKB_KEY_Home == keysym ?
+                windows_ptr->head_ptr : windows_ptr->tail_ptr));
+        break;
+    default:
+        return false;
+    }
+    wl_signal_emit(&server_ptr->task_list_enabled_event, NULL);
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -499,30 +867,176 @@ void _wlmaker_server_unclaimed_button_event_handler(
         listener_ptr, wlmaker_server_t, unclaimed_button_event_listener);
     wlmtk_button_event_t *button_event_ptr = data_ptr;
 
-    if (BTN_RIGHT == button_event_ptr->button &&
-        WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+    // A client's popup holds a grab (eg. a menu of a panel): A press on
+    // the desktop is outside of the client, so it dismisses the popups. As
+    // clicking elsewhere closes menus on X11. Passed to the seat's grab,
+    // without a surface in focus: The xdg-shell popup grab ends.
+    struct wlr_seat *wlr_seat_ptr = server_ptr->wlr_seat_ptr;
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        NULL != wlr_seat_ptr &&
+        wlr_seat_ptr->pointer_state.grab !=
+        wlr_seat_ptr->pointer_state.default_grab) {
+        wlr_seat_pointer_notify_clear_focus(wlr_seat_ptr);
+        wlr_seat_pointer_notify_button(
+            wlr_seat_ptr, button_event_ptr->time_msec,
+            button_event_ptr->button, WL_POINTER_BUTTON_STATE_PRESSED);
+        wlr_seat_pointer_notify_button(
+            wlr_seat_ptr, button_event_ptr->time_msec,
+            button_event_ptr->button, WL_POINTER_BUTTON_STATE_RELEASED);
+    }
+
+    // WPrefs > Mouse: The button's action on the root window.
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
         NULL != server_ptr->root_menu_ptr &&
+        0 == strcasecmp("ApplicationsMenu", wlmaker_server_root_button_action(
+                            server_ptr, button_event_ptr->button)) &&
         // TODO(kaeser@gubbe.ch): Clean up.
         !wlmtk_menu_is_open(
             wlmaker_root_menu_menu(server_ptr->root_menu_ptr))) {
-        wlmtk_workspace_map_window(
-            wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr),
-            wlmaker_root_menu_window(server_ptr->root_menu_ptr));
-        wlmtk_workspace_set_window_position(
-            wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr),
-            wlmaker_root_menu_window(server_ptr->root_menu_ptr),
-            wlmim_wlr_cursor(server_ptr->input_manager_ptr)->x,
-            wlmim_wlr_cursor(server_ptr->input_manager_ptr)->y);
-        wlmtk_workspace_confine_within(
-            wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr),
-            wlmaker_root_menu_window(server_ptr->root_menu_ptr));
-        wlmtk_menu_set_mode(
-            wlmaker_root_menu_menu(server_ptr->root_menu_ptr),
-            WLMTK_MENU_MODE_RIGHTCLICK);
-        wlmtk_menu_set_open(
-            wlmaker_root_menu_menu(server_ptr->root_menu_ptr),
-            true);
+        wlmaker_root_menu_open_by_button(server_ptr->root_menu_ptr,
+                                         button_event_ptr->button);
     }
+}
+
+/* ------------------------------------------------------------------------- */
+const char *wlmaker_server_root_mouse_action(
+    wlmaker_server_t *server_ptr,
+    const char *key_ptr)
+{
+    // Window Maker's defaults (WindowMaker domain).
+    static const struct { const char *key_ptr; const char *value_ptr; }
+    defaults[] = {
+        { "LeftButton", "SelectWindows" },
+        { "MiddleButton", "WindowListMenu" },
+        { "RightButton", "ApplicationsMenu" },
+        { "BackwardButton", "None" },
+        { "ForwardButton", "None" },
+        { "Wheel", "None" },
+        { "WheelTilt", "None" },
+    };
+    bspl_dict_t *dict_ptr = bspl_dict_get_dict(
+        server_ptr->config_dict_ptr, "RootMouse");
+    if (NULL != dict_ptr) {
+        const char *d_ptr = bspl_dict_get_string_value(
+            dict_ptr, "DisableActions");
+        if (NULL != d_ptr && (0 == strcasecmp(d_ptr, "Yes") ||
+                              0 == strcasecmp(d_ptr, "True"))) {
+            return "None";
+        }
+        const char *v_ptr = bspl_dict_get_string_value(dict_ptr, key_ptr);
+        if (NULL != v_ptr) return v_ptr;
+    }
+    for (size_t i = 0; i < sizeof(defaults) / sizeof(defaults[0]); ++i) {
+        if (0 == strcmp(defaults[i].key_ptr, key_ptr)) {
+            return defaults[i].value_ptr;
+        }
+    }
+    return "None";
+}
+
+/* ------------------------------------------------------------------------- */
+const char *wlmaker_server_root_button_action(
+    wlmaker_server_t *server_ptr,
+    uint32_t button)
+{
+    switch (button) {
+    case BTN_LEFT: return wlmaker_server_root_mouse_action(
+            server_ptr, "LeftButton");
+    case BTN_MIDDLE: return wlmaker_server_root_mouse_action(
+            server_ptr, "MiddleButton");
+    case BTN_RIGHT: return wlmaker_server_root_mouse_action(
+            server_ptr, "RightButton");
+    case BTN_SIDE: return wlmaker_server_root_mouse_action(
+            server_ptr, "BackwardButton");
+    case BTN_EXTRA: return wlmaker_server_root_mouse_action(
+            server_ptr, "ForwardButton");
+    default: return "None";
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Filters axis events for the wheel bindings: "Ctrl+Alt+WheelUp" = ZoomIn
+ * and alike. Before any client sees them; without a matching binding, they
+ * go on to the clients as usual.
+ */
+bool _wlmaker_server_axis_filter(
+    void *ud_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers)
+{
+    wlmaker_server_t *server_ptr = ud_ptr;
+    return wlmaker_action_process_axis(
+        server_ptr->action_handle_ptr,
+        wlr_pointer_axis_event_ptr,
+        modifiers);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles unclaimed axis events: The wheel on the root window, as Window
+ * Maker's `MouseWheelAction` / `MouseWheelTiltAction`: Up (tilt right) to
+ * the next workspace or window, down (tilt left) to the previous one.
+ */
+void _wlmaker_server_unclaimed_axis_event_handler(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_server_t *server_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_server_t, unclaimed_axis_event_listener);
+    struct wlr_pointer_axis_event *ev_ptr = data_ptr;
+    bool vertical = WL_POINTER_AXIS_VERTICAL_SCROLL == ev_ptr->orientation;
+    const char *action_ptr = wlmaker_server_root_mouse_action(
+        server_ptr, vertical ? "Wheel" : "WheelTilt");
+    bool workspaces = 0 == strcasecmp(action_ptr, "SwitchWorkspaces");
+    bool windows = 0 == strcasecmp(action_ptr, "SwitchWindows");
+    if (!workspaces && !windows) return;
+
+    // One step per notch; without notches (touchpad), per 15 units.
+    double *acc_ptr = &server_ptr->root_axis_accumulated[vertical ? 0 : 1];
+    int steps = 0;
+    if (0 != ev_ptr->delta_discrete) {
+        *acc_ptr = 0;
+        steps = ev_ptr->delta_discrete > 0 ? 1 : -1;
+    } else {
+        *acc_ptr += ev_ptr->delta;
+        if (*acc_ptr >= 15.0 || *acc_ptr <= -15.0) {
+            steps = *acc_ptr > 0 ? 1 : -1;
+            *acc_ptr = 0;
+        }
+    }
+    if (0 == steps) return;
+    // Up (negative) is Window Maker's Button4: next. Tilt right is next.
+    bool next = vertical ? steps < 0 : steps > 0;
+
+    if (workspaces) {
+        if (next) {
+            wlmtk_desktop_switch_to_next_workspace(server_ptr->desktop_ptr);
+        } else {
+            wlmtk_desktop_switch_to_previous_workspace(server_ptr->desktop_ptr);
+        }
+        return;
+    }
+    wlmtk_workspace_t *workspace_ptr =
+        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr);
+    if (next) {
+        wlmtk_workspace_activate_next_window(workspace_ptr);
+    } else {
+        wlmtk_workspace_activate_previous_window(workspace_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Applies the new theme's balloon colors. */
+void _wlmaker_server_handle_dock_fx_theme_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_server_t *server_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_server_t, dock_fx_theme_changed_listener);
+    wlmaker_config_style_t *style_ptr = data_ptr;
+    wlmaker_dock_fx_set_balloon_style(
+        server_ptr->dock_fx_ptr, &style_ptr->balloon);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -545,18 +1059,7 @@ static void _wlmaker_server_handle_deactivate_task_list(
     wlmaker_server_t *server_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_server_t, deactivate_task_list_listener);
 
-    if (!server_ptr->task_list_enabled) return;
-
-    server_ptr->task_list_enabled = false;
-    wl_signal_emit(&server_ptr->task_list_disabled_event, NULL);
-
-    wlmtk_workspace_t *workspace_ptr =
-        wlmtk_desktop_get_current_workspace(server_ptr->desktop_ptr);
-    wlmtk_window_t *window_ptr =
-        wlmtk_workspace_get_activated_window(workspace_ptr);
-    if (NULL != window_ptr) {
-        wlmtk_workspace_raise_window(workspace_ptr, window_ptr);
-    }
+    _wlmaker_server_end_task_list(server_ptr, true);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -595,6 +1098,45 @@ void handle_request_set_primary_selection(
 
     wlr_seat_set_primary_selection(
         server_ptr->wlr_seat_ptr, event_ptr->source, event_ptr->serial);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles `request_activate` of `wlr_xdg_activation_v1`: Activates & raises.
+ *
+ * Any valid token is accepted, ie. there is no focus stealing prevention.
+ * Windows that are not on the current workspace are left untouched.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to a struct
+ *                            wlr_xdg_activation_v1_request_activate_event.
+ */
+void _wlmaker_server_handle_xdg_activation_request_activate(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_server_t *server_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_server_t,
+        xdg_activation_request_activate_listener);
+    struct wlr_xdg_activation_v1_request_activate_event *event_ptr = data_ptr;
+
+    if (wlmtk_desktop_locked(server_ptr->desktop_ptr)) return;
+
+    wlmtk_window_t *window_ptr = wlmaker_xdg_toplevel_window_from_wlr_surface(
+        event_ptr->surface);
+    if (NULL == window_ptr) return;
+
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(window_ptr);
+    if (NULL == workspace_ptr) return;
+    if (workspace_ptr != wlmtk_desktop_get_current_workspace(
+            server_ptr->desktop_ptr)) {
+        bs_log(BS_INFO, "Activation request for window %p on another "
+               "workspace, ignored.", window_ptr);
+        return;
+    }
+
+    wlmtk_workspace_raise_window(workspace_ptr, window_ptr);
+    wlmtk_workspace_activate_window(workspace_ptr, window_ptr);
 }
 
 /* == End of server.c ====================================================== */

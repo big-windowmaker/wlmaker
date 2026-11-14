@@ -119,6 +119,31 @@ void wlmtk_pointer_set_cursor(
     wlmtk_pointer_t *pointer_ptr,
     wlmtk_pointer_cursor_t cursor);
 
+/**
+ * Handler for setting a named XCursor image. When set, the pointer calls it
+ * instead of `wlr_cursor_set_xcursor`: The cursor owner can then keep track
+ * of the image shown, eg. to magnify or replace it for a while.
+ *
+ * @param ud_ptr
+ * @param name_ptr            Name of the XCursor image, eg. "default".
+ */
+typedef void (*wlmtk_pointer_xcursor_handler_t)(
+    void *ud_ptr,
+    const char *name_ptr);
+
+/**
+ * Sets the handler for named XCursor images. See
+ * @ref wlmtk_pointer_xcursor_handler_t.
+ *
+ * @param pointer_ptr
+ * @param handler             The handler, or NULL to set the images directly.
+ * @param ud_ptr
+ */
+void wlmtk_pointer_set_xcursor_handler(
+    wlmtk_pointer_t *pointer_ptr,
+    wlmtk_pointer_xcursor_handler_t handler,
+    void *ud_ptr);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

@@ -41,7 +41,8 @@ target_compile_definitions(
 add_test(NAME toolkit_test COMMAND toolkit_test)
 
 add_executable(wlmaker_test wlmaker_test.c)
-add_dependencies(wlmaker_test wlmaker_lib)
+# The i18n test reads the catalogs compiled into the build tree.
+add_dependencies(wlmaker_test wlmaker_lib wlmaker_catalogs)
 target_include_directories(
   wlmaker_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(wlmaker_test PRIVATE wlmaker_lib)

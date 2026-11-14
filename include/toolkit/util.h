@@ -97,6 +97,13 @@ void wlmtk_util_connect_listener_signal(
     void (*notifier_func)(struct wl_listener *, void *));
 
 /**
+ * @return The smallest box covering both `a_ptr` and `b_ptr`. An empty box
+ *     does not count.
+ */
+struct wlr_box wlmtk_util_box_union(const struct wlr_box *a_ptr,
+                                    const struct wlr_box *b_ptr);
+
+/**
  * Disconnects a listener from the signal.
  *
  * Does that in a safe way: Will only disconnect, if the `link` is set.

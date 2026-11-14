@@ -71,6 +71,34 @@ void wlm_cairo_7segment_display_digit(
     uint32_t color_off,
     uint8_t digit);
 
+/** Segment pattern for a minus sign, for @ref wlm_cairo_7segment_display_segments. */
+#define WLM_CAIRO_7SEGMENT_MINUS 0x40
+
+/**
+ * Draws an arbitrary pattern of the 7 segments.
+ *
+ * Bit n of `segments` illuminates segment n, with segment 0 at the top and
+ * continuing clockwise; segment 6 is the center. See
+ * https://en.wikipedia.org/wiki/Seven-segment_display for the sequence.
+ * A value of 0 draws all segments as not illuminated.
+ *
+ * @param cairo_ptr           The `cairo_t` target to draw the digits to.
+ * @param param_ptr           Visualization parameters for the segments.
+ * @param x                   X coordinate of lower left corner.
+ * @param y                   Y coordinate of lower left corner.
+ * @param color_on            An ARGB32 value for an illuminated segment.
+ * @param color_off           An ARGB32 value for a non-illuminated segment.
+ * @param segments            Bitmask of the segments to illuminate.
+ */
+void wlm_cairo_7segment_display_segments(
+    cairo_t *cairo_ptr,
+    const wlm_cairo_7segment_param_t *param_ptr,
+    uint32_t x,
+    uint32_t y,
+    uint32_t color_on,
+    uint32_t color_off,
+    uint8_t segments);
+
 /** Unit test cases. */
 extern const bs_test_set_t wlm_cairo_segment_display_test_set;
 

@@ -24,11 +24,13 @@
 
 #include "backend/backend.h"
 #include "backend/output_config.h"
+#include "backend/zoom.h"
 
 /** Backend unit tests. */
 const bs_test_set_t *backend_test_sets[] = {
     &wlmbe_backend_test_set,
     &wlmbe_output_config_test_set,
+    &wlmbe_zoom_test_set,
     NULL,
 };
 
