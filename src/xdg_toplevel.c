@@ -165,6 +165,12 @@ struct wlmaker_xdg_toplevel {
      * pending, if size was not yet non-zero.
      */
     bool                      mapped;
+    /**
+     * Fullscreen asked for before the window was on a workspace (`mpv --fs`,
+     * SDL games): Without an output then, it was refused and the window
+     * stayed framed. Applied once mapped, as for XWayland.
+     */
+    bool                      fullscreen_pending;
 };
 
 struct wlmaker_xdg_toplevel *_wlmaker_xdg_toplevel_create_injected(
@@ -610,6 +616,11 @@ void _wlmaker_xdg_toplevel_try_map(struct wlmaker_xdg_toplevel *wxt_ptr)
     }
     wlmtk_workspace_map_window_with_hint(
         workspace_ptr, wxt_ptr->window_ptr, &hint);
+
+    if (wxt_ptr->fullscreen_pending) {
+        wxt_ptr->fullscreen_pending = false;
+        wlmtk_window_request_fullscreen(wxt_ptr->window_ptr, true);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -655,6 +666,9 @@ void _wlmaker_xdg_toplevel_handle_request_fullscreen(
         wxt_ptr->wlr_xdg_toplevel_ptr->requested.fullscreen ?
         wxt_ptr->wlr_xdg_toplevel_ptr->requested.fullscreen_output :
         NULL);
+    wxt_ptr->fullscreen_pending =
+        wxt_ptr->wlr_xdg_toplevel_ptr->requested.fullscreen &&
+        NULL == wlmtk_window_get_workspace(wxt_ptr->window_ptr);
     wlmtk_window_request_fullscreen(
         wxt_ptr->window_ptr,
         wxt_ptr->wlr_xdg_toplevel_ptr->requested.fullscreen);
@@ -1141,6 +1155,7 @@ struct _xdg_toplevel_test_data {
 
     int                       set_maximized_calls;
     int                       set_fullscreen_calls;
+    bool                      set_fullscreen_value;
     int                       set_size_calls;
     int                       set_activated_calls;
 
@@ -1163,12 +1178,13 @@ uint32_t _wlmaker_xdg_toplevel_fake_set_maximized(
 /** A fake for wlr_xdg_toplevel_set_fullscreen(). Records the call. */
 uint32_t _wlmaker_xdg_toplevel_fake_set_fullscreen(
     struct wlr_xdg_toplevel *wlr_xdg_toplevel_ptr,
-    __UNUSED__ bool fullscreen)
+    bool fullscreen)
 {
     struct _xdg_toplevel_test_data *td_ptr = BS_CONTAINER_OF(
         wlr_xdg_toplevel_ptr, struct _xdg_toplevel_test_data, wlr_xdg_toplevel);
 
     td_ptr->set_fullscreen_calls++;
+    td_ptr->set_fullscreen_value = fullscreen;
     return 0;
 }
 
@@ -1222,6 +1238,8 @@ static void _wlmaker_xdg_toplevel_test_teardown(void *test_context_ptr);
 
 static void _wlmaker_xdg_toplevel_test_maximize(bs_test_t *test_ptr);
 static void _wlmaker_xdg_toplevel_test_fullscreen(bs_test_t *test_ptr);
+static void _wlmaker_xdg_toplevel_test_fullscreen_before_map(
+    bs_test_t *test_ptr);
 static void _wlmaker_xdg_toplevel_test_size(bs_test_t *test_ptr);
 static void _wlmaker_xdg_toplevel_test_activated(bs_test_t *test_ptr);
 static void _wlmaker_xdg_toplevel_test_map(bs_test_t *test_ptr);
@@ -1231,6 +1249,8 @@ static void _wlmaker_xdg_toplevel_test_map_nogeo(bs_test_t *test_ptr);
 const bs_test_case_t _test_cases[] = {
     { true, "maximize", _wlmaker_xdg_toplevel_test_maximize },
     { true, "fullscreen", _wlmaker_xdg_toplevel_test_fullscreen },
+    { true, "fullscreen_before_map",
+      _wlmaker_xdg_toplevel_test_fullscreen_before_map },
     { true, "size", _wlmaker_xdg_toplevel_test_size },
     { true, "activated", _wlmaker_xdg_toplevel_test_activated },
     { true, "map", _wlmaker_xdg_toplevel_test_map },
@@ -1450,6 +1470,54 @@ void _wlmaker_xdg_toplevel_test_fullscreen(bs_test_t *test_ptr)
     wl_signal_emit(&td_ptr->wlr_surface.events.commit, NULL);
     BS_TEST_VERIFY_EQ(test_ptr, 1, td_ptr->set_fullscreen_calls);
 
+    wlmaker_xdg_toplevel_destroy(wxt_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Fullscreen asked for before mapping (`mpv --fs`) is applied once mapped. */
+void _wlmaker_xdg_toplevel_test_fullscreen_before_map(bs_test_t *test_ptr)
+{
+    struct _xdg_toplevel_test_data *td_ptr =
+        BS_ASSERT_NOTNULL(bs_test_context(test_ptr));
+
+    struct wlmaker_xdg_toplevel *wxt_ptr =
+        _wlmaker_xdg_toplevel_create_injected(
+            &td_ptr->wlr_xdg_toplevel,
+            &td_ptr->server,
+            _wlmaker_xdg_toplevel_fake_set_maximized,
+            _wlmaker_xdg_toplevel_fake_set_fullscreen,
+            _wlmaker_xdg_toplevel_fake_set_size,
+            _wlmaker_xdg_toplevel_fake_set_activated,
+            _wlmaker_xdg_toplevel_fake_get_extents_empty);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wxt_ptr);
+    wlmtk_window_t *w = wxt_ptr->window_ptr;
+    wlmtk_base_set_content_element(&wxt_ptr->base, NULL);
+    wxt_ptr->surface_ptr = NULL;
+
+    // The client asks before its initial commit: No output yet.
+    td_ptr->wlr_xdg_toplevel.requested.fullscreen = true;
+    wl_signal_emit(&td_ptr->wlr_xdg_toplevel.events.request_fullscreen, NULL);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_window_is_fullscreen(w));
+
+    // Initial commit, then the first buffer: Mapped, and asked to go
+    // fullscreen.
+    td_ptr->wlr_xdg_surface.initialized = true;
+    td_ptr->wlr_xdg_surface.current.geometry.width = 200;
+    td_ptr->wlr_xdg_surface.current.geometry.height = 100;
+    wl_signal_emit(&td_ptr->wlr_surface.events.commit, NULL);
+    td_ptr->set_fullscreen_calls = 0;
+    wl_signal_emit(&td_ptr->wlr_surface.events.map, NULL);
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, wlmtk_window_get_workspace(w));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, td_ptr->set_fullscreen_calls);
+    BS_TEST_VERIFY_TRUE(test_ptr, td_ptr->set_fullscreen_value);
+
+    // Only once: Mapping again does not ask again.
+    wl_signal_emit(&td_ptr->wlr_surface.events.unmap, NULL);
+    td_ptr->set_fullscreen_calls = 0;
+    wl_signal_emit(&td_ptr->wlr_surface.events.map, NULL);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, td_ptr->set_fullscreen_calls);
+
+    wl_signal_emit(&td_ptr->wlr_surface.events.unmap, NULL);
     wlmaker_xdg_toplevel_destroy(wxt_ptr);
 }
 
