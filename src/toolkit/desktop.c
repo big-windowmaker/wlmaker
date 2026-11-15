@@ -228,11 +228,15 @@ wlmtk_desktop_t *wlmtk_desktop_create(
     wlmtk_element_set_visible(
         &desktop_ptr->workspace_fullscreen_container.super_element,
         true);
-    wlmtk_layer_t *overlay_layer_ptr = wlmtk_desktop_get_layer(
-        desktop_ptr, WLMTK_DESKTOP_LAYER_OVERLAY);
+    // Fullscreen windows are above the top layer and below the overlay
+    // layer, as layer-shell has it: "top" is "below fullscreen", so an
+    // on-screen keyboard, a touch gamepad or the task list (overlay) stays
+    // visible over a fullscreen game.
+    wlmtk_layer_t *top_layer_ptr = wlmtk_desktop_get_layer(
+        desktop_ptr, WLMTK_DESKTOP_LAYER_TOP);
     wlmtk_container_add_element_atop(
         &desktop_ptr->container,
-        wlmtk_layer_element(overlay_layer_ptr),
+        wlmtk_layer_element(top_layer_ptr),
         &desktop_ptr->workspace_fullscreen_container.super_element);
 
     desktop_ptr->curtain_rectangle_ptr = wlmtk_rectangle_create(
@@ -994,12 +998,14 @@ bool _wlmtk_desktop_workspace_set_style(
 /* == Unit tests =========================================================== */
 
 static void test_create_destroy(bs_test_t *test_ptr);
+static void test_stacking(bs_test_t *test_ptr);
 static void test_workspaces(bs_test_t *test_ptr);
 static void test_focus_follows_pointer(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_desktop_test_cases[] = {
     { 1, "create_destroy", test_create_destroy },
+    { 1, "stacking", test_stacking },
     { 1, "workspaces", test_workspaces },
     { 1, "focus_follows_pointer", test_focus_follows_pointer },
     BS_TEST_CASE_SENTINEL()
@@ -1030,6 +1036,60 @@ void test_create_destroy(bs_test_t *test_ptr)
     wlmtk_desktop_destroy(desktop_ptr);
     wl_display_destroy(wl_display_ptr);
     wlr_scene_node_destroy(&wlr_scene_ptr->tree.node);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Returns the position of `element_ptr` in `container_ptr`, 0 is topmost. */
+static int _stack_pos(wlmtk_container_t *container_ptr,
+                      wlmtk_element_t *element_ptr)
+{
+    int pos = 0;
+    for (bs_dllist_node_t *dlnode_ptr = container_ptr->elements.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = dlnode_ptr->next_ptr, ++pos) {
+        if (wlmtk_element_from_dlnode(dlnode_ptr) == element_ptr) return pos;
+    }
+    return -1;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Verifies the stacking of layers and windows, as layer-shell has it:
+ * background, bottom, windows, top, fullscreen windows, overlay.
+ */
+void test_stacking(bs_test_t *test_ptr)
+{
+    struct wl_display *wl_display_ptr = wl_display_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wl_display_ptr);
+    struct wlr_output_layout *wlr_output_layout_ptr = wlr_output_layout_create(
+        wl_display_ptr);
+    struct wlmtk_desktop_style ds = {};
+    wlmtk_desktop_t *d = wlmtk_desktop_create(
+        NULL, &ds, wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+
+    wlmtk_container_t *c = &d->container;
+    int bg = _stack_pos(c, wlmtk_layer_element(
+                            d->layer_ptrs[WLMTK_DESKTOP_LAYER_BACKGROUND]));
+    int bottom = _stack_pos(c, wlmtk_layer_element(
+                                d->layer_ptrs[WLMTK_DESKTOP_LAYER_BOTTOM]));
+    int windows = _stack_pos(
+        c, &d->workspace_window_container.super_element);
+    int top = _stack_pos(c, wlmtk_layer_element(
+                             d->layer_ptrs[WLMTK_DESKTOP_LAYER_TOP]));
+    int fullscreen = _stack_pos(
+        c, &d->workspace_fullscreen_container.super_element);
+    int overlay = _stack_pos(c, wlmtk_layer_element(
+                                 d->layer_ptrs[WLMTK_DESKTOP_LAYER_OVERLAY]));
+    BS_TEST_VERIFY_TRUE(test_ptr, 0 <= overlay);
+    BS_TEST_VERIFY_TRUE(test_ptr, overlay < fullscreen);
+    BS_TEST_VERIFY_TRUE(test_ptr, fullscreen < top);
+    BS_TEST_VERIFY_TRUE(test_ptr, top < windows);
+    BS_TEST_VERIFY_TRUE(test_ptr, windows < bottom);
+    BS_TEST_VERIFY_TRUE(test_ptr, bottom < bg);
+
+    wlmtk_desktop_destroy(d);
+    wl_display_destroy(wl_display_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
