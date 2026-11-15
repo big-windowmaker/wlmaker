@@ -125,6 +125,19 @@ struct _wlmaker_xwl_surface_t {
     struct wl_listener        surface_unmap_listener;
     /** Listener for the `commit` signal. */
     struct wl_listener        surface_commit_listener;
+    /**
+     * Listener for `destroy` of the associated `wlr_surface`.
+     *
+     * wlroots emits `dissociate` only when the surface's addons are finished,
+     * which is *after* the surface's `destroy` signal. When Xwayland destroys
+     * the `wl_surface` before the X11 window is unmapped (eg. a GTK combo box
+     * popup that is opened and closed quickly), the scene trees made from that
+     * surface are destroyed first, and our elements would still own them.
+     * Connected before any of them, this tears down ahead of wlroots.
+     */
+    struct wl_listener        wlr_surface_destroy_listener;
+    /** Set when @ref wlr_surface_destroy_listener already dissociated. */
+    bool                      dissociated_on_surface_destroy;
 
     /** Listener for @ref wlmtk_window_events_t::request_close. */
     struct wl_listener        window_request_close_listener;
@@ -266,6 +279,9 @@ static void _xwl_surface_handle_associate(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _xwl_surface_handle_dissociate(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _xwl_surface_handle_wlr_surface_destroy(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
@@ -572,6 +588,8 @@ void wlmaker_xwl_surface_destroy(wlmaker_xwl_surface_t *xwl_surface_ptr)
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_class_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->set_title_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->dissociate_listener);
+    wlmtk_util_disconnect_listener(
+        &xwl_surface_ptr->wlr_surface_destroy_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->associate_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_configure_listener);
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->request_minimize_listener);
@@ -1087,6 +1105,16 @@ void _xwl_surface_handle_associate(
 
     BS_ASSERT(NULL == xwl_surface_ptr->surface_ptr);
 
+    // Before anything makes a scene tree from the surface: Listeners run in
+    // the order they were added, so this one runs ahead of those trees.
+    xwl_surface_ptr->dissociated_on_surface_destroy = false;
+    wlmtk_util_disconnect_listener(
+        &xwl_surface_ptr->wlr_surface_destroy_listener);
+    wlmtk_util_connect_listener_signal(
+        &xwl_surface_ptr->wlr_xwayland_surface_ptr->surface->events.destroy,
+        &xwl_surface_ptr->wlr_surface_destroy_listener,
+        _xwl_surface_handle_wlr_surface_destroy);
+
     // An X11 dock-app (its withdrawn leader, or its icon window): A tile on
     // the docks, no window.
     if (_xwl_surface_handle_dockapp(xwl_surface_ptr)) return;
@@ -1234,6 +1262,15 @@ void _xwl_surface_handle_dissociate(
     wlmaker_xwl_surface_t *xwl_surface_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_xwl_surface_t, dissociate_listener);
 
+    // Already torn down when the wlr_surface was destroyed: wlroots' own
+    // `dissociate` comes after that, for the same surface.
+    if (xwl_surface_ptr->dissociated_on_surface_destroy) {
+        xwl_surface_ptr->dissociated_on_surface_destroy = false;
+        return;
+    }
+    wlmtk_util_disconnect_listener(
+        &xwl_surface_ptr->wlr_surface_destroy_listener);
+
     bs_log(BS_INFO, "Dissociate XWL surface %p from wlr_surface %p",
            xwl_surface_ptr, xwl_surface_ptr->wlr_xwayland_surface_ptr->surface);
 
@@ -1299,6 +1336,29 @@ void _xwl_surface_handle_dissociate(
     wlmtk_util_disconnect_listener(&xwl_surface_ptr->surface_unmap_listener);
     wlmtk_base_set_content_element(&xwl_surface_ptr->base, NULL);
     xwl_surface_ptr->surface_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handler for `destroy` of the `wlr_surface` the XWL surface is associated to.
+ *
+ * Dissociates right away, before the scene trees made from the surface are
+ * destroyed along with it. See @ref wlr_surface_destroy_listener.
+ *
+ * @param listener_ptr
+ * @param data_ptr
+ */
+void _xwl_surface_handle_wlr_surface_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xwl_surface_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, wlr_surface_destroy_listener);
+
+    bs_log(BS_INFO, "XWL surface %p: wlr_surface %p destroyed while associated",
+           xwl_surface_ptr, xwl_surface_ptr->wlr_xwayland_surface_ptr->surface);
+    _xwl_surface_handle_dissociate(&xwl_surface_ptr->dissociate_listener, NULL);
+    xwl_surface_ptr->dissociated_on_surface_destroy = true;
 }
 
 /* ------------------------------------------------------------------------- */
