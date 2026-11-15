@@ -62,6 +62,9 @@
 #if defined(WLMAKER_HAVE_XWAYLAND)
 #define WLR_USE_UNSTABLE
 #include <wlr/version.h>
+#include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/xwayland/server.h>
 #include <wlr/xwayland/xwayland.h>
 #undef WLR_USE_UNSTABLE
 #endif  // defined(WLMAKER_HAVE_XWAYLAND)
@@ -71,9 +74,13 @@
 
 #if defined(WLMAKER_HAVE_XWAYLAND)
 #include <inttypes.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdio.h>
 #include <string.h>
 #include <wayland-server-core.h>
 #include <xcb/xcb.h>
+#include <xcb/randr.h>
 
 #include "backend/backend.h"
 #include "server.h"
@@ -101,10 +108,20 @@ struct _wlmaker_xwl_t {
 
     /** XCB atoms we consider relevant. */
     xcb_atom_t                xcb_atoms[XWL_MAX_ATOM_ID];
+    /** Listener for `change` of the output layout: The X primary follows. */
+    struct wl_listener        output_layout_change_listener;
+    /** Timer: XWayland learns of output changes a little after us. */
+    struct wl_event_source    *primary_timer_ptr;
 #endif  // defined(WLMAKER_HAVE_XWAYLAND)
 };
 
 #if defined(WLMAKER_HAVE_XWAYLAND)
+static bool _xwl_x_server_up(wlmaker_xwl_t *xwl_ptr);
+static void _xwl_set_x_primary_output(wlmaker_xwl_t *xwl_ptr);
+static int _xwl_handle_primary_timer(void *data_ptr);
+static void _xwl_handle_output_layout_change(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 static void handle_ready(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -175,6 +192,16 @@ wlmaker_xwl_t *wlmaker_xwl_create(wlmaker_server_t *server_ptr)
         &xwl_ptr->wlr_xwayland_ptr->events.new_surface,
         &xwl_ptr->new_surface_listener,
         handle_new_surface);
+    // X11 clients (Wine/Proton games) place themselves on the primary RandR
+    // output. Without one, Wine took the output at the origin as primary and
+    // games opened on the wrong monitor. It follows our primary output.
+    xwl_ptr->primary_timer_ptr = wl_event_loop_add_timer(
+        wl_display_get_event_loop(server_ptr->wl_display_ptr),
+        _xwl_handle_primary_timer, xwl_ptr);
+    wlmtk_util_connect_listener_signal(
+        &server_ptr->wlr_output_layout_ptr->events.change,
+        &xwl_ptr->output_layout_change_listener,
+        _xwl_handle_output_layout_change);
 
     // TODO(kaeser@gubbe.ch): That's a bit ugly. We should only do a setenv
     // as we create & fork the subprocesses. Needs infrastructure, though.
@@ -191,6 +218,11 @@ void wlmaker_xwl_destroy(wlmaker_xwl_t *xwl_ptr)
 
     wlmtk_util_disconnect_listener(&xwl_ptr->ready_listener);
     wlmtk_util_disconnect_listener(&xwl_ptr->new_surface_listener);
+    wlmtk_util_disconnect_listener(&xwl_ptr->output_layout_change_listener);
+    if (NULL != xwl_ptr->primary_timer_ptr) {
+        wl_event_source_remove(xwl_ptr->primary_timer_ptr);
+        xwl_ptr->primary_timer_ptr = NULL;
+    }
 
     if (NULL != xwl_ptr->wlr_xwayland_ptr) {
         wlr_xwayland_destroy(xwl_ptr->wlr_xwayland_ptr);
@@ -301,6 +333,8 @@ void handle_ready(struct wl_listener *listener_ptr,
 
     xcb_disconnect(xcb_connection_ptr);
 
+    _xwl_set_x_primary_output(xwl_ptr);
+
     // Sets the default cursor to use for XWayland surfaces, unless overrideen.
 #if WLR_VERSION_NUM >= (20 << 8)
 
@@ -360,3 +394,163 @@ void handle_new_surface(struct wl_listener *listener_ptr,
 
 #endif  // defined(WLMAKER_HAVE_XWAYLAND)
 /* == End of xwl.c ========================================================= */
+
+#if defined(WLMAKER_HAVE_XWAYLAND)
+/* ------------------------------------------------------------------------- */
+/**
+ * Whether the X server runs and is ready. In lazy mode, connecting to the
+ * display while it is down would start it -- from our own event loop, which
+ * must run for that (and it would start for nothing).
+ */
+bool _xwl_x_server_up(wlmaker_xwl_t *xwl_ptr)
+{
+    struct wlr_xwayland_server *s = xwl_ptr->wlr_xwayland_ptr->server;
+    return NULL != s && s->ready && NULL != s->client;
+}
+
+/** Whether a thread sets the primary output (one at a time). */
+static atomic_bool _xwl_randr_busy;
+
+/** What the thread needs, copied: It does not touch the compositor. */
+typedef struct {
+    /** The X display. */
+    char                      display[32];
+    /** Name of our primary output. */
+    char                      name[64];
+} _xwl_randr_job_t;
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Thread: Sets XWayland's primary RandR output to the output named in the
+ * job. It waits for X replies, so it is not on the compositor's event loop:
+ * There, a client grabbing the X server would stall the compositor. Its own
+ * connection closes at the end, so a lazy XWayland can still exit.
+ *
+ * @param arg_ptr             A @ref _xwl_randr_job_t, freed here.
+ */
+static void *_xwl_randr_thread(void *arg_ptr)
+{
+    _xwl_randr_job_t *job_ptr = arg_ptr;
+    xcb_connection_t *c = xcb_connect(job_ptr->display, NULL);
+    if (0 == xcb_connection_has_error(c)) {
+        xcb_window_t root =
+            xcb_setup_roots_iterator(xcb_get_setup(c)).data->root;
+        // The configuration may change between the queries: Then again.
+        bool stale = true;
+        for (int attempt = 0; attempt < 3 && stale; ++attempt) {
+            stale = false;
+            xcb_randr_get_screen_resources_current_reply_t *res_ptr =
+                xcb_randr_get_screen_resources_current_reply(
+                    c, xcb_randr_get_screen_resources_current(c, root), NULL);
+            if (NULL == res_ptr) break;
+            xcb_randr_output_t *o_ptr =
+                xcb_randr_get_screen_resources_current_outputs(res_ptr);
+            int n = xcb_randr_get_screen_resources_current_outputs_length(
+                res_ptr);
+            xcb_randr_output_t found = XCB_NONE;
+            for (int i = 0; i < n && XCB_NONE == found && !stale; ++i) {
+                xcb_randr_get_output_info_reply_t *info_ptr =
+                    xcb_randr_get_output_info_reply(
+                        c,
+                        xcb_randr_get_output_info(
+                            c, o_ptr[i], res_ptr->config_timestamp),
+                        NULL);
+                if (NULL == info_ptr) continue;
+                size_t len = xcb_randr_get_output_info_name_length(info_ptr);
+                if (XCB_RANDR_SET_CONFIG_INVALID_CONFIG_TIME ==
+                    info_ptr->status) {
+                    stale = true;
+                } else if (len == strlen(job_ptr->name) &&
+                           0 == memcmp(
+                               xcb_randr_get_output_info_name(info_ptr),
+                               job_ptr->name, len)) {
+                    found = o_ptr[i];
+                }
+                free(info_ptr);
+            }
+            free(res_ptr);
+            if (stale || XCB_NONE == found) continue;
+
+            xcb_randr_get_output_primary_reply_t *p_ptr =
+                xcb_randr_get_output_primary_reply(
+                    c, xcb_randr_get_output_primary(c, root), NULL);
+            if (NULL == p_ptr || p_ptr->output != found) {
+                xcb_generic_error_t *e_ptr = xcb_request_check(
+                    c, xcb_randr_set_output_primary_checked(c, root, found));
+                if (NULL == e_ptr) {
+                    bs_log(BS_INFO, "XWayland primary output: %s",
+                           job_ptr->name);
+                }
+                free(e_ptr);
+            }
+            free(p_ptr);
+        }
+    }
+    xcb_disconnect(c);
+    free(job_ptr);
+    atomic_store(&_xwl_randr_busy, false);
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Sets XWayland's primary RandR output to our primary output (the first of
+ * the layout, where the Dock is), in a thread. While one runs, retries soon.
+ *
+ * @param xwl_ptr
+ */
+void _xwl_set_x_primary_output(wlmaker_xwl_t *xwl_ptr)
+{
+    if (!_xwl_x_server_up(xwl_ptr)) return;
+    struct wlr_output *wlr_output_ptr = wlmbe_primary_output(
+        xwl_ptr->server_ptr->wlr_output_layout_ptr);
+    if (NULL == wlr_output_ptr || NULL == wlr_output_ptr->name) return;
+
+    if (atomic_exchange(&_xwl_randr_busy, true)) {
+        if (NULL != xwl_ptr->primary_timer_ptr) {
+            wl_event_source_timer_update(xwl_ptr->primary_timer_ptr, 500);
+        }
+        return;
+    }
+    _xwl_randr_job_t *job_ptr = logged_calloc(1, sizeof(_xwl_randr_job_t));
+    pthread_attr_t attr;
+    pthread_t thread;
+    bool started = false;
+    if (NULL != job_ptr && 0 == pthread_attr_init(&attr)) {
+        snprintf(job_ptr->display, sizeof(job_ptr->display), "%s",
+                 xwl_ptr->wlr_xwayland_ptr->display_name);
+        snprintf(job_ptr->name, sizeof(job_ptr->name), "%s",
+                 wlr_output_ptr->name);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        started = 0 == pthread_create(
+            &thread, &attr, _xwl_randr_thread, job_ptr);
+        pthread_attr_destroy(&attr);
+    }
+    if (!started) {
+        bs_log(BS_WARNING, "Failed to start the XWayland primary output "
+               "thread.");
+        free(job_ptr);
+        atomic_store(&_xwl_randr_busy, false);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Timer callback: Applies the primary output, once XWayland caught up. */
+int _xwl_handle_primary_timer(void *data_ptr)
+{
+    _xwl_set_x_primary_output(data_ptr);
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Outputs were added, removed or moved: The X primary follows, soon. */
+void _xwl_handle_output_layout_change(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_t *xwl_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_t, output_layout_change_listener);
+    if (!_xwl_x_server_up(xwl_ptr) || NULL == xwl_ptr->primary_timer_ptr) return;
+    wl_event_source_timer_update(xwl_ptr->primary_timer_ptr, 1000);
+}
+#endif  // defined(WLMAKER_HAVE_XWAYLAND)

@@ -20,6 +20,8 @@ pkg_check_modules(WLROOTS REQUIRED IMPORTED_TARGET wlroots-0.20>=0.20)
 pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb>=1.15)
 # The shape of X11 dock-apps' icon windows (part of libxcb).
 pkg_check_modules(XCB_SHAPE REQUIRED IMPORTED_TARGET xcb-shape)
+# XWayland's primary output, for X11 games (part of libxcb).
+pkg_check_modules(XCB_RANDR REQUIRED IMPORTED_TARGET xcb-randr)
 # XWayland considered optional.
 pkg_check_modules(XWAYLAND xwayland>=22.1.9)
 # Optional: wmake-zones (window zones and tiling), shared engine and config.
@@ -156,7 +158,8 @@ target_link_libraries(
   PkgConfig::WAYLAND_SERVER
   PkgConfig::WLROOTS
   PkgConfig::XCB
-  PkgConfig::XCB_SHAPE)
+  PkgConfig::XCB_SHAPE
+  PkgConfig::XCB_RANDR)
 target_include_directories(
   wlmaker_lib PUBLIC
   # Keep wlroots first -- multiple versions may interfere (#117).
