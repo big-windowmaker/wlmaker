@@ -91,6 +91,12 @@ struct _wlmaker_layer_panel_t {
      * @ref WLMAKER_APPICONS_NAMESPACE): Window Maker's appicons.
      */
     bool                      is_appicons;
+    /**
+     * A button is held on a plain panel (an on-screen keyboard, a dock-app):
+     * It keeps the pointer until the last button is released, also outside
+     * of it, as windows do on other compositors (implicit grab).
+     */
+    bool                      implicit_grab;
     /** Whether the left button is held on the Dock: May become a drag. */
     bool                      drag_pending;
     /** Whether the Dock is being dragged to another corner. */
@@ -761,8 +767,30 @@ bool _wlmaker_layer_panel_element_pointer_button(
         _wlmaker_layer_panel_click(layer_panel_ptr, button_event_ptr);
     }
 
+    // Plain panels keep the pointer while a button is held: Dragging an
+    // on-screen keyboard by its title moves the pointer off the surface.
+    bool plain = !docklike && !layer_panel_ptr->is_appicons;
+    if (plain &&
+        WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        !layer_panel_ptr->implicit_grab &&
+        NULL != element_ptr->parent_container_ptr) {
+        layer_panel_ptr->implicit_grab = true;
+        wlmtk_container_pointer_grab(
+            element_ptr->parent_container_ptr, element_ptr);
+    }
+
     bool rv = layer_panel_ptr->orig_element_vmt.pointer_button(
         element_ptr, button_event_ptr);
+
+    if (layer_panel_ptr->implicit_grab &&
+        WLMTK_BUTTON_UP == button_event_ptr->type &&
+        0 == server_ptr->wlr_seat_ptr->pointer_state.button_count) {
+        layer_panel_ptr->implicit_grab = false;
+        if (NULL != element_ptr->parent_container_ptr) {
+            wlmtk_container_pointer_grab_release(
+                element_ptr->parent_container_ptr, element_ptr);
+        }
+    }
 
     if (docklike &&
         BTN_LEFT == button_event_ptr->button &&
@@ -804,6 +832,24 @@ bool _wlmaker_layer_panel_element_pointer_accepts_motion(
         element_ptr, wlmaker_layer_panel_t,
         super_panel.super_container.super_element);
     wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+
+    // Implicit grab, off the panel: The motion goes to the surface that has
+    // the pointer (surface-local coordinates may be negative or beyond its
+    // size), without the panel losing the pointer focus.
+    if (layer_panel_ptr->implicit_grab) {
+        struct wlr_box box = wlmtk_element_get_dimensions_box(element_ptr);
+        if (!wlr_box_contains_point(&box, motion_event_ptr->x,
+                                    motion_event_ptr->y)) {
+            struct wlr_seat *wlr_seat_ptr = server_ptr->wlr_seat_ptr;
+            if (NULL != wlr_seat_ptr->pointer_state.focused_surface) {
+                wlr_seat_pointer_notify_motion(
+                    wlr_seat_ptr, motion_event_ptr->time_msec,
+                    motion_event_ptr->x - box.x,
+                    motion_event_ptr->y - box.y);
+            }
+            return true;
+        }
+    }
 
     if (NULL != layer_panel_ptr->tile_drag_ptr) {
         if (layer_panel_ptr->tile_drag_ptr == server_ptr->tile_drag_ptr) {
@@ -907,6 +953,7 @@ void _wlmaker_layer_panel_element_pointer_grab_cancel(
         super_panel.super_container.super_element);
     layer_panel_ptr->drag_pending = false;
     layer_panel_ptr->dragging = false;
+    layer_panel_ptr->implicit_grab = false;
     if (NULL != layer_panel_ptr->tile_drag_ptr &&
         layer_panel_ptr->tile_drag_ptr ==
         layer_panel_ptr->server_ptr->tile_drag_ptr) {
