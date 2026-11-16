@@ -47,6 +47,8 @@ struct _wlmtk_layer_t {
 
     /** The output layout. */
     struct wlr_output_layout  *wlr_output_layout_ptr;
+    /** Set in @ref wlmtk_layer_destroy: Panels are not moved to an output. */
+    bool                      destroying;
 };
 
 /** State of the layer on the given output. */
@@ -111,6 +113,7 @@ wlmtk_layer_t *wlmtk_layer_create(
 /* ------------------------------------------------------------------------- */
 void wlmtk_layer_destroy(wlmtk_layer_t *layer_ptr)
 {
+    layer_ptr->destroying = true;
     if (NULL != layer_ptr->output_tracker_ptr) {
         wlmtk_output_tracker_destroy(layer_ptr->output_tracker_ptr);
         layer_ptr->output_tracker_ptr = NULL;
@@ -276,15 +279,33 @@ void wlmtk_layer_output_reconfigure(
 /** Removes `dlnode_ptr`'s panel from the layer output and destroys it. */
 void _wlmtk_layer_output_remove_dlnode_panel(
     bs_dllist_node_t *dlnode_ptr,
-    __UNUSED__ void *ud_ptr)
+    void *ud_ptr)
 {
+    wlmtk_layer_t *layer_ptr = ud_ptr;
     wlmtk_panel_t *panel_ptr = wlmtk_panel_from_dlnode(dlnode_ptr);
 
     wlmtk_layer_remove_panel(
         BS_ASSERT_NOTNULL(wlmtk_panel_get_layer(panel_ptr)),
         panel_ptr);
 
-    wlmtk_element_destroy(wlmtk_panel_element(panel_ptr));
+    // A panel of a layer surface is destroyed with its output.
+    wlmtk_element_t *element_ptr = wlmtk_panel_element(panel_ptr);
+    if (NULL != element_ptr->vmt.destroy) {
+        wlmtk_element_destroy(element_ptr);
+        return;
+    }
+
+    // The others (docks, drawers, the zones, the task list, X11 overlays) have
+    // no destroy: They belong to who made them, and stay. On an output still
+    // in the layout, as the Clip moves itself; or out of the layer, if none
+    // remains (or the layer goes away), for their owner to take or put back.
+    if (NULL == layer_ptr || layer_ptr->destroying ||
+        NULL == layer_ptr->wlr_output_layout_ptr) return;
+    struct wlr_output *wlr_output_ptr = wlr_output_layout_get_center_output(
+        layer_ptr->wlr_output_layout_ptr);
+    if (NULL != wlr_output_ptr) {
+        wlmtk_layer_add_panel(layer_ptr, panel_ptr, wlr_output_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -350,7 +371,7 @@ void _wlmtk_layer_output_update(
 /** Output is removed. Unlink all panels, and destroy the layer output. */
 void _wlmtk_layer_output_destroy(
     __UNUSED__ struct wlr_output *wlr_output_ptr,
-    __UNUSED__ void *ud_ptr,
+    void *ud_ptr,
     void *output_ptr)
 {
     wlmtk_layer_output_t *layer_output_ptr = output_ptr;
@@ -358,7 +379,7 @@ void _wlmtk_layer_output_destroy(
     bs_dllist_for_each(
         &layer_output_ptr->panels,
         _wlmtk_layer_output_remove_dlnode_panel,
-        NULL);
+        ud_ptr);
     free(layer_output_ptr);
 }
 
@@ -368,6 +389,7 @@ static void test_multi_output(bs_test_t *test_ptr);
 static void test_layout(bs_test_t *test_ptr);
 static void test_full_edge(bs_test_t *test_ptr);
 static void test_usable_area_signal(bs_test_t *test_ptr);
+static void test_panel_without_destroy(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_layer_test_cases[] = {
@@ -375,6 +397,7 @@ static const bs_test_case_t _wlmtk_layer_test_cases[] = {
     { 1, "layout", test_layout },
     { 1, "full_edge", test_full_edge },
     { 1, "usable_area_signal", test_usable_area_signal },
+    { 1, "panel_without_destroy", test_panel_without_destroy },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -475,6 +498,58 @@ void test_multi_output(bs_test_t *test_ptr)
     wlmtk_layer_destroy(layer_ptr);
 
     wlr_output_layout_remove(wlr_output_layout_ptr, &o2);
+    wlr_output_layout_destroy(wlr_output_layout_ptr);
+    wl_display_destroy(display_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * A panel without destroy (a dock's, the zones') belongs to who made it: When
+ * its output goes away, it moves to an output still in the layout, and is
+ * only taken out of the layer when none remains.
+ */
+void test_panel_without_destroy(bs_test_t *test_ptr)
+{
+    struct wl_display *display_ptr = wl_display_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, display_ptr);
+    struct wlr_output_layout *wlr_output_layout_ptr =
+        wlr_output_layout_create(display_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wlr_output_layout_ptr);
+    wlmtk_layer_t *layer_ptr = wlmtk_layer_create(wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, layer_ptr);
+
+    struct wlr_output o1 = { .width = 1024, .height = 768, .scale = 1 };
+    wlmtk_test_wlr_output_init(&o1);
+    wlr_output_layout_add(wlr_output_layout_ptr, &o1, 0, 0);
+    struct wlr_output o2 = { .width = 800, .height = 600, .scale = 1 };
+    wlmtk_test_wlr_output_init(&o2);
+    wlr_output_layout_add(wlr_output_layout_ptr, &o2, 1024, 0);
+
+    wlmtk_panel_positioning_t p = { .desired_width = 100, .desired_height = 50 };
+    wlmtk_fake_panel_t *fp_ptr = wlmtk_fake_panel_create(&p);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, fp_ptr);
+    wlmtk_element_t *e_ptr = wlmtk_panel_element(&fp_ptr->panel);
+    e_ptr->vmt.destroy = NULL;
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, wlmtk_layer_add_panel(layer_ptr, &fp_ptr->panel, &o1));
+
+    // Its output goes away: On the other output now, centered there.
+    wlr_output_layout_remove(wlr_output_layout_ptr, &o1);
+    BS_TEST_VERIFY_EQ(test_ptr, layer_ptr,
+                      wlmtk_panel_get_layer(&fp_ptr->panel));
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL,
+                       wlmtk_panel_get_layer_output(&fp_ptr->panel));
+    // Position: 1024 (output) + 800/2 (half output) - 50 (half panel).
+    BS_TEST_VERIFY_EQ(test_ptr, 1374, e_ptr->x);
+
+    // No output remains: Out of the layer, and still there.
+    wlr_output_layout_remove(wlr_output_layout_ptr, &o2);
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlmtk_panel_get_layer(&fp_ptr->panel));
+    BS_TEST_VERIFY_EQ(test_ptr, NULL,
+                      wlmtk_panel_get_layer_output(&fp_ptr->panel));
+
+    wlmtk_layer_destroy(layer_ptr);
+    wlmtk_fake_panel_destroy(fp_ptr);
     wlr_output_layout_destroy(wlr_output_layout_ptr);
     wl_display_destroy(display_ptr);
 }
