@@ -171,6 +171,18 @@ struct _wlmaker_xwl_surface_t {
     struct wlr_output         *overlay_output_ptr;
     /** Original virtual methods of the overlay panel's element. */
     wlmtk_element_vmt_t       overlay_orig_vmt;
+
+    /** Element virtual methods of @ref surface_ptr, before extending them. */
+    wlmtk_element_vmt_t       content_orig_vmt;
+    /**
+     * A button is pressed on the surface: An implicit grab, as the X server's.
+     * Until all buttons are up, the pointer stays with this surface, also over
+     * the menu the press opened (the X11 client grabbed the pointer: Xwayland
+     * gives the menu the events). Passed to the menu instead, Xwayland would
+     * release the buttons on its `enter`, and GTK closes a combo box's menu
+     * right after it opened.
+     */
+    bool                      content_pressed;
     /** A menu holds the pointer, as with its grab on X11. */
     bool                      overlay_grab;
     /**
@@ -206,6 +218,17 @@ static bool _xwl_surface_overlay_pointer_button(
     const wlmtk_button_event_t *button_event_ptr);
 /** All XWL surfaces, see @ref wlmaker_xwl_surface_t::link. */
 static struct wl_list _xwl_surfaces = { &_xwl_surfaces, &_xwl_surfaces };
+
+static wlmaker_xwl_surface_t *_xwl_surface_from_content_element(
+    wlmtk_element_t *element_ptr);
+static bool _xwl_surface_content_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr);
+static bool _xwl_surface_content_pointer_button(
+    wlmtk_element_t *element_ptr,
+    const wlmtk_button_event_t *button_event_ptr);
+static void _xwl_surface_content_pointer_grab_cancel(
+    wlmtk_element_t *element_ptr);
 static bool _xwl_surface_handle_dockapp(wlmaker_xwl_surface_t *xs_ptr);
 static bool _xwl_surface_dockapp_leader(wlmaker_xwl_surface_t *xs_ptr);
 static void _xwl_surface_update_window_properties(
@@ -1058,6 +1081,14 @@ void _xwl_surface_handle_associate(
         bs_log(BS_FATAL, "Failed wlmtk_surface_create.");
         return;
     }
+    static const wlmtk_element_vmt_t content_vmt = {
+        .pointer_accepts_motion = _xwl_surface_content_pointer_accepts_motion,
+        .pointer_button = _xwl_surface_content_pointer_button,
+        .pointer_grab_cancel = _xwl_surface_content_pointer_grab_cancel,
+    };
+    xwl_surface_ptr->content_pressed = false;
+    xwl_surface_ptr->content_orig_vmt = wlmtk_element_extend(
+        wlmtk_surface_element(xwl_surface_ptr->surface_ptr), &content_vmt);
 
     wlmtk_surface_connect_map_listener_signal(
         xwl_surface_ptr->surface_ptr,
@@ -1274,6 +1305,103 @@ void _xwl_surface_handle_wlr_surface_destroy(
            xwl_surface_ptr, xwl_surface_ptr->wlr_xwayland_surface_ptr->surface);
     _xwl_surface_handle_dissociate(&xwl_surface_ptr->dissociate_listener, NULL);
     xwl_surface_ptr->dissociated_on_surface_destroy = true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The XWL surface whose @ref surface_ptr has `element_ptr`. */
+wlmaker_xwl_surface_t *_xwl_surface_from_content_element(
+    wlmtk_element_t *element_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr;
+    wl_list_for_each(xs_ptr, &_xwl_surfaces, link) {
+        if (NULL != xs_ptr->surface_ptr &&
+            wlmtk_surface_element(xs_ptr->surface_ptr) == element_ptr) {
+            return xs_ptr;
+        }
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::pointer_accepts_motion for the X11
+ * surface: While a button is pressed on it, it keeps the pointer, wherever the
+ * pointer is. The position is relative to the surface, also beyond it.
+ *
+ * @param element_ptr
+ * @param motion_event_ptr
+ *
+ * @return Whether the surface takes the motion.
+ */
+bool _xwl_surface_content_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr =
+        _xwl_surface_from_content_element(element_ptr);
+    if (NULL == xs_ptr) return false;
+    if (xs_ptr->content_orig_vmt.pointer_accepts_motion(
+            element_ptr, motion_event_ptr)) return true;
+    if (!xs_ptr->content_pressed) return false;
+
+    // Beyond the surface's buffer: The surface's own handler skips it.
+    wlr_seat_pointer_notify_motion(
+        xs_ptr->server_ptr->wlr_seat_ptr, motion_event_ptr->time_msec,
+        motion_event_ptr->x, motion_event_ptr->y);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::pointer_button for the X11 surface:
+ * Takes the pointer grab on a press, and releases it once all buttons are up.
+ * See @ref wlmaker_xwl_surface_t::content_pressed.
+ *
+ * @param element_ptr
+ * @param button_event_ptr
+ *
+ * @return Whether the event was consumed.
+ */
+bool _xwl_surface_content_pointer_button(
+    wlmtk_element_t *element_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr =
+        _xwl_surface_from_content_element(element_ptr);
+    if (NULL == xs_ptr) return false;
+    bool rv = xs_ptr->content_orig_vmt.pointer_button(
+        element_ptr, button_event_ptr);
+
+    wlmtk_container_t *container_ptr = element_ptr->parent_container_ptr;
+    struct wlr_seat *seat_ptr = xs_ptr->server_ptr->wlr_seat_ptr;
+    if (NULL == container_ptr) return rv;
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        !xs_ptr->content_pressed &&
+        0 < seat_ptr->pointer_state.button_count) {
+        xs_ptr->content_pressed = true;
+        wlmtk_container_pointer_grab(container_ptr, element_ptr);
+    } else if (WLMTK_BUTTON_UP == button_event_ptr->type &&
+               xs_ptr->content_pressed &&
+               0 == seat_ptr->pointer_state.button_count) {
+        xs_ptr->content_pressed = false;
+        // The pointer focus is computed again: A menu under the pointer gets
+        // it now, without buttons pressed.
+        wlmtk_container_pointer_grab_release(container_ptr, element_ptr);
+    }
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Implements @ref wlmtk_element_vmt_t::pointer_grab_cancel. */
+void _xwl_surface_content_pointer_grab_cancel(wlmtk_element_t *element_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr =
+        _xwl_surface_from_content_element(element_ptr);
+    if (NULL == xs_ptr) return;
+    xs_ptr->content_pressed = false;
+    if (NULL != xs_ptr->content_orig_vmt.pointer_grab_cancel) {
+        xs_ptr->content_orig_vmt.pointer_grab_cancel(element_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
