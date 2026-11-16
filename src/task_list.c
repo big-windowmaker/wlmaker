@@ -530,10 +530,10 @@ void _wlmaker_task_list_handle_task_list_enabled(
 
     _wlmaker_task_list_refresh(task_list_ptr, &task_list_ptr->style);
 
-    if (task_list_ptr->enabled) {
-        BS_ASSERT(NULL != wlmtk_panel_get_layer(&task_list_ptr->super_panel));
-        return;
-    }
+    // Enabled, and in a layer. Not in one, if its output went away while it
+    // was shown and none remained (@ref wlmtk_layer_t): Added again.
+    if (task_list_ptr->enabled &&
+        NULL != wlmtk_panel_get_layer(&task_list_ptr->super_panel)) return;
 
     wlmtk_layer_t *layer_ptr = wlmtk_desktop_get_layer(
         task_list_ptr->server_ptr->desktop_ptr,
@@ -559,10 +559,11 @@ void _wlmaker_task_list_handle_task_list_disabled(
     wlmaker_task_list_t *task_list_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_task_list_t, task_list_disabled_listener);
 
-    BS_ASSERT(NULL != wlmtk_panel_get_layer(&task_list_ptr->super_panel));
-    wlmtk_layer_remove_panel(
-        wlmtk_panel_get_layer(&task_list_ptr->super_panel),
-        &task_list_ptr->super_panel);
+    // Out of the layer already, if its output went away and none remained.
+    wlmtk_layer_t *layer_ptr = wlmtk_panel_get_layer(&task_list_ptr->super_panel);
+    if (NULL != layer_ptr) {
+        wlmtk_layer_remove_panel(layer_ptr, &task_list_ptr->super_panel);
+    }
     task_list_ptr->enabled = false;
 }
 
