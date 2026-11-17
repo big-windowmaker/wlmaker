@@ -93,6 +93,14 @@ static void handle_request_set_primary_selection(
 static void _wlmaker_server_handle_xdg_activation_request_activate(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static void _wlmaker_server_handle_xdg_activation_new_token(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+
+/** Listener for `new_token` of `wlr_xdg_activation_v1` (one server). */
+static struct wl_listener _xdg_activation_new_token_listener;
+/** Marks a token that stems from input on a focused surface. */
+static char _xdg_activation_from_input;
 
 /* == Exported methods ===================================================== */
 
@@ -381,6 +389,10 @@ wlmaker_server_t *wlmaker_server_create(
         &server_ptr->wlr_xdg_activation_v1_ptr->events.request_activate,
         &server_ptr->xdg_activation_request_activate_listener,
         _wlmaker_server_handle_xdg_activation_request_activate);
+    wlmtk_util_connect_listener_signal(
+        &server_ptr->wlr_xdg_activation_v1_ptr->events.new_token,
+        &_xdg_activation_new_token_listener,
+        _wlmaker_server_handle_xdg_activation_new_token);
 
     server_ptr->layer_shell_ptr = wlmaker_layer_shell_create(server_ptr);
     if (NULL == server_ptr->layer_shell_ptr) {
@@ -663,6 +675,7 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
     // The activation manager is destroyed along with the display.
     wlmtk_util_disconnect_listener(
         &server_ptr->xdg_activation_request_activate_listener);
+    wlmtk_util_disconnect_listener(&_xdg_activation_new_token_listener);
 
     if (NULL != server_ptr->xdg_decoration_manager_ptr) {
         wlmaker_xdg_decoration_manager_destroy(
@@ -1119,7 +1132,12 @@ void handle_request_set_primary_selection(
 /**
  * Handles `request_activate` of `wlr_xdg_activation_v1`: Activates & raises.
  *
- * Any valid token is accepted, ie. there is no focus stealing prevention.
+ * Only a token that stems from user input is accepted (see
+ * @ref _wlmaker_server_handle_xdg_activation_new_token): a click on a
+ * notification's action, or on a launcher. Any other request is an
+ * application presenting itself on its own (a message arrived): That would
+ * take the keyboard from the window in use, mid-word, and close its open
+ * menu. Such a request is ignored; the window stays where it is.
  * Windows that are not on the current workspace are left untouched.
  *
  * @param listener_ptr
@@ -1141,6 +1159,13 @@ void _wlmaker_server_handle_xdg_activation_request_activate(
         event_ptr->surface);
     if (NULL == window_ptr) return;
 
+    if (NULL == event_ptr->token ||
+        event_ptr->token->data != &_xdg_activation_from_input) {
+        bs_log(BS_INFO, "Activation request for window %p without user "
+               "input, ignored (focus stealing prevention).", window_ptr);
+        return;
+    }
+
     wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(window_ptr);
     if (NULL == workspace_ptr) return;
     if (workspace_ptr != wlmtk_desktop_get_current_workspace(
@@ -1152,6 +1177,30 @@ void _wlmaker_server_handle_xdg_activation_request_activate(
 
     wlmtk_workspace_raise_window(workspace_ptr, window_ptr);
     wlmtk_workspace_activate_window(workspace_ptr, window_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles `new_token` of `wlr_xdg_activation_v1`: Marks the token as coming
+ * from user input when it has both a seat and a surface. wlroots emits
+ * `new_token` only after checking, at commit, that the serial was given to
+ * the client and that this surface held the keyboard or pointer focus. A
+ * seat alone is not enough: Without a surface, wlroots does not check the
+ * focus, and an old serial would do. The mark is taken now, because wlroots
+ * clears the token's surface when that surface goes away (a notification's
+ * balloon closes right after the click on its action).
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to a struct wlr_xdg_activation_token_v1.
+ */
+void _wlmaker_server_handle_xdg_activation_new_token(
+    __UNUSED__ struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    struct wlr_xdg_activation_token_v1 *token_ptr = data_ptr;
+    if (NULL != token_ptr->seat && NULL != token_ptr->surface) {
+        token_ptr->data = &_xdg_activation_from_input;
+    }
 }
 
 /* == End of server.c ====================================================== */
