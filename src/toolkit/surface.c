@@ -80,6 +80,21 @@ struct _wlmtk_surface_t {
 
     /** Whether this surface is activated, ie. has keyboard focus. */
     bool                      activated;
+
+    /**
+     * A button was pressed on this surface, and not all buttons are up yet:
+     * The implicit grab of `wl_pointer`. Until all buttons are released, the
+     * pointer stays with the (sub)surface that got the press, also when it
+     * moves beyond the surface, or over a surface that appears under it (a
+     * notification, the Dock, another window). Without it, the client saw a
+     * `leave` mid-drag and never the release: A drag in Inkscape broke off,
+     * and GTK kept the button as held, ignoring the wheel until a new click.
+     */
+    bool                      pressed;
+    /** Element-local minus surface-local position, taken at the press. */
+    double                    press_dx;
+    /** Element-local minus surface-local position, taken at the press. */
+    double                    press_dy;
 };
 
 static bool _wlmtk_surface_init(
@@ -109,6 +124,8 @@ static bool _wlmtk_surface_element_pointer_button(
 static bool _wlmtk_surface_element_pointer_axis(
     wlmtk_element_t *element_ptr,
     struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr);
+static void _wlmtk_surface_element_pointer_grab_cancel(
+    wlmtk_element_t *element_ptr);
 static bool _wlmtk_surface_element_keyboard_event(
     wlmtk_element_t *element_ptr,
     struct wlr_keyboard_key_event *wlr_keyboard_key_event_ptr);
@@ -139,6 +156,9 @@ static void _wlmtk_surface_commit_size(
 
 /* == Data ================================================================= */
 
+/** The surface holding the implicit grab, see @ref wlmtk_surface_t::pressed. */
+static wlmtk_surface_t *_wlmtk_surface_pressed_ptr = NULL;
+
 /** Method table for the element's virtual methods. */
 static const wlmtk_element_vmt_t surface_element_vmt = {
     .destroy = _wlmtk_surface_element_destroy,
@@ -147,6 +167,7 @@ static const wlmtk_element_vmt_t surface_element_vmt = {
     .pointer_accepts_motion = _wlmtk_surface_element_pointer_accepts_motion,
     .pointer_button = _wlmtk_surface_element_pointer_button,
     .pointer_axis = _wlmtk_surface_element_pointer_axis,
+    .pointer_grab_cancel = _wlmtk_surface_element_pointer_grab_cancel,
     .keyboard_event = _wlmtk_surface_element_keyboard_event,
 };
 
@@ -392,6 +413,9 @@ bool _wlmtk_xdg_surface_init(
  */
 void _wlmtk_surface_fini(wlmtk_surface_t *surface_ptr)
 {
+    if (_wlmtk_surface_pressed_ptr == surface_ptr) {
+        _wlmtk_surface_pressed_ptr = NULL;
+    }
     if (NULL != surface_ptr->wlr_scene_tree_ptr) {
         wlmtk_util_disconnect_listener(
             &surface_ptr->wlr_scene_tree_node_destroy_listener);
@@ -500,6 +524,8 @@ bool _wlmtk_surface_element_pointer_accepts_motion(
         element_ptr, wlmtk_surface_t, super_element);
 
     if (NULL == surface_ptr->super_element.wlr_scene_node_ptr) return false;
+    // Implicit grab: The pointer stays here until all buttons are up.
+    if (surface_ptr->pressed) return true;
 
     // Get the layout local coordinates of the node, so we can adjust the
     // node-local (x, y) for the `wlr_scene_node_at` call.
@@ -566,7 +592,43 @@ bool _wlmtk_surface_element_pointer_button(
             button_event_ptr->button,
             state);
     }
+
+    // Implicit grab (see @ref wlmtk_surface_t::pressed). The seat counts the
+    // buttons held on the focused surface.
+    wlmtk_container_t *container_ptr = element_ptr->parent_container_ptr;
+    struct wlr_seat *seat_ptr = surface_ptr->wlr_seat_ptr;
+    if (NULL == container_ptr) return true;
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        !surface_ptr->pressed &&
+        0 < seat_ptr->pointer_state.button_count) {
+        surface_ptr->pressed = true;
+        _wlmtk_surface_pressed_ptr = surface_ptr;
+        surface_ptr->press_dx = element_ptr->last_pointer_motion_event.x -
+            seat_ptr->pointer_state.sx;
+        surface_ptr->press_dy = element_ptr->last_pointer_motion_event.y -
+            seat_ptr->pointer_state.sy;
+        wlmtk_container_pointer_grab(container_ptr, element_ptr);
+    } else if (WLMTK_BUTTON_UP == button_event_ptr->type &&
+               surface_ptr->pressed &&
+               0 == seat_ptr->pointer_state.button_count) {
+        surface_ptr->pressed = false;
+        _wlmtk_surface_pressed_ptr = NULL;
+        // The pointer focus is computed again, from where the pointer is.
+        wlmtk_container_pointer_grab_release(container_ptr, element_ptr);
+    }
     return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Implements @ref wlmtk_element_vmt_t::pointer_grab_cancel. */
+void _wlmtk_surface_element_pointer_grab_cancel(wlmtk_element_t *element_ptr)
+{
+    wlmtk_surface_t *surface_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmtk_surface_t, super_element);
+    surface_ptr->pressed = false;
+    if (_wlmtk_surface_pressed_ptr == surface_ptr) {
+        _wlmtk_surface_pressed_ptr = NULL;
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -683,6 +745,24 @@ void _wlmtk_surface_handle_surface_map(
     wlmtk_surface_t *surface_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmtk_surface_t, surface_map_listener);
     wlmtk_element_set_visible(wlmtk_surface_element(surface_ptr), true);
+
+    // A press opened a surface of the same client (a menu that GTK opens on
+    // the press): It may take the pointer, so a press-drag-release picks its
+    // item. A surface of another client (a notification) never does.
+    wlmtk_surface_t *pressed_ptr = _wlmtk_surface_pressed_ptr;
+    if (NULL != pressed_ptr && pressed_ptr != surface_ptr &&
+        NULL != pressed_ptr->wlr_surface_ptr &&
+        NULL != surface_ptr->wlr_surface_ptr &&
+        wl_resource_get_client(pressed_ptr->wlr_surface_ptr->resource) ==
+        wl_resource_get_client(surface_ptr->wlr_surface_ptr->resource)) {
+        wlmtk_element_t *element_ptr = wlmtk_surface_element(pressed_ptr);
+        pressed_ptr->pressed = false;
+        _wlmtk_surface_pressed_ptr = NULL;
+        if (NULL != element_ptr->parent_container_ptr) {
+            wlmtk_container_pointer_grab_release(
+                element_ptr->parent_container_ptr, element_ptr);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -718,6 +798,7 @@ void _wlmtk_surface_handle_element_pointer_leave(
 
     // Guard clause.
     if (NULL == surface_ptr->wlr_seat_ptr) return;
+    if (surface_ptr->pressed) return;
 
     // If the current surface's parent is our surface: clear it.
     struct wlr_surface *focused_wlr_surface_ptr =
@@ -766,16 +847,25 @@ void _wlmtk_surface_handle_element_pointer_motion(
         &node_x,
         &node_y);
 
-    if (NULL == wlr_scene_node_ptr ||
-        WLR_SCENE_NODE_BUFFER != wlr_scene_node_ptr->type) {
+    struct wlr_scene_surface *wlr_scene_surface_ptr = NULL;
+    if (NULL != wlr_scene_node_ptr &&
+        WLR_SCENE_NODE_BUFFER == wlr_scene_node_ptr->type) {
+        wlr_scene_surface_ptr = wlr_scene_surface_try_from_buffer(
+            wlr_scene_buffer_from_node(wlr_scene_node_ptr));
+    }
+    if (NULL == wlr_scene_surface_ptr) {
+        // Implicit grab: Beyond the surface, the (sub)surface that got the
+        // press keeps the pointer, at positions relative to it.
+        if (surface_ptr->pressed && NULL != surface_ptr->wlr_seat_ptr &&
+            NULL != surface_ptr->wlr_seat_ptr->pointer_state.focused_surface) {
+            wlr_seat_pointer_notify_motion(
+                surface_ptr->wlr_seat_ptr,
+                motion_event_ptr->time_msec,
+                motion_event_ptr->x - surface_ptr->press_dx,
+                motion_event_ptr->y - surface_ptr->press_dy);
+        }
         return;
     }
-
-    struct wlr_scene_buffer *wlr_scene_buffer_ptr =
-        wlr_scene_buffer_from_node(wlr_scene_node_ptr);
-    struct wlr_scene_surface *wlr_scene_surface_ptr =
-        wlr_scene_surface_try_from_buffer(wlr_scene_buffer_ptr);
-    if (NULL == wlr_scene_surface_ptr) return;
 
     BS_ASSERT(surface_ptr->wlr_surface_ptr ==
               wlr_surface_get_root_surface(wlr_scene_surface_ptr->surface));
