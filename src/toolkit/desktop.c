@@ -980,6 +980,7 @@ static void test_create_destroy(bs_test_t *test_ptr);
 static void test_stacking(bs_test_t *test_ptr);
 static void test_workspaces(bs_test_t *test_ptr);
 static void test_layout(bs_test_t *test_ptr);
+static void test_layout_across_layers(bs_test_t *test_ptr);
 static void test_focus_follows_pointer(bs_test_t *test_ptr);
 
 /** Test cases */
@@ -988,6 +989,7 @@ static const bs_test_case_t _wlmtk_desktop_test_cases[] = {
     { 1, "stacking", test_stacking },
     { 1, "workspaces", test_workspaces },
     { 1, "layout", test_layout },
+    { 1, "layout_across_layers", test_layout_across_layers },
     { 1, "focus_follows_pointer", test_focus_follows_pointer },
     BS_TEST_CASE_SENTINEL()
 };
@@ -1317,7 +1319,7 @@ void test_workspaces(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, NULL, l.last_data_ptr);
     BS_TEST_VERIFY_EQ(test_ptr, 0, l.calls);
 
-    test_destroy_current_last(test_ptr, desktop_ptr, wlr_output_layout_ptr);
+    test_destroy_current_last(test_ptr, desktop_ptr, c->wlr_output_layout_ptr);
 
     wlmtk_util_disconnect_test_listener(&l);
     wlmtk_desktop_destroy(desktop_ptr);
@@ -1387,6 +1389,95 @@ void test_layout(bs_test_t *test_ptr)
 
     wlr_output_layout_remove(c->wlr_output_layout_ptr, &o2);
     wlr_output_layout_remove(c->wlr_output_layout_ptr, &o1);
+    wlmtk_desktop_destroy(desktop_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * A panel spanning a full edge with an exclusive zone (a shelf) counts for the
+ * panels of every layer; usable_area_changed is signalled only on change.
+ */
+void test_layout_across_layers(bs_test_t *test_ptr)
+{
+    struct _wlmtk_desktop_test_context *c = bs_test_context(test_ptr);
+    wlmtk_desktop_t *desktop_ptr = wlmtk_desktop_create(
+        c->wlr_scene_ptr, &c->style, c->wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, desktop_ptr);
+    struct wlr_output o = { .width = 1280, .height = 800, .scale = 1 };
+    wlmtk_test_wlr_output_init(&o);
+    wlr_output_layout_add_auto(c->wlr_output_layout_ptr, &o);
+    struct wlmtk_tile_style ts = {};
+    wlmtk_workspace_t *ws_ptr = wlmtk_workspace_create(
+        c->wlr_output_layout_ptr, "name", &ts);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws_ptr);
+    wlmtk_desktop_add_workspace(desktop_ptr, ws_ptr);
+    wlmtk_util_test_listener_t l;
+    wlmtk_util_connect_test_listener(
+        &desktop_ptr->events.usable_area_changed, &l);
+    wlmtk_element_layout(wlmtk_desktop_element(desktop_ptr));
+    wlmtk_util_clear_test_listener(&l);
+
+    // A row of appicons in the bottom layer, without exclusive zone; added
+    // first. And a shelf across the bottom, in the top layer.
+    wlmtk_panel_positioning_t row_pos = {
+        .desired_width = 128, .desired_height = 64,
+        .anchor = WLR_EDGE_BOTTOM | WLR_EDGE_LEFT };
+    wlmtk_fake_panel_t *row_ptr = wlmtk_fake_panel_create(&row_pos);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, row_ptr);
+    wlmtk_element_set_visible(wlmtk_panel_element(&row_ptr->panel), true);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_layer_add_panel(
+        wlmtk_desktop_get_layer(desktop_ptr, WLMTK_DESKTOP_LAYER_BOTTOM),
+        &row_ptr->panel, &o));
+    wlmtk_panel_positioning_t shelf_pos = {
+        .desired_width = 0, .desired_height = 48, .exclusive_zone = 48,
+        .anchor = WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT };
+    wlmtk_fake_panel_t *shelf_ptr = wlmtk_fake_panel_create(&shelf_pos);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, shelf_ptr);
+    wlmtk_element_set_visible(wlmtk_panel_element(&shelf_ptr->panel), true);
+    wlmtk_layer_t *top_ptr = wlmtk_desktop_get_layer(
+        desktop_ptr, WLMTK_DESKTOP_LAYER_TOP);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_layer_add_panel(
+        top_ptr, &shelf_ptr->panel, &o));
+
+    // The row stays above the shelf. The area changed: one signal.
+    wlmtk_element_layout(wlmtk_desktop_element(desktop_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&row_ptr->panel)->x);
+    BS_TEST_VERIFY_EQ(test_ptr, 800 - 48 - 64,
+                      wlmtk_panel_element(&row_ptr->panel)->y);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, l.calls);
+    WLMTK_TEST_VERIFY_WLRBOX_EQ(
+        test_ptr, 0, 0, 1280, 800 - 48,
+        wlmtk_desktop_get_usable_area(desktop_ptr, &o));
+    wlmtk_util_clear_test_listener(&l);
+
+    // A panel without exclusive zone: same area, no signal.
+    wlmtk_panel_positioning_t p_pos = {
+        .desired_width = 32, .desired_height = 32,
+        .anchor = WLR_EDGE_TOP | WLR_EDGE_RIGHT };
+    wlmtk_fake_panel_t *p_ptr = wlmtk_fake_panel_create(&p_pos);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, p_ptr);
+    wlmtk_element_set_visible(wlmtk_panel_element(&p_ptr->panel), true);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_layer_add_panel(
+        top_ptr, &p_ptr->panel, &o));
+    wlmtk_element_layout(wlmtk_desktop_element(desktop_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, l.calls);
+
+    // The shelf goes: The row goes down, the area grows back.
+    wlmtk_layer_remove_panel(top_ptr, &shelf_ptr->panel);
+    wlmtk_element_layout(wlmtk_desktop_element(desktop_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, 800 - 64,
+                      wlmtk_panel_element(&row_ptr->panel)->y);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, l.calls);
+
+    wlmtk_util_disconnect_test_listener(&l);
+    wlmtk_fake_panel_destroy(shelf_ptr);
+    wlmtk_layer_remove_panel(top_ptr, &p_ptr->panel);
+    wlmtk_fake_panel_destroy(p_ptr);
+    wlmtk_layer_remove_panel(
+        wlmtk_desktop_get_layer(desktop_ptr, WLMTK_DESKTOP_LAYER_BOTTOM),
+        &row_ptr->panel);
+    wlmtk_fake_panel_destroy(row_ptr);
+    wlr_output_layout_remove(c->wlr_output_layout_ptr, &o);
     wlmtk_desktop_destroy(desktop_ptr);
 }
 

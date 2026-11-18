@@ -2607,6 +2607,8 @@ void test_placement_center(bs_test_t *test_ptr)
                             wlmtk_desktop_get_layer(
                                 desktop_ptr, WLMTK_DESKTOP_LAYER_TOP),
                             &fp_ptr->panel, &output));
+    // The desktop's layout (each frame) computes the usable area.
+    wlmtk_element_layout(wlmtk_desktop_element(desktop_ptr));
     WLMTK_TEST_VERIFY_WLRBOX_EQ(
         test_ptr, 100, 0, 900, 600,
         wlmtk_desktop_get_usable_area(desktop_ptr, &output));
@@ -2751,6 +2753,8 @@ void test_placement_pointer_output(bs_test_t *test_ptr)
                             wlmtk_desktop_get_layer(
                                 desktop_ptr, WLMTK_DESKTOP_LAYER_TOP),
                             &fp_ptr->panel, &o2));
+    // The desktop's layout (each frame) computes the usable area.
+    wlmtk_element_layout(wlmtk_desktop_element(desktop_ptr));
     WLMTK_TEST_VERIFY_WLRBOX_EQ(
         test_ptr, 1000, 0, 700, 600,
         wlmtk_desktop_get_usable_area(desktop_ptr, &o2));

@@ -388,7 +388,6 @@ void _wlmtk_layer_output_destroy(
 static void test_multi_output(bs_test_t *test_ptr);
 static void test_layout(bs_test_t *test_ptr);
 static void test_full_edge(bs_test_t *test_ptr);
-static void test_usable_area_signal(bs_test_t *test_ptr);
 static void test_panel_without_destroy(bs_test_t *test_ptr);
 
 /** Test cases */
@@ -396,7 +395,6 @@ static const bs_test_case_t _wlmtk_layer_test_cases[] = {
     { 1, "multi_output", test_multi_output },
     { 1, "layout", test_layout },
     { 1, "full_edge", test_full_edge },
-    { 1, "usable_area_signal", test_usable_area_signal },
     { 1, "panel_without_destroy", test_panel_without_destroy },
     BS_TEST_CASE_SENTINEL()
 };
@@ -697,9 +695,8 @@ void test_full_edge(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&clip_ptr->panel)->x);
     BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_panel_element(&clip_ptr->panel)->y);
     BS_TEST_VERIFY_EQ(test_ptr, 1216, wlmtk_panel_element(&dock_ptr->panel)->x);
-    struct wlr_box area;
-    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_layer_get_usable_area(
-                            layer_ptr, &output, &area));
+    struct wlr_box area = { .width = 1280, .height = 800 };
+    wlmtk_layer_reconfigure_output(layer_ptr, &output, &area);
     BS_TEST_VERIFY_EQ(test_ptr, 64, area.x);
     BS_TEST_VERIFY_EQ(test_ptr, 0, area.y);
     BS_TEST_VERIFY_EQ(test_ptr, 1280 - 128, area.width);
@@ -718,74 +715,6 @@ void test_full_edge(bs_test_t *test_ptr)
     wlmtk_fake_panel_destroy(dock_ptr);
     wlmtk_layer_remove_panel(layer_ptr, &clip_ptr->panel);
     wlmtk_fake_panel_destroy(clip_ptr);
-    wlmtk_layer_destroy(layer_ptr);
-    wlr_output_layout_remove(wlr_output_layout_ptr, &output);
-    wlr_output_layout_destroy(wlr_output_layout_ptr);
-    wl_display_destroy(display_ptr);
-}
-
-/* ------------------------------------------------------------------------- */
-/** Counts emissions of the usable area signal. */
-typedef struct {
-    struct wl_listener        listener;
-    int                       count;
-} _usable_area_counter_t;
-
-static void _usable_area_counter(struct wl_listener *listener_ptr,
-                                 __UNUSED__ void *data_ptr)
-{
-    BS_CONTAINER_OF(listener_ptr, _usable_area_counter_t, listener)->count++;
-}
-
-/** The signal fires when a panel with an exclusive zone comes or goes, not
- * for a panel that leaves the usable area as it was. */
-void test_usable_area_signal(bs_test_t *test_ptr)
-{
-    struct wl_display *display_ptr = wl_display_create();
-    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, display_ptr);
-    struct wlr_output_layout *wlr_output_layout_ptr =
-        wlr_output_layout_create(display_ptr);
-    struct wlr_output output = { .width = 1280, .height = 800, .scale = 1 };
-    wlmtk_test_wlr_output_init(&output);
-    wlr_output_layout_add(wlr_output_layout_ptr, &output, 0, 0);
-    wlmtk_layer_t *layer_ptr = wlmtk_layer_create(wlr_output_layout_ptr);
-    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, layer_ptr);
-    struct wl_signal signal;
-    wl_signal_init(&signal);
-    _usable_area_counter_t counter = { .count = 0 };
-    counter.listener.notify = _usable_area_counter;
-    wl_signal_add(&signal, &counter.listener);
-    wlmtk_layer_set_usable_area_signal(layer_ptr, &signal);
-
-    // A Dock: exclusive on the right. Changes the area: one emission.
-    wlmtk_panel_positioning_t dock_pos = {
-        .desired_width = 64, .desired_height = 64, .exclusive_zone = 64,
-        .anchor = WLR_EDGE_RIGHT | WLR_EDGE_TOP,
-        .exclusive_edge = WLR_EDGE_RIGHT };
-    wlmtk_fake_panel_t *dock_ptr = wlmtk_fake_panel_create(&dock_pos);
-    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dock_ptr);
-    wlmtk_element_set_visible(wlmtk_panel_element(&dock_ptr->panel), true);
-    wlmtk_layer_add_panel(layer_ptr, &dock_ptr->panel, &output);
-    BS_TEST_VERIFY_EQ(test_ptr, 1, counter.count);
-
-    // A panel without exclusive zone: same area, no emission.
-    wlmtk_panel_positioning_t pos = dock_pos;
-    pos.exclusive_zone = 0;
-    pos.anchor = WLR_EDGE_LEFT | WLR_EDGE_BOTTOM;
-    wlmtk_fake_panel_t *p_ptr = wlmtk_fake_panel_create(&pos);
-    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, p_ptr);
-    wlmtk_element_set_visible(wlmtk_panel_element(&p_ptr->panel), true);
-    wlmtk_layer_add_panel(layer_ptr, &p_ptr->panel, &output);
-    BS_TEST_VERIFY_EQ(test_ptr, 1, counter.count);
-
-    // The Dock goes away: the area grows back.
-    wlmtk_layer_remove_panel(layer_ptr, &dock_ptr->panel);
-    BS_TEST_VERIFY_EQ(test_ptr, 2, counter.count);
-
-    wlmtk_layer_remove_panel(layer_ptr, &p_ptr->panel);
-    wlmtk_fake_panel_destroy(p_ptr);
-    wlmtk_fake_panel_destroy(dock_ptr);
-    wl_list_remove(&counter.listener.link);
     wlmtk_layer_destroy(layer_ptr);
     wlr_output_layout_remove(wlr_output_layout_ptr, &output);
     wlr_output_layout_destroy(wlr_output_layout_ptr);
