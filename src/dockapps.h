@@ -23,6 +23,7 @@
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "toolkit/toolkit.h"
 
@@ -30,6 +31,12 @@ struct wl_client;
 
 /** Forward declaration: Placement of dock-apps in a dock (the Clip). */
 typedef struct _wlmaker_dockapps_t wlmaker_dockapps_t;
+
+/**
+ * Number of launchers before a dock-app that goes after all of them: The
+ * default, as before dock-apps and launchers could be mixed.
+ */
+#define WLMAKER_DOCKAPPS_AFTER_ALL SIZE_MAX
 
 #ifdef __cplusplus
 extern "C" {
@@ -224,6 +231,76 @@ bool wlmaker_dockapps_set_removed(
 bool wlmaker_dockapps_is_removed(
     const char *fname_ptr,
     const char *name_ptr);
+
+/**
+ * Sets the callback for changes of the placement: Dock-apps added, removed,
+ * moved, or their place among the launchers changed. Eg. for the Clip, to
+ * arrange the dock-apps among its launchers.
+ */
+void wlmaker_dockapps_set_changed_callback(
+    wlmaker_dockapps_t *dockapps_ptr,
+    void (*changed)(void *ud_ptr),
+    void *ud_ptr);
+
+/**
+ * Dock-apps and the dock's launchers share one column, in one order: Each
+ * dock-app goes after a number of the launchers. Like Window Maker's Dock,
+ * where any icon can be in any slot.
+ *
+ * @return The number of launchers before the dock-app of `tile_ptr`, as
+ *     stored; or @ref WLMAKER_DOCKAPPS_AFTER_ALL.
+ */
+size_t wlmaker_dockapps_after_launchers(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr);
+
+/**
+ * Sets the number of launchers before the dock-app of `tile_ptr`, and
+ * stores it with the order (key `AfterLaunchers` of the state file). Only
+ * for named dock-apps.
+ */
+void wlmaker_dockapps_set_after_launchers(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t launchers);
+
+/**
+ * A launcher was inserted at `index` of the dock's launchers: The dock-apps
+ * after more than `index` launchers stay after the same ones. Those right
+ * before the inserted one stay before it.
+ */
+void wlmaker_dockapps_launcher_inserted(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t index);
+
+/**
+ * Launcher `index` of the dock was removed: The dock-apps after it stay
+ * after the same launchers.
+ */
+void wlmaker_dockapps_launcher_removed(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t index);
+
+/**
+ * Stores the number of launchers before each placed dock-app as it is now,
+ * among `launchers` launchers: Also for those that go after all of them, so
+ * that they stay there when launchers are added after them.
+ */
+void wlmaker_dockapps_freeze_after(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t launchers);
+
+/**
+ * Computes where the placed dock-apps are in the column shared with
+ * `launchers` launchers: Each after its number of launchers (at most all,
+ * and not before the one placed before it).
+ *
+ * @return Bit `p` is set if position `p` (0 is the first after the dock's
+ *     own tile) holds a dock-app. Positions from 64 on are not included.
+ */
+uint64_t wlmaker_dockapps_positions(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t launchers);
 
 /** Unit test cases. */
 extern const bs_test_set_t wlmaker_dockapps_test_set;

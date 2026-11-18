@@ -93,6 +93,14 @@ struct _wlmim_t {
     /** The compositor's root wrapper. */
     wlmtk_root_t              *root_ptr;
 
+    /** Optional filter for axis events, eg. for wheel bindings. */
+    wlmim_axis_filter_t       axis_filter;
+    /** Argument to @ref wlmim_t::axis_filter. */
+    void                      *axis_filter_ud_ptr;
+    /** Optional filter for button events, eg. to select a window. */
+    wlmim_button_filter_t     button_filter;
+    /** Argument to @ref wlmim_t::button_filter. */
+    void                      *button_filter_ud_ptr;
 };
 
 /** Wraps an input device. */
@@ -349,9 +357,102 @@ bool wlmim_set_style(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmim_set_button_filter(
+    wlmim_t *input_manager_ptr,
+    wlmim_button_filter_t filter,
+    void *ud_ptr)
+{
+    input_manager_ptr->button_filter = filter;
+    input_manager_ptr->button_filter_ud_ptr = ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_filter_button(
+    wlmim_t *input_manager_ptr,
+    const struct wlr_pointer_button_event *wlr_pointer_button_event_ptr,
+    uint32_t modifiers)
+{
+    if (NULL == input_manager_ptr->button_filter) return false;
+    return input_manager_ptr->button_filter(
+        input_manager_ptr->button_filter_ud_ptr,
+        wlr_pointer_button_event_ptr,
+        modifiers);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_set_cursor_magnification(
+    wlmim_t *input_manager_ptr,
+    double magnification,
+    double max_magnification)
+{
+    if (NULL == input_manager_ptr->cursor_ptr) return;
+    wlmim_cursor_set_magnification(
+        input_manager_ptr->cursor_ptr, magnification, max_magnification);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_set_cursor_override(
+    wlmim_t *input_manager_ptr,
+    struct wlr_buffer *wlr_buffer_ptr,
+    int32_t hotspot_x,
+    int32_t hotspot_y,
+    float scale)
+{
+    if (NULL == input_manager_ptr->cursor_ptr) return;
+    wlmim_cursor_set_override(
+        input_manager_ptr->cursor_ptr, wlr_buffer_ptr,
+        hotspot_x, hotspot_y, scale);
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_buffer *wlmim_create_cursor_buffer(
+    wlmim_t *input_manager_ptr,
+    const char *theme_name_ptr,
+    const char *const *names_ptr,
+    int32_t *hotspot_x_ptr,
+    int32_t *hotspot_y_ptr,
+    float *scale_ptr)
+{
+    if (NULL == input_manager_ptr->cursor_ptr) return NULL;
+    return wlmim_cursor_create_xcursor_buffer(
+        input_manager_ptr->cursor_ptr, theme_name_ptr, names_ptr,
+        hotspot_x_ptr, hotspot_y_ptr, scale_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_cursor_visible(wlmim_t *input_manager_ptr)
+{
+    if (NULL == input_manager_ptr->cursor_ptr) return false;
+    return wlmim_cursor_image_visible(input_manager_ptr->cursor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 struct wlr_cursor *wlmim_wlr_cursor(wlmim_t *input_manager_ptr)
 {
     return wlmim_cursor_wlr_cursor(input_manager_ptr->cursor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_set_axis_filter(
+    wlmim_t *input_manager_ptr,
+    wlmim_axis_filter_t filter,
+    void *ud_ptr)
+{
+    input_manager_ptr->axis_filter = filter;
+    input_manager_ptr->axis_filter_ud_ptr = ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_filter_axis(
+    wlmim_t *input_manager_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers)
+{
+    if (NULL == input_manager_ptr->axis_filter) return false;
+    return input_manager_ptr->axis_filter(
+        input_manager_ptr->axis_filter_ud_ptr,
+        wlr_pointer_axis_event_ptr,
+        modifiers);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -508,6 +609,12 @@ void wlmim_set_key_grab(
 {
     im_ptr->key_grab_callback = callback;
     im_ptr->key_grab_ud_ptr = ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_has_key_grab(wlmim_t *im_ptr)
+{
+    return NULL != im_ptr->key_grab_callback;
 }
 
 /* ------------------------------------------------------------------------- */

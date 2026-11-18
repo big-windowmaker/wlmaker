@@ -27,6 +27,7 @@
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <libgen.h>
+#include <libintl.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,11 @@
 #include <sys/stat.h>
 
 #include "item.h"
+
+/** Marks a text for translation, translated later through @ref WLMTOOL_I18N. */
+#define N_(text) (text)
+/** Translates a text of the menu, in wlmaker's gettext domain. */
+#define WLMTOOL_I18N(text) dgettext("wlmaker", (text))
 
 /* == Declarations ========================================================= */
 
@@ -84,32 +90,30 @@ struct _wlmtool_menu_add_desktop_file_arg {
 static const char* _wlmtool_action_load_theme_from_file = "ThemeLoadFromFile";
 
 /** Recognized categories. */
-// TODO(kaeser@gubbe.ch): Internationalize this.
 static const struct _category_translation _wlmtool_menu_category_table[] = {
-    { "AudioVideo", "Audio & Video" },
-    { "Video", "Video" },
-    { "Development", "Development" },
-    { "Education", "Education" },
-    { "Game", "Game" },
-    { "Graphics", "Graphics" },
-    { "Network", "Network" },
-    { "Office", "Office" },
-    { "Science", "Science" },
-    { "Settings", "Settings" },
-    { "System", "System" },
-    { "Utility", "Utility" },
+    { "AudioVideo", N_("Audio & Video") },
+    { "Video", N_("Video") },
+    { "Development", N_("Development") },
+    { "Education", N_("Education") },
+    { "Game", N_("Game") },
+    { "Graphics", N_("Graphics") },
+    { "Network", N_("Network") },
+    { "Office", N_("Office") },
+    { "Science", N_("Science") },
+    { "Settings", N_("Settings") },
+    { "System", N_("System") },
+    { "Utility", N_("Utility") },
 
     // Reserved categories.
-    { "Screensaver", "Screensaver" },
-    { "TrayIcon", "Tray Icon" },
-    { "Applet", "Applet" },
-    { "Shell", "Shell" },
+    { "Screensaver", N_("Screensaver") },
+    { "TrayIcon", N_("Tray Icon") },
+    { "Applet", N_("Applet") },
+    { "Shell", N_("Shell") },
     { NULL, NULL },
 };
 
 /** Category to use for any entry that is not categorized. */
-// TODO(kaeser@gubbe.ch): Internationalize.
-static const char *_wlmtool_menu_category_other_ptr = "Other";
+static const char *_wlmtool_menu_category_other_ptr = N_("Other");
 
 /** Command to use for terminal. */
 // TODO(kaeser@gubbe.ch): This should be configurable.
@@ -120,12 +124,13 @@ static const char *_wlmtool_menu_terminal_command = "/usr/bin/foot";
 /* ------------------------------------------------------------------------- */
 bspl_array_t *wlmtool_menu_generate_appearance(const char *path_ptr)
 {
-    struct wlmtool_menu *root_menu_ptr = wlmtool_menu_create("Appearance");
+    struct wlmtool_menu *root_menu_ptr = wlmtool_menu_create(
+        WLMTOOL_I18N("Appearance"));
     if (NULL == root_menu_ptr) return NULL;
 
     struct wlmtool_menu *menu_ptr = NULL;
     menu_ptr = wlmtool_menu_get_or_create_submenu(
-        root_menu_ptr, "System Themes");
+        root_menu_ptr, WLMTOOL_I18N("System Themes"));
     if (NULL == menu_ptr) {
         wlmtool_item_destroy(wlmtool_item_from_menu(root_menu_ptr));
         return NULL;
@@ -161,7 +166,7 @@ bspl_array_t *wlmtool_menu_generate_appearance(const char *path_ptr)
         }
 
         menu_ptr = wlmtool_menu_get_or_create_submenu(
-            root_menu_ptr, "User Themes");
+            root_menu_ptr, WLMTOOL_I18N("User Themes"));
         char *p = bs_strdupf("%s/%s", xdgDataHome(&xdg_handle), "wlmaker/Themes");
         if (NULL == p) {
             wlmtool_item_destroy(wlmtool_item_from_menu(root_menu_ptr));
@@ -175,7 +180,7 @@ bspl_array_t *wlmtool_menu_generate_appearance(const char *path_ptr)
         }
 
         menu_ptr = wlmtool_menu_get_or_create_submenu(
-            root_menu_ptr, "User Themes");
+            root_menu_ptr, WLMTOOL_I18N("User Themes"));
         p = bs_strdupf("%s/%s", xdgConfigHome(&xdg_handle), "wlmaker/Themes");
         if (NULL == p) {
             wlmtool_item_destroy(wlmtool_item_from_menu(root_menu_ptr));
@@ -203,7 +208,8 @@ bspl_array_t *wlmtool_menu_generate_applications(
     const char *path_ptr,
     const char *locale_ptr)
 {
-    struct wlmtool_menu *menu_ptr = wlmtool_menu_create("Applications");
+    struct wlmtool_menu *menu_ptr = wlmtool_menu_create(
+        WLMTOOL_I18N("Applications"));
     if (NULL == menu_ptr) return NULL;
 
     if (NULL != path_ptr) {
@@ -434,12 +440,12 @@ const char *_wlmtool_menu_category_from_entry(
                  ct->desktop_category_ptr != NULL;
                  ++ct) {
                 if (0 == strcmp(*c, ct->desktop_category_ptr)) {
-                    return ct->menu_category_ptr;
+                    return WLMTOOL_I18N(ct->menu_category_ptr);
                 }
             }
         }
     }
-    return _wlmtool_menu_category_other_ptr;
+    return WLMTOOL_I18N(_wlmtool_menu_category_other_ptr);
 }
 
 /* == Unit Tests =========================================================== */

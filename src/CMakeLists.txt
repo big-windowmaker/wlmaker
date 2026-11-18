@@ -54,6 +54,7 @@ set(public_header_files
   dnd.h
   drawer.h
   dock_fx.h
+  appicons.h
   dock_launchers.h
   dock_menu.h
   app_icon.h
@@ -95,6 +96,7 @@ target_sources(wlmaker_lib PRIVATE
   dnd.c
   drawer.c
   dock_fx.c
+  appicons.c
   dock_launchers.c
   dock_menu.c
   app_icon.c
@@ -104,10 +106,12 @@ target_sources(wlmaker_lib PRIVATE
   i18n.c
   dockapps.c
   icon_manager.c
+  force_close.c
   idle.c
   input_observation.c
   layer_panel.c
   layer_shell.c
+  locate_pointer.c
   lock_mgr.c
   menu_scroll.c
   root_menu.c
@@ -183,6 +187,12 @@ target_compile_definitions(
   wlmaker_lib PRIVATE "WLMAKER_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
 target_compile_definitions(
   wlmaker_lib PRIVATE "WLMAKER_BINARY_DIR=\"${PROJECT_BINARY_DIR}\"")
+# Where the gettext catalogs (wlmaker.mo) are installed. See po/.
+target_compile_definitions(
+  wlmaker_lib PRIVATE
+  "WLMAKER_LOCALEDIR=\"${CMAKE_INSTALL_FULL_LOCALEDIR}\"")
+target_include_directories(wlmaker_lib PRIVATE ${Intl_INCLUDE_DIRS})
+target_link_libraries(wlmaker_lib ${Intl_LIBRARIES})
 if(wmmenugen_executable)
   target_compile_definitions(
     wlmaker_lib PRIVATE "WLMAKER_WMMENUGEN_PATH=\"${wmmenugen_executable}\"")

@@ -26,25 +26,42 @@
 extern "C" {
 #endif  // __cplusplus
 
+/** The gettext domain of wlmaker: Its catalogs are `wlmaker.mo`. */
+#define WLMAKER_I18N_DOMAIN "wlmaker"
+
+/**
+ * Marks a text for translation without translating it, eg. in a table of
+ * constants. Translate it later through @ref wlmaker_i18n. `xgettext` knows
+ * the keyword (see po/update-pot.sh).
+ */
+#define N_(text) (text)
+
+/**
+ * Sets up gettext for the program: The locale from the environment, except
+ * for `LC_NUMERIC`, which stays "C" (the plist parser and wlroots read and
+ * write numbers with a dot), and the catalogs of @ref WLMAKER_I18N_DOMAIN in
+ * the locale directory (`WLMAKER_LOCALEDIR` from the environment, or the
+ * install's `share/locale`). Translations come out in UTF-8.
+ *
+ * Call it once, at the start of `main()`.
+ */
+void wlmaker_i18n_init(void);
+
 /**
  * Translates a text of the user interface (eg. a menu item) into the
- * language of the user's locale: The first of `LANGUAGE`, `LC_ALL`,
- * `LC_MESSAGES` and `LANG` that is set. A small built-in table, for the
- * items of the Dock's, Clip's and dock-apps' menus.
+ * language of the user's locale, from the gettext catalog of the domain
+ * @ref WLMAKER_I18N_DOMAIN: `dgettext("wlmaker", text_ptr)`.
+ *
+ * Without a catalog for the locale, or without a translation in it, this
+ * returns the text in English. `xgettext` extracts the literal arguments of
+ * this function (`--keyword=wlmaker_i18n`).
  *
  * @param text_ptr            The text, in English.
  *
  * @return The translation, or `text_ptr` if there is none.
  */
-const char *wlmaker_i18n(const char *text_ptr);
-
-/**
- * Sets the locale to translate to, instead of the one from the environment.
- * For tests.
- *
- * @param locale_ptr          Eg. "pt_BR.UTF-8". NULL to use the environment.
- */
-void wlmaker_i18n_set_locale(const char *locale_ptr);
+const char *wlmaker_i18n(const char *text_ptr)
+    __attribute__((format_arg(1)));
 
 /** Unit test cases. */
 extern const bs_test_set_t wlmaker_i18n_test_set;

@@ -20,220 +20,62 @@
 
 #include "i18n.h"
 
-#include <stdbool.h>
+#include <libintl.h>
+#include <locale.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* == Declarations ========================================================= */
 
-/** A translation. */
-typedef struct {
-    /** Text in English. */
-    const char                *text_ptr;
-    /** Translated text. */
-    const char                *translation_ptr;
-} wlmaker_i18n_entry_t;
+#ifndef WLMAKER_LOCALEDIR
+/** Where the catalogs are installed. Set by CMake. */
+#define WLMAKER_LOCALEDIR "/usr/share/locale"
+#endif  // WLMAKER_LOCALEDIR
 
-/** Translations to Brazilian Portuguese (pt_BR). */
-static const wlmaker_i18n_entry_t _wlmaker_i18n_pt_br[] = {
-    { "Next Workspace", "Próxima área" },
-    { "Previous Workspace", "Área anterior" },
-    { "New Workspace", "Nova área de trabalho" },
-    { "Destroy Last Workspace", "Destruir última área" },
-    { "Move Up", "Mover para cima" },
-    { "Move Down", "Mover para baixo" },
-    { "Move Left", "Mover para a esquerda" },
-    { "Move Right", "Mover para a direita" },
-    { "Move to Left Side", "Mover para o lado esquerdo" },
-    { "Move to Right Side", "Mover para o lado direito" },
-    { "Move to Top", "Mover para o topo" },
-    { "Move to Bottom", "Mover para a base" },
-    { "Launch", "Executar" },
-    { "Kill", "Terminar" },
-    { "Remove", "Remover" },
-    // Window Maker's menu of docked icons, as its Portuguese catalog (pt.po)
-    // has them. "Normal", "Auto raise & lower", "Add a drawer" and
-    // "Autoraise" are untranslated there, and stay so. "Dock position" as
-    // the Brazilian catalog (pt_BR.po) has it: The X11 session shows that.
-    { "Dock position", "Posição do Dock" },
-    { "Bring Here", "Trazer aqui" },
-    { "Unhide Here", "Mostrar Aqui" },
-    { "Hide", "Esconder" },
-    { "Unhide", "Mostrar" },
-    { "Settings...", "Configurações..." },
-    { "Keep on Top", "Manter sobre outros" },
-    { "Clip Options", "Opções do Clip" },
-    { "Remove Icon", "Remover Ícone" },
-    { "Kill Application", "Terminar Aplicação" },
-    { " will be forcibly closed.\nAny unsaved changes will be lost.\n"
-      "Please confirm.",
-      " será fechado à força.\nQualquer mudança não salva será perdida.\n"
-      "Confirme, por favor." },
-    { "Yes", "Sim" },
-    { "No", "Não" },
-    // Window Maker's drawers: "Drawer options", "Autocollapse", "Remove
-    // drawer", "Drawer" and its message are untranslated there, and stay so.
-    { "Collapsed", "Minimizado" },
-    { "OK", "Ok" },
-    { "Cancel", "Cancelar" },
-    { "Restore Default Launchers", "Restaurar lançadores padrão" },
-    { "Dock-app", "Dockapp" },
-    { "Workspace", "Área" },
-    { "Preferences", "Preferências" },
-    { "Theme", "Tema" },
-    { "Default Colors", "Cores padrão" },
-    { "Green LCD (Classic)", "LCD verde (clássico)" },
-    { "Amber", "Âmbar" },
-    { "Blue", "Azul" },
-    { "NeXT Grey", "Cinza NeXT" },
-    { "High Contrast", "Alto contraste" },
-    { "Every Half Second", "A cada meio segundo" },
-    { "Every Second", "A cada segundo" },
-    { "Every 2 Seconds", "A cada 2 segundos" },
-    { "Every 5 Seconds", "A cada 5 segundos" },
-    { "Filled", "Preenchido" },
-    { "Line Only", "Só a linha" },
-    { "Nothing", "Nada" },
-    { "Task Manager", "Gerenciador de tarefas" },
-    { "System Monitor", "Monitor do sistema" },
-    { "htop in a Terminal", "htop no terminal" },
-    { "Open Calendar", "Abrir calendário" },
-    { "Zones On / Off", "Zonas: ligar / desligar" },
-    { "Auto Tiling On / Off", "Mosaico automático: ligar / desligar" },
-    { "Next Layout", "Próximo layout" },
-    { "Edit Zones...", "Editar zonas..." },
-    { "Window Organization Preferences...", "Preferências da organização de janelas..." },
-    { "Mode: Zones", "Modo: Zonas" },
-    { "Mode: Tiling", "Modo: Mosaico" },
-    { "Mode: Off", "Modo: Desligado" },
-    { "Previous Layout", "Layout anterior" },
-    { "Undo", "Desfazer" },
-    { "Redo", "Refazer" },
-    { "Restore All Arranged Windows", "Restaurar as janelas organizadas" },
-    { "Arrange the Desktop", "Organizar a área de trabalho" },
-    { "Shortcuts...", "Atalhos..." },
-    { "Application Rules...", "Regras por aplicativo..." },
-    { "Monitors...", "Monitores..." },
-    { "About wmake-zones", "Sobre o wmake-zones" },
-    { "Icon Style", "Estilo dos ícones" },
-    { "Automatic", "Automático" },
-    { "Prefer Symbolic", "Preferir simbólicos" },
-    { "Monochrome", "Monocromático" },
-    { "Original Colors", "Cores originais" },
-    { "Clock Style", "Estilo do relógio" },
-    { "Analog", "Analógico" },
-    { "12-Hour Clock (AM/PM)", "Relógio de 12 horas (AM/PM)" },
-    { "Show Seconds", "Mostrar segundos" },
-    { "Blinking Colon", "Dois-pontos piscando" },
-    { "Calendar Style", "Estilo do calendário" },
-    { "Paper Sheet", "Folha de papel" },
-    { "Digital Display", "Visor digital" },
-    { "Show the Year", "Mostrar o ano" },
-    { "Time Zone", "Fuso horário" },
-    { "Local Time", "Hora local" },
-    { "Lisbon", "Lisboa" },
-    { "London", "Londres" },
-    { "New York", "Nova York" },
-    { "Tokyo", "Tóquio" },
-    { "On Click", "Ao clicar" },
-    { "GNOME Calendar", "Calendário do GNOME" },
-    { "Thunderbird Calendar", "Calendário do Thunderbird" },
-    { "Calendar in a Terminal", "Calendário no terminal" },
-    { "Open Task Manager", "Abrir gerenciador de tarefas" },
-    { "Show", "Mostrar" },
-    { "Small Icons", "Ícones pequenos" },
-    { "Each Core", "Cada núcleo" },
-    { "Total Usage", "Uso total" },
-    { "Graph Style", "Estilo do gráfico" },
-    { "Show Percentage", "Mostrar porcentagem" },
-    { "Update", "Atualizar" },
-    { "Show Usage", "Mostrar uso" },
-    { "Units", "Unidades" },
-    { "Percent", "Porcentagem" },
-    { "Show Swap", "Mostrar swap" },
-    { "Open Network Settings", "Abrir configurações de rede" },
-    { "All Interfaces", "Todas as interfaces" },
-    { "Show Text", "Mostrar texto" },
-    { "Text", "Texto" },
-    { "Graph Scale", "Escala do gráfico" },
-    { "Download / Upload", "Download / upload" },
-    { "Bytes per Second", "Bytes por segundo" },
-    { "Bits per Second", "Bits por segundo" },
-    { "Network Connections", "Conexões de rede" },
-    { "Network Information", "Informações de rede" },
-    { "nmtui in a Terminal", "nmtui no terminal" },
-    { "Mute / Unmute", "Silenciar / reativar som" },
-    { "Open Volume Control", "Abrir controle de volume" },
-    { "Click Mutes", "Clique silencia" },
-    { "Wheel Changes Volume", "Roda muda o volume" },
-    { "Volume Step", "Passo do volume" },
-    { "Maximum Volume", "Volume máximo" },
-    { "Volume Control", "Controle de volume" },
-    { "PulseAudio Volume Control", "Controle de volume do PulseAudio" },
-    { "PulseAudio Volume Control (Qt)", "Controle de volume do PulseAudio (Qt)" },
-    { "PipeWire Volume Control", "Controle de volume do PipeWire" },
-    // wmake-zones: names of the built-in layouts (as wmake-zones translates
-    // them) and the texts of the zones overlay.
-    { "Halves", "Metades" },
-    { "Quarters", "Quadrantes" },
-    { "Three columns", "Três colunas" },
-    { "Main + stack", "Principal + pilha" },
-    { "Two top + one bottom", "Duas em cima + uma embaixo" },
-    { "One top + two bottom", "Uma em cima + duas embaixo" },
-    { "Grid 2x3", "Grade 2×3" },
-    { "Grid 3x3", "Grade 3×3" },
-    { "Main 70/30", "Principal 70/30" },
-    { "Ultrawide", "Ultrawide" },
-    { "Ultrawide: four columns", "Ultrawide: quatro colunas" },
-    { "Development", "Desenvolvimento" },
-    { "Small screen 60/40", "Tela pequena 60/40" },
-    { "Portrait: halves", "Retrato: metades" },
-    { "Portrait: three rows", "Retrato: três linhas" },
-    { "Window layout: choose a layout, then a zone",
-      "Organização de janelas: escolha o layout, depois a zona" },
-    { "1-9 or arrows to choose \xc2\xb7 Enter snaps \xc2\xb7 "
-      "Tab changes the layout \xc2\xb7 Esc cancels",
-      "1\xe2\x80\x93" "9 ou setas para escolher \xc2\xb7 Enter encaixa \xc2\xb7 "
-      "Tab troca o layout \xc2\xb7 Esc cancela" },
-    { NULL, NULL }
-};
-
-/** Locale set by @ref wlmaker_i18n_set_locale. */
-static const char *_wlmaker_i18n_locale_ptr = NULL;
+static void _wlmaker_i18n_bind(const char *localedir_ptr);
 
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
-const char *wlmaker_i18n(const char *text_ptr)
+void wlmaker_i18n_init(void)
 {
-    const char *locale_ptr = _wlmaker_i18n_locale_ptr;
-    // Like gettext: LANGUAGE (a list, the first counts here), then the
-    // locale categories.
-    static const char *vars[] = { "LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG" };
-    for (size_t i = 0; NULL == locale_ptr && i < sizeof(vars) / sizeof(vars[0]);
-         ++i) {
-        const char *v = getenv(vars[i]);
-        if (NULL != v && '\0' != *v) locale_ptr = v;
+    // All categories from the environment, as any program. If the locale is
+    // not available (eg. not generated), glibc keeps "C": English.
+    if (NULL == setlocale(LC_ALL, "")) {
+        bs_log(BS_WARNING, "Locale from the environment is not available, "
+               "using \"C\" (texts in English).");
     }
-    if (NULL == locale_ptr) return text_ptr;
+    // Numbers stay with a dot: The plist parser (strtod), the configuration
+    // files we write, and wlroots expect that.
+    setlocale(LC_NUMERIC, "C");
 
-    // Portuguese: pt_BR, and pt (without a better match).
-    if (0 != strncmp(locale_ptr, "pt", 2) ||
-        (locale_ptr[2] != '\0' && locale_ptr[2] != '_' &&
-         locale_ptr[2] != '.' && locale_ptr[2] != ':' &&
-         locale_ptr[2] != '@')) return text_ptr;
-
-    for (const wlmaker_i18n_entry_t *e = _wlmaker_i18n_pt_br;
-         NULL != e->text_ptr; ++e) {
-        if (0 == strcmp(e->text_ptr, text_ptr)) return e->translation_ptr;
-    }
-    return text_ptr;
+    const char *dir_ptr = getenv("WLMAKER_LOCALEDIR");
+    if (NULL == dir_ptr || '\0' == *dir_ptr) dir_ptr = WLMAKER_LOCALEDIR;
+    _wlmaker_i18n_bind(dir_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
-void wlmaker_i18n_set_locale(const char *locale_ptr)
+const char *wlmaker_i18n(const char *text_ptr)
 {
-    _wlmaker_i18n_locale_ptr = locale_ptr;
+    // The empty msgid would return the catalog's header.
+    if (NULL == text_ptr || '\0' == *text_ptr) return text_ptr;
+    return dgettext(WLMAKER_I18N_DOMAIN, text_ptr);
+}
+
+/* == Local (static) methods =============================================== */
+
+/* ------------------------------------------------------------------------- */
+/** Binds the domain to `localedir_ptr`, with translations in UTF-8. */
+void _wlmaker_i18n_bind(const char *localedir_ptr)
+{
+    if (NULL == bindtextdomain(WLMAKER_I18N_DOMAIN, localedir_ptr) ||
+        NULL == bind_textdomain_codeset(WLMAKER_I18N_DOMAIN, "UTF-8")) {
+        bs_log(BS_WARNING | BS_ERRNO, "Failed bindtextdomain(\"%s\", \"%s\")",
+               WLMAKER_I18N_DOMAIN, localedir_ptr);
+    }
+    // Also the default domain, for gettext() in code shared with others.
+    textdomain(WLMAKER_I18N_DOMAIN);
 }
 
 /* == Unit tests =========================================================== */
@@ -250,40 +92,79 @@ const bs_test_set_t wlmaker_i18n_test_set = BS_TEST_SET(
     true, "i18n", _wlmaker_i18n_test_cases);
 
 /* ------------------------------------------------------------------------- */
-/** Translates for pt_BR, keeps English otherwise. */
+/**
+ * Translates through the catalog compiled into the build tree (po/locale),
+ * and falls back to English without a catalog for the language, or without
+ * any catalog at all.
+ */
 void test_translate(bs_test_t *test_ptr)
 {
-    wlmaker_i18n_set_locale("pt_BR.UTF-8");
-    BS_TEST_VERIFY_STREQ(test_ptr, "Mover para cima", wlmaker_i18n("Move Up"));
-    BS_TEST_VERIFY_STREQ(test_ptr, "Restaurar lançadores padrão",
-                         wlmaker_i18n("Restore Default Launchers"));
-    BS_TEST_VERIFY_STREQ(test_ptr, "Unknown", wlmaker_i18n("Unknown"));
-    BS_TEST_VERIFY_STREQ(test_ptr, "Preferências", wlmaker_i18n("Preferences"));
-    BS_TEST_VERIFY_STREQ(test_ptr, "Mostrar segundos",
-                         wlmaker_i18n("Show Seconds"));
+#if defined(WLMAKER_BINARY_DIR)
+    char *old_locale_ptr = logged_strdup(setlocale(LC_ALL, NULL));
+    // gettext ignores LANGUAGE in the "C" locales (also C.UTF-8): The
+    // messages' locale must be a real one. Any generated one does, LANGUAGE
+    // picks the catalog. Preferably not a Portuguese one: gettext falls back
+    // from LANGUAGE to it.
+    static const char *locales[] = {
+        "en_US.UTF-8", "en_GB.UTF-8", "de_DE.UTF-8", "es_ES.UTF-8",
+        "fr_FR.UTF-8", "pt_BR.UTF-8", NULL };
+    const char *locale_ptr = NULL;
+    for (const char **l = locales; NULL == locale_ptr && NULL != *l; ++l) {
+        bs_test_setenv(test_ptr, "LC_ALL", "%s", *l);
+        if (NULL != setlocale(LC_ALL, "")) locale_ptr = *l;
+    }
+    bs_test_setenv(test_ptr, "LANGUAGE", "%s", "pt_BR");
+    if (NULL == locale_ptr) {
+        // Without any: The fallback to English can still be verified.
+        bs_log(BS_WARNING, "No UTF-8 locale generated: Not verifying the "
+               "translation, only the fallback to English.");
+        bs_test_setenv(test_ptr, "LC_ALL", "%s", "C.UTF-8");
+        setlocale(LC_ALL, "");
+    }
+    _wlmaker_i18n_bind(WLMAKER_BINARY_DIR "/po/locale");
 
-    wlmaker_i18n_set_locale("pt");
-    BS_TEST_VERIFY_STREQ(test_ptr, "Executar", wlmaker_i18n("Launch"));
-    BS_TEST_VERIFY_STREQ(test_ptr, "Trazer aqui", wlmaker_i18n("Bring Here"));
-    BS_TEST_VERIFY_STREQ(test_ptr, "Posição do Dock",
-                         wlmaker_i18n("Dock position"));
-    BS_TEST_VERIFY_STREQ(test_ptr, "Add a drawer",
-                         wlmaker_i18n("Add a drawer"));
+    // Through variables: xgettext must not pick these up.
+    const char *close_ptr = "Close", *unknown_ptr = "No such text, really";
+    if (NULL != locale_ptr) {
+        BS_TEST_VERIFY_STREQ(test_ptr, "Fechar", wlmaker_i18n(close_ptr));
+    }
+    BS_TEST_VERIFY_STREQ(test_ptr, unknown_ptr, wlmaker_i18n(unknown_ptr));
+    BS_TEST_VERIFY_STREQ(test_ptr, "", wlmaker_i18n(""));
 
-    wlmaker_i18n_set_locale("en_US.UTF-8");
-    BS_TEST_VERIFY_STREQ(test_ptr, "Move Up", wlmaker_i18n("Move Up"));
-    wlmaker_i18n_set_locale("ptx");
-    BS_TEST_VERIFY_STREQ(test_ptr, "Move Up", wlmaker_i18n("Move Up"));
+    // A language without a catalog: English. (setlocale() again: glibc
+    // caches translations by locale, and re-reads LANGUAGE only then.)
+    bs_test_setenv(test_ptr, "LANGUAGE", "%s", "es_ES");
+    setlocale(LC_ALL, "");
+    if (NULL == locale_ptr || 0 != strncmp(locale_ptr, "pt", 2)) {
+        BS_TEST_VERIFY_STREQ(test_ptr, close_ptr, wlmaker_i18n(close_ptr));
+    }
 
-    // From the environment.
-    wlmaker_i18n_set_locale(NULL);
-    bs_test_setenv(test_ptr, "LANGUAGE", "%s", "");
-    bs_test_setenv(test_ptr, "LC_ALL", "%s", "");
-    bs_test_setenv(test_ptr, "LC_MESSAGES", "pt_BR.UTF-8");
-    bs_test_setenv(test_ptr, "LANG", "en_US.UTF-8");
-    BS_TEST_VERIFY_STREQ(test_ptr, "Terminar", wlmaker_i18n("Kill"));
-    bs_test_setenv(test_ptr, "LC_ALL", "C");
-    BS_TEST_VERIFY_STREQ(test_ptr, "Kill", wlmaker_i18n("Kill"));
+    // No catalog at all: English.
+    bs_test_setenv(test_ptr, "LANGUAGE", "%s", "pt_BR");
+    setlocale(LC_ALL, "");
+    _wlmaker_i18n_bind(WLMAKER_BINARY_DIR "/po/no-such-dir");
+    BS_TEST_VERIFY_STREQ(test_ptr, close_ptr, wlmaker_i18n(close_ptr));
+
+    // Numbers keep the dot, also with a locale that writes a comma (when
+    // that locale is generated on this machine).
+    bs_test_setenv(test_ptr, "LC_ALL", "%s", "pt_BR.UTF-8");
+    wlmaker_i18n_init();
+    const char *ctype_ptr = setlocale(LC_CTYPE, NULL);
+    if (NULL != ctype_ptr && 0 == strcmp(ctype_ptr, "pt_BR.UTF-8")) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%.1f", 1.5);
+        BS_TEST_VERIFY_STREQ(test_ptr, "1.5", buf);
+        BS_TEST_VERIFY_STREQ(test_ptr, "C", setlocale(LC_NUMERIC, NULL));
+    } else {
+        bs_log(BS_INFO, "No pt_BR.UTF-8 locale, skipping LC_NUMERIC test.");
+    }
+
+    setlocale(LC_ALL, old_locale_ptr);
+    free(old_locale_ptr);
+    _wlmaker_i18n_bind(WLMAKER_LOCALEDIR);
+#else
+    BS_TEST_FAIL(test_ptr, "WLMAKER_BINARY_DIR undefined");
+#endif
 }
 
 /* == End of i18n.c ======================================================== */

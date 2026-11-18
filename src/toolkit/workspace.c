@@ -23,6 +23,7 @@
 
 #include <libbase/libbase.h>
 #include <linux/input-event-codes.h>
+#include <math.h>
 #include <stdlib.h>
 #include <wayland-server-core.h>
 #include <wayland-util.h>
@@ -169,6 +170,10 @@ static void _wlmtk_window_reposition_window(
 static bool _wlmtk_workspace_window_overlaps(
     bs_dllist_node_t *dlnode_ptr,
     void *ud_ptr);
+static void _wlmtk_workspace_pointer_position(
+    wlmtk_workspace_t *workspace_ptr,
+    double *x_ptr,
+    double *y_ptr);
 static void _wlmtk_workspace_place_window(
     wlmtk_workspace_t *workspace_ptr,
     wlmtk_window_t *window_ptr,
@@ -1160,6 +1165,35 @@ static struct wlr_box _wlmtk_workspace_place_smart(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Where the pointer is, in layout coordinates, for placing a new window.
+ *
+ * The window container only learns pointer motion while no element above it
+ * takes the pointer: Over the Dock, the Clip, a panel, a menu or a fullscreen
+ * window, its last motion is stale -- possibly on another output, or never
+ * set (NAN), which places new windows on the first output. The desktop is
+ * the root element and sees every motion, in layout coordinates.
+ *
+ * @param workspace_ptr
+ * @param x_ptr
+ * @param y_ptr
+ */
+void _wlmtk_workspace_pointer_position(wlmtk_workspace_t *workspace_ptr,
+                                       double *x_ptr, double *y_ptr)
+{
+    const wlmtk_pointer_motion_event_t *mev_ptr =
+        &workspace_ptr->window_container.super_element.last_pointer_motion_event;
+    if (NULL != workspace_ptr->desktop_ptr) {
+        const wlmtk_pointer_motion_event_t *dmev_ptr =
+            &wlmtk_desktop_element(
+                workspace_ptr->desktop_ptr)->last_pointer_motion_event;
+        if (isfinite(dmev_ptr->x) && isfinite(dmev_ptr->y)) mev_ptr = dmev_ptr;
+    }
+    *x_ptr = mev_ptr->x;
+    *y_ptr = mev_ptr->y;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Window placement: Sets the initial position of a window being mapped.
  *
  * A window is placed only once: When mapped again (eg. moved to another
@@ -1198,8 +1232,8 @@ void _wlmtk_workspace_place_window(wlmtk_workspace_t *workspace_ptr,
     int dx = wbox.x - ex, dy = wbox.y - ey;
 
     // The output: Of the parent, the requested position, or the pointer.
-    double px = workspace_ptr->window_container.super_element.last_pointer_motion_event.x;
-    double py = workspace_ptr->window_container.super_element.last_pointer_motion_event.y;
+    double px, py;
+    _wlmtk_workspace_pointer_position(workspace_ptr, &px, &py);
     struct wlr_box parent_box = {};
     if (NULL != hint_ptr && NULL != hint_ptr->parent_ptr) {
         parent_box = wlmtk_window_get_bounding_box(hint_ptr->parent_ptr);
@@ -1242,8 +1276,10 @@ void _wlmtk_workspace_place_window(wlmtk_workspace_t *workspace_ptr,
     }
 
     // Keep it within the usable area. If larger, align at the top-left.
-    wbox.x = BS_MAX(usable.x, BS_MIN(wbox.x, usable.x + usable.width - wbox.width));
-    wbox.y = BS_MAX(usable.y, BS_MIN(wbox.y, usable.y + usable.height - wbox.height));
+    if (NULL == hint_ptr || !hint_ptr->has_position || !hint_ptr->exact) {
+        wbox.x = BS_MAX(usable.x, BS_MIN(wbox.x, usable.x + usable.width - wbox.width));
+        wbox.y = BS_MAX(usable.y, BS_MIN(wbox.y, usable.y + usable.height - wbox.height));
+    }
 
     wlmtk_element_set_position(
         wlmtk_window_element(window_ptr), wbox.x - dx, wbox.y - dy);
@@ -1485,6 +1521,7 @@ static void test_activate(bs_test_t *test_ptr);
 static void test_activate_cycling(bs_test_t *test_ptr);
 static void test_minimize(bs_test_t *test_ptr);
 static void test_placement_center(bs_test_t *test_ptr);
+static void test_placement_pointer_output(bs_test_t *test_ptr);
 static void test_multi_output_extents(bs_test_t *test_ptr);
 static void test_multi_output_reposition(bs_test_t *test_ptr);
 static void test_window_position(bs_test_t *test_ptr);
@@ -1507,6 +1544,7 @@ static const bs_test_case_t _wlmtk_workspace_test_cases[] = {
     { 1, "activate_cycling", test_activate_cycling },
     { 1, "minimize", test_minimize },
     { 1, "placement_center", test_placement_center },
+    { 1, "placement_pointer_output", test_placement_pointer_output },
     { 1, "multi_output_extents", test_multi_output_extents },
     { 1, "multi_output_reposition", test_multi_output_reposition },
     { 1, "window_position", test_window_position },
@@ -2624,8 +2662,25 @@ void test_placement_center(bs_test_t *test_ptr)
     WLMTK_TEST_VERIFY_WLRBOX_EQ(
         test_ptr, 500, 275, 100, 50, wlmtk_window_get_bounding_box(w4));
     wlmtk_workspace_unmap_window(ws_ptr, w4);
+
     wlmtk_window_destroy(w4);
     wlmtk_element_destroy(&fe4->element);
+
+    // Exactly at the requested position, also under the panel: A window
+    // covering the output (a game in borderless fullscreen).
+    wlmtk_fake_element_t *fe5 = wlmtk_fake_element_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, fe5);
+    wlmtk_fake_element_set_dimensions(fe5, 100, 50);
+    wlmtk_window_t *w5 = wlmtk_test_window_create(&fe5->element);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w5);
+    hint = (wlmtk_window_placement_hint_t){
+        .has_position = true, .exact = true, .x = 0, .y = 0 };
+    wlmtk_workspace_map_window_with_hint(ws_ptr, w5, &hint);
+    WLMTK_TEST_VERIFY_WLRBOX_EQ(
+        test_ptr, 0, 0, 100, 50, wlmtk_window_get_bounding_box(w5));
+    wlmtk_workspace_unmap_window(ws_ptr, w5);
+    wlmtk_window_destroy(w5);
+    wlmtk_element_destroy(&fe5->element);
 
     for (int i = 0; i < 3; ++i) wlmtk_workspace_unmap_window(ws_ptr, w[i]);
     for (int i = 0; i < 4; ++i) {
@@ -2635,6 +2690,118 @@ void test_placement_center(bs_test_t *test_ptr)
     wlmtk_layer_remove_panel(
         wlmtk_desktop_get_layer(desktop_ptr, WLMTK_DESKTOP_LAYER_TOP),
         &fp_ptr->panel);
+    wlmtk_fake_panel_destroy(fp_ptr);
+    wlmtk_desktop_remove_workspace(desktop_ptr, ws_ptr);
+    wlmtk_workspace_destroy(ws_ptr);
+    wlmtk_desktop_destroy(desktop_ptr);
+    wl_display_destroy(display_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tests that a new window goes to the output under the pointer, also when
+ * the pointer is over an element above the windows (a panel, the Dock):
+ * Then the window container's last motion is stale, the desktop's is not.
+ * Three outputs, one of them below the first.
+ */
+void test_placement_pointer_output(bs_test_t *test_ptr)
+{
+    struct wl_display *display_ptr = wl_display_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, display_ptr);
+    struct wlr_output_layout *wlr_output_layout_ptr =
+        wlr_output_layout_create(display_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wlr_output_layout_ptr);
+    struct wlr_output o1 = { .width = 1000, .height = 600, .scale = 1 };
+    struct wlr_output o2 = { .width = 1200, .height = 900, .scale = 1.5 };
+    struct wlr_output o3 = { .width = 1000, .height = 600, .scale = 1 };
+    wlmtk_test_wlr_output_init(&o1);
+    wlmtk_test_wlr_output_init(&o2);
+    wlmtk_test_wlr_output_init(&o3);
+    wlr_output_layout_add(wlr_output_layout_ptr, &o1, 0, 0);
+    wlr_output_layout_add(wlr_output_layout_ptr, &o2, 1000, 0);  // 800x600
+    wlr_output_layout_add(wlr_output_layout_ptr, &o3, 0, 600);   // below o1
+
+    struct wlmtk_desktop_style ds = {};
+    wlmtk_desktop_t *desktop_ptr = wlmtk_desktop_create(
+        NULL, &ds, wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, desktop_ptr);
+    wlmtk_workspace_t *ws_ptr = wlmtk_workspace_create(
+        wlr_output_layout_ptr, "t", &_wlmtk_workspace_test_tile_style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws_ptr);
+    wlmtk_desktop_add_workspace(desktop_ptr, ws_ptr);
+    wlmtk_desktop_set_window_placement(
+        desktop_ptr, WLMTK_WINDOW_PLACEMENT_CENTER);
+
+    // A panel (like the Dock) on the right of o2, reserving 100 pixels, that
+    // takes the pointer.
+    wlmtk_panel_positioning_t pp = {
+        .desired_width = 100,
+        .anchor = WLR_EDGE_RIGHT | WLR_EDGE_TOP | WLR_EDGE_BOTTOM,
+        .exclusive_zone = 100 };
+    wlmtk_fake_panel_t *fp_ptr = wlmtk_fake_panel_create(&pp);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, fp_ptr);
+    wlmtk_fake_element_t *pfe_ptr = wlmtk_fake_element_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, pfe_ptr);
+    wlmtk_fake_element_set_dimensions(pfe_ptr, 100, 600);
+    wlmtk_element_set_visible(&pfe_ptr->element, true);
+    wlmtk_container_add_element(&fp_ptr->panel.super_container,
+                                &pfe_ptr->element);
+    wlmtk_element_set_visible(wlmtk_panel_element(&fp_ptr->panel), true);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_layer_add_panel(
+                            wlmtk_desktop_get_layer(
+                                desktop_ptr, WLMTK_DESKTOP_LAYER_TOP),
+                            &fp_ptr->panel, &o2));
+    WLMTK_TEST_VERIFY_WLRBOX_EQ(
+        test_ptr, 1000, 0, 700, 600,
+        wlmtk_desktop_get_usable_area(desktop_ptr, &o2));
+
+    wlmtk_fake_element_t *fe[3] = {};
+    wlmtk_window_t *w[3] = {};
+    for (int i = 0; i < 3; ++i) {
+        fe[i] = wlmtk_fake_element_create();
+        BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, fe[i]);
+        wlmtk_fake_element_set_dimensions(fe[i], 300, 200);
+        w[i] = wlmtk_test_window_create(&fe[i]->element);
+        BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, w[i]);
+    }
+    wlmtk_element_t *de_ptr = wlmtk_desktop_element(desktop_ptr);
+
+    // Pointer on o1, over the (empty) workspace; then over the panel on o2.
+    wlmtk_pointer_motion_event_t mev = { .x = 500, .y = 300 };
+    wlmtk_element_pointer_motion(de_ptr, &mev);
+    mev = (wlmtk_pointer_motion_event_t){ .x = 1750, .y = 300 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(de_ptr, &mev));
+    BS_TEST_VERIFY_TRUE(test_ptr, pfe_ptr->element.pointer_inside);
+    // Centered in o2's usable area (1000..1700), not on o1.
+    wlmtk_workspace_map_window(ws_ptr, w[0]);
+    WLMTK_TEST_VERIFY_WLRBOX_EQ(
+        test_ptr, 1200, 200, 300, 200, wlmtk_window_get_bounding_box(w[0]));
+
+    // Pointer on o3, below o1.
+    mev = (wlmtk_pointer_motion_event_t){ .x = 300, .y = 1000 };
+    wlmtk_element_pointer_motion(de_ptr, &mev);
+    wlmtk_workspace_map_window(ws_ptr, w[1]);
+    WLMTK_TEST_VERIFY_WLRBOX_EQ(
+        test_ptr, 350, 800, 300, 200, wlmtk_window_get_bounding_box(w[1]));
+
+    // Pointer on o1 again.
+    mev = (wlmtk_pointer_motion_event_t){ .x = 10, .y = 10 };
+    wlmtk_element_pointer_motion(de_ptr, &mev);
+    wlmtk_workspace_map_window(ws_ptr, w[2]);
+    WLMTK_TEST_VERIFY_WLRBOX_EQ(
+        test_ptr, 350, 200, 300, 200, wlmtk_window_get_bounding_box(w[2]));
+
+    for (int i = 0; i < 3; ++i) {
+        wlmtk_workspace_unmap_window(ws_ptr, w[i]);
+        wlmtk_window_destroy(w[i]);
+        wlmtk_element_destroy(&fe[i]->element);
+    }
+    wlmtk_layer_remove_panel(
+        wlmtk_desktop_get_layer(desktop_ptr, WLMTK_DESKTOP_LAYER_TOP),
+        &fp_ptr->panel);
+    wlmtk_container_remove_element(&fp_ptr->panel.super_container,
+                                   &pfe_ptr->element);
+    wlmtk_element_destroy(&pfe_ptr->element);
     wlmtk_fake_panel_destroy(fp_ptr);
     wlmtk_desktop_remove_workspace(desktop_ptr, ws_ptr);
     wlmtk_workspace_destroy(ws_ptr);

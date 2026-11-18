@@ -28,6 +28,7 @@
 
 #include "action.h"
 #include "action_item.h"
+#include "i18n.h"
 #include "server.h"
 
 /* == Declarations ========================================================= */
@@ -116,51 +117,51 @@ static void _item_handle_destroy(
 /** Menu items for the XDG toplevel's window menu. */
 static const wlmaker_action_item_desc_t _tl_menu_items[] = {
     {
-        "Maximize",
+        N_("Maximize"),
         WLMAKER_ACTION_WINDOW_MAXIMIZE,
         NULL,
         offsetof(wlmaker_tl_menu_t, maximize_ai_ptr)
     },
     {
-        "Unmaximize",
+        N_("Unmaximize"),
         WLMAKER_ACTION_WINDOW_UNMAXIMIZE,
         NULL,
         offsetof(wlmaker_tl_menu_t, unmaximize_ai_ptr)
     },
     {
-        "Fullscreen",
+        N_("Fullscreen"),
         WLMAKER_ACTION_WINDOW_TOGGLE_FULLSCREEN,
         NULL,
         offsetof(wlmaker_tl_menu_t, fullscreen_ai_ptr)
     },
     {
-        "Miniaturize",
+        N_("Miniaturize"),
         WLMAKER_ACTION_WINDOW_MINIMIZE,
         NULL,
         offsetof(wlmaker_tl_menu_t, minimize_ai_ptr)
     },
     {
-        "Shade",
+        N_("Shade"),
         WLMAKER_ACTION_WINDOW_SHADE,
         NULL,
         offsetof(wlmaker_tl_menu_t, shade_ai_ptr)
 
     },
     {
-        "Unshade",
+        N_("Unshade"),
         WLMAKER_ACTION_WINDOW_UNSHADE,
         NULL,
         offsetof(wlmaker_tl_menu_t, unshade_ai_ptr)
 
     },
     {
-        "Move to workspace ...",
+        N_("Move to workspace ..."),
         WLMAKER_ACTION_NONE,
         NULL,
         offsetof(wlmaker_tl_menu_t, move_to_ws_ai_ptr)
     },
     {
-        "Close",
+        N_("Close"),
         WLMAKER_ACTION_WINDOW_CLOSE,
         NULL,
         offsetof(wlmaker_tl_menu_t, close_ai_ptr)
@@ -187,8 +188,11 @@ wlmaker_tl_menu_t *wlmaker_tl_menu_create(
          NULL != desc_ptr->text_ptr;
          ++desc_ptr) {
 
+        // The texts are marked N_() above: Translated here.
+        wlmaker_action_item_desc_t desc = *desc_ptr;
+        desc.text_ptr = wlmaker_i18n(desc_ptr->text_ptr);
         wlmaker_action_item_t *ai_ptr = wlmaker_action_item_create_from_desc(
-            desc_ptr,
+            &desc,
             tl_menu_ptr,
             wlmtk_menu_style_to_ref(server_ptr->style_ptr->menu_style_ptr),
             server_ptr);

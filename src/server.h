@@ -50,6 +50,8 @@ typedef struct _wlmaker_server_t wlmaker_server_t;
 #include "input_observation.h"
 #include "layer_shell.h"  // IWYU pragma: keep
 #include "lock_mgr.h"  // IWYU pragma: keep
+#include "force_close.h"  // IWYU pragma: keep
+#include "locate_pointer.h"  // IWYU pragma: keep
 #include "root_menu.h"  // IWYU pragma: keep
 #include "context_menu.h"  // IWYU pragma: keep
 #include "toolkit/toolkit.h"
@@ -196,6 +198,10 @@ struct _wlmaker_server_t {
 
     /** Montor & handler of 'hot corners'. */
     wlmaker_corner_t          *corner_ptr;
+    /** Locating the pointer by shaking the mouse. */
+    wlmaker_locate_pointer_t  *locate_pointer_ptr;
+    /** Selecting a window to close by force. */
+    wlmaker_force_close_t     *force_close_ptr;
 
     // TODO(kaeser@gubbe.ch): Move these events into a 'registry' struct, so
     // it can be more easily shared throughout the code.

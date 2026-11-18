@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "wlclient/wlclient.h"
 #include "ext-foreign-toplevel-list-v1-client-protocol.h"
@@ -417,7 +418,10 @@ int _wlmdock_toplevel_app_id_cmp(
         const struct wlmdock_toplevel_handle,
         app_id_node);
     BS_ASSERT_NOTNULL(head_ptr);
-    return strcmp(head_ptr->app_id_ptr, key_ptr);
+    // Launchers docked from a native window have the app ID in lowercase,
+    // eg. "onboard"; the same application through XWayland has its class,
+    // "Onboard". Window Maker matches the class name the same way.
+    return strcasecmp(head_ptr->app_id_ptr, key_ptr);
 }
 
 /* ------------------------------------------------------------------------- */

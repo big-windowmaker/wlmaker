@@ -60,6 +60,10 @@
 /** Name of the "seat". */
 static const char             *seat_name_ptr = "seat0";
 
+static bool _wlmaker_server_axis_filter(
+    void *ud_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers);
 static void _wlmaker_server_unclaimed_axis_event_handler(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -268,6 +272,14 @@ wlmaker_server_t *wlmaker_server_create(
         wlmaker_server_destroy(server_ptr);
         return NULL;
     }
+    // Wheel bindings (eg. Ctrl+Alt+wheel to zoom), and the zoom's pointer.
+    wlmim_set_axis_filter(
+        server_ptr->input_manager_ptr,
+        _wlmaker_server_axis_filter,
+        server_ptr);
+    wlmbe_zoom_set_cursor(
+        wlmbe_backend_zoom(server_ptr->backend_ptr),
+        wlmim_wlr_cursor(server_ptr->input_manager_ptr));
     wlmtk_util_connect_listener_signal(
         &wlmim_events(server_ptr->input_manager_ptr)->deactivate_task_list,
         &server_ptr->deactivate_task_list_listener,
@@ -417,6 +429,24 @@ wlmaker_server_t *wlmaker_server_create(
         return NULL;
     }
 
+    server_ptr->locate_pointer_ptr = wlmaker_locate_pointer_create(
+        server_ptr,
+        bspl_dict_get_dict(server_ptr->config_dict_ptr, "LocatePointer"));
+    if (NULL == server_ptr->locate_pointer_ptr) {
+        bs_log(BS_ERROR, "Failed wlmaker_locate_pointer_create()");
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
+
+    server_ptr->force_close_ptr = wlmaker_force_close_create(
+        server_ptr,
+        bspl_dict_get_dict(server_ptr->config_dict_ptr, "ForceClose"));
+    if (NULL == server_ptr->force_close_ptr) {
+        bs_log(BS_ERROR, "Failed wlmaker_force_close_create()");
+        wlmaker_server_destroy(server_ptr);
+        return NULL;
+    }
+
     server_ptr->corner_ptr = wlmaker_corner_create(
         bspl_dict_get_dict(server_ptr->config_dict_ptr, "HotCorner"),
         wl_display_get_event_loop(server_ptr->wl_display_ptr),
@@ -475,10 +505,25 @@ bool wlmaker_server_reload(wlmaker_server_t *server_ptr)
 
     if (!wlmim_input_manager_reconfigure(
             server_ptr->input_manager_ptr, config_dict_ptr)) rv = false;
+    if (!wlmbe_zoom_configure(
+            wlmbe_backend_zoom(server_ptr->backend_ptr),
+            bspl_dict_get_dict(config_dict_ptr, "Zoom"))) rv = false;
     wlmaker_server_configure_desktop(server_ptr, config_dict_ptr);
     if (NULL != server_ptr->xdg_decoration_manager_ptr &&
         !wlmaker_xdg_decoration_manager_reconfigure(
             server_ptr->xdg_decoration_manager_ptr, config_dict_ptr)) {
+        rv = false;
+    }
+    if (NULL != server_ptr->locate_pointer_ptr &&
+        !wlmaker_locate_pointer_reconfigure(
+            server_ptr->locate_pointer_ptr,
+            bspl_dict_get_dict(config_dict_ptr, "LocatePointer"))) {
+        rv = false;
+    }
+    if (NULL != server_ptr->force_close_ptr &&
+        !wlmaker_force_close_reconfigure(
+            server_ptr->force_close_ptr,
+            bspl_dict_get_dict(config_dict_ptr, "ForceClose"))) {
         rv = false;
     }
     bspl_dict_t *corner_dict_ptr = bspl_dict_get_dict(
@@ -579,6 +624,14 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
     if (NULL != server_ptr->corner_ptr) {
         wlmaker_corner_destroy(server_ptr->corner_ptr);
         server_ptr->corner_ptr = NULL;
+    }
+    if (NULL != server_ptr->locate_pointer_ptr) {
+        wlmaker_locate_pointer_destroy(server_ptr->locate_pointer_ptr);
+        server_ptr->locate_pointer_ptr = NULL;
+    }
+    if (NULL != server_ptr->force_close_ptr) {
+        wlmaker_force_close_destroy(server_ptr->force_close_ptr);
+        server_ptr->force_close_ptr = NULL;
     }
 
     if (NULL != server_ptr->monitor_ptr) {
@@ -914,6 +967,24 @@ const char *wlmaker_server_root_button_action(
             server_ptr, "ForwardButton");
     default: return "None";
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Filters axis events for the wheel bindings: "Ctrl+Alt+WheelUp" = ZoomIn
+ * and alike. Before any client sees them; without a matching binding, they
+ * go on to the clients as usual.
+ */
+bool _wlmaker_server_axis_filter(
+    void *ud_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers)
+{
+    wlmaker_server_t *server_ptr = ud_ptr;
+    return wlmaker_action_process_axis(
+        server_ptr->action_handle_ptr,
+        wlr_pointer_axis_event_ptr,
+        modifiers);
 }
 
 /* ------------------------------------------------------------------------- */

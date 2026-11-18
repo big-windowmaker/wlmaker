@@ -74,8 +74,9 @@ struct _wlmaker_clip_t {
     /** Placement of the dock-apps in the clip's dock. */
     wlmaker_dockapps_t        *dockapps_ptr;
     /**
-     * Empty tiles after the clip, one per element of `Clip.Launchers`: Room
-     * for the launchers shown there by `wlmdock --clip`. Dock-apps follow.
+     * Empty tiles after the clip, one per launcher of `Clip.Launchers`
+     * shown: Room for the launchers shown there by `wlmdock --clip`, among
+     * the dock-apps.
      */
     wlmtk_tile_t              *spacer_tiles_ptr;
     /** Number of tiles in @ref wlmaker_clip_t::spacer_tiles_ptr. */
@@ -156,6 +157,16 @@ struct _wlmaker_clip_t {
     size_t                    dock_launchers;
     /** Number of dock-apps on the Dock last stored as `DockappTiles`. */
     long                      published_dock_tiles;
+    /**
+     * Empty tiles of the Dock's dock-apps, one per launcher of the Dock:
+     * Room for the launchers that `wlmdock` shows there. Launchers and
+     * dock-apps share the column, in any order.
+     */
+    wlmtk_tile_t              *dock_spacer_tiles_ptr;
+    /** Number of tiles in @ref wlmaker_clip_t::dock_spacer_tiles_ptr. */
+    size_t                    dock_spacer_tiles;
+    /** Last published layout (see @ref wlmaker_dock_layout_fname). */
+    char                      *published_layout_ptr;
 
     /** Levels of the Clip [0] and the Dock [1]. */
     wlmaker_dock_level_t      level[2];
@@ -194,8 +205,12 @@ static bool _wlmaker_clip_spacer_init(
 static bool _wlmaker_clip_spacer_accepts_motion(
     wlmtk_element_t *element_ptr,
     wlmtk_pointer_motion_event_t *motion_event_ptr);
+static void _wlmaker_clip_arrange(wlmaker_clip_t *clip_ptr);
+static void _wlmaker_clip_handle_dockapps_changed(void *ud_ptr);
+static void _wlmaker_clip_publish_layout(wlmaker_clip_t *clip_ptr);
 static bool _wlmaker_clip_set_spacers(
     wlmaker_clip_t *clip_ptr,
+    bool dock,
     size_t spacers,
     const struct wlmtk_tile_style *tile_style_ptr);
 static void _wlmaker_clip_atfork_child(void);
@@ -373,33 +388,16 @@ wlmaker_clip_t *wlmaker_clip_create(
         &clip_ptr->super_tile, clip_ptr->tile_buffer_ptr);
     wlmtk_dock_add_tile(clip_ptr->wlmtk_dock_ptr, &clip_ptr->super_tile);
 
-    bspl_array_t *launchers_ptr = bspl_dict_get_array(dict_ptr, "Launchers");
-    clip_ptr->spacer_tiles = (NULL != launchers_ptr) ?
+    // Room for the launchers `wlmdock --clip` shows (those with an icon).
+    bspl_array_t *launchers_ptr = wlmaker_dock_launchers_load(
+        server_ptr, "Clip");
+    size_t spacers = (NULL != launchers_ptr) ?
         bspl_array_size(launchers_ptr) : 0;
-    if (0 < clip_ptr->spacer_tiles) {
-        clip_ptr->spacer_tiles_ptr = logged_calloc(
-            clip_ptr->spacer_tiles, sizeof(wlmtk_tile_t));
-        if (NULL == clip_ptr->spacer_tiles_ptr) {
-            clip_ptr->spacer_tiles = 0;
-            wlmaker_clip_destroy(clip_ptr);
-            return NULL;
-        }
-        for (size_t i = 0; i < clip_ptr->spacer_tiles; ++i) {
-            if (!_wlmaker_clip_spacer_init(&clip_ptr->spacer_tiles_ptr[i],
-                                           &style_ptr->tile)) {
-                clip_ptr->spacer_tiles = i;
-                wlmaker_clip_destroy(clip_ptr);
-                return NULL;
-            }
-            wlmtk_element_set_visible(
-                wlmtk_tile_element(&clip_ptr->spacer_tiles_ptr[i]), true);
-            wlmtk_dock_add_tile(
-                clip_ptr->wlmtk_dock_ptr, &clip_ptr->spacer_tiles_ptr[i]);
-        }
-        if (!_wlmaker_clip_update_spacers(clip_ptr, &style_ptr->tile)) {
-            wlmaker_clip_destroy(clip_ptr);
-            return NULL;
-        }
+    if (NULL != launchers_ptr) bspl_array_unref(launchers_ptr);
+    if (!_wlmaker_clip_set_spacers(clip_ptr, false, spacers,
+                                   &style_ptr->tile)) {
+        wlmaker_clip_destroy(clip_ptr);
+        return NULL;
     }
 
     if (!wlmtk_buffer_init(&clip_ptr->overlay_buffer)) {
@@ -479,6 +477,9 @@ wlmaker_clip_t *wlmaker_clip_create(
         return NULL;
     }
     server_ptr->dockapps_ptr = clip_ptr->dockapps_ptr;
+    wlmaker_dockapps_set_changed_callback(
+        clip_ptr->dockapps_ptr, _wlmaker_clip_handle_dockapps_changed,
+        clip_ptr);
 
     // Dock-apps can also be attached to the Dock, as on Window Maker.
     clip_ptr->published_dock_tiles = -1;
@@ -520,6 +521,18 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
     if (NULL != clip_ptr->server_ptr) {
         wlmaker_context_menu_cancel(clip_ptr->server_ptr, clip_ptr);
     }
+    // Going away: No more arranging.
+    if (NULL != clip_ptr->dockapps_ptr) {
+        wlmaker_dockapps_set_changed_callback(clip_ptr->dockapps_ptr, NULL, NULL);
+    }
+    if (NULL != clip_ptr->dock_dockapps_ptr) {
+        wlmaker_dockapps_set_changed_callback(
+            clip_ptr->dock_dockapps_ptr, NULL, NULL);
+    }
+    if (NULL != clip_ptr->published_layout_ptr) {
+        free(clip_ptr->published_layout_ptr);
+        clip_ptr->published_layout_ptr = NULL;
+    }
     if (NULL != clip_ptr->preview_event_source_ptr) {
         wl_event_source_remove(clip_ptr->preview_event_source_ptr);
         clip_ptr->preview_event_source_ptr = NULL;
@@ -560,6 +573,18 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
         bspl_array_unref(clip_ptr->dock_default_dockapps_ptr);
         clip_ptr->dock_default_dockapps_ptr = NULL;
     }
+    for (size_t i = 0; i < clip_ptr->dock_spacer_tiles; ++i) {
+        wlmtk_tile_t *t_ptr = &clip_ptr->dock_spacer_tiles_ptr[i];
+        if (NULL != wlmtk_tile_element(t_ptr)->parent_container_ptr) {
+            wlmtk_dock_remove_tile(clip_ptr->dock_side_ptr, t_ptr);
+        }
+        wlmtk_tile_fini(t_ptr);
+    }
+    if (NULL != clip_ptr->dock_spacer_tiles_ptr) {
+        free(clip_ptr->dock_spacer_tiles_ptr);
+        clip_ptr->dock_spacer_tiles_ptr = NULL;
+    }
+    clip_ptr->dock_spacer_tiles = 0;
     if (NULL != clip_ptr->dock_side_ptr) {
         wlmtk_layer_t *l_ptr = wlmtk_panel_get_layer(
             wlmtk_dock_panel(clip_ptr->dock_side_ptr));
@@ -968,6 +993,200 @@ void wlmaker_clip_move_dockapp(
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmaker_dock_column_dockapp_at(
+    const wlmaker_dock_column_t *column_ptr,
+    size_t position,
+    size_t *index_ptr)
+{
+    size_t launchers = 0, dockapps = 0;
+    for (size_t p = 0; p <= position; ++p) {
+        // As many of each as there are: Beyond, the other kind.
+        bool dockapp = (64 > p) ?
+            0 != (column_ptr->dockapp_positions & (UINT64_C(1) << p)) :
+            launchers >= column_ptr->launchers;
+        if (dockapp && dockapps >= column_ptr->dockapps) dockapp = false;
+        if (!dockapp && launchers >= column_ptr->launchers &&
+            dockapps < column_ptr->dockapps) dockapp = true;
+        if (p == position) {
+            if (NULL != index_ptr) *index_ptr = dockapp ? dockapps : launchers;
+            return dockapp;
+        }
+        if (dockapp) {
+            ++dockapps;
+        } else {
+            ++launchers;
+        }
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
+size_t wlmaker_dock_column_launcher_position(
+    const wlmaker_dock_column_t *column_ptr,
+    size_t index)
+{
+    size_t n = column_ptr->launchers + column_ptr->dockapps;
+    for (size_t p = 0; p < n; ++p) {
+        size_t i;
+        if (!wlmaker_dock_column_dockapp_at(column_ptr, p, &i) && i == index) {
+            return p;
+        }
+    }
+    return index + column_ptr->dockapps;
+}
+
+/* ------------------------------------------------------------------------- */
+size_t wlmaker_dock_column_dockapp_position(
+    const wlmaker_dock_column_t *column_ptr,
+    size_t index)
+{
+    size_t n = column_ptr->launchers + column_ptr->dockapps;
+    for (size_t p = 0; p < n; ++p) {
+        size_t i;
+        if (wlmaker_dock_column_dockapp_at(column_ptr, p, &i) && i == index) {
+            return p;
+        }
+    }
+    return column_ptr->launchers + index;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_dock_column_set_sections(wlmaker_dock_column_t *column_ptr)
+{
+    column_ptr->dockapp_positions = 0;
+    for (size_t p = column_ptr->launchers;
+         p < column_ptr->launchers + column_ptr->dockapps && 64 > p;
+         ++p) {
+        column_ptr->dockapp_positions |= UINT64_C(1) << p;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_clip_launcher_inserted(
+    wlmaker_server_t *server_ptr,
+    int column,
+    size_t index,
+    bool removed)
+{
+    if (WLMAKER_COLUMN_CLIP != column && WLMAKER_COLUMN_DOCK != column) return;
+    wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_id(server_ptr, column);
+    if (NULL == d_ptr) return;
+    if (removed) {
+        wlmaker_dockapps_launcher_removed(d_ptr, index);
+    } else {
+        wlmaker_dockapps_launcher_inserted(d_ptr, index);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_clip_freeze_dockapps(wlmaker_server_t *server_ptr, int column)
+{
+    if (WLMAKER_COLUMN_CLIP != column && WLMAKER_COLUMN_DOCK != column) return;
+    wlmaker_dock_column_t c;
+    wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_id(server_ptr, column);
+    if (NULL == d_ptr || !wlmaker_clip_column_id(server_ptr, column, &c)) return;
+    wlmaker_dockapps_freeze_after(d_ptr, c.launchers);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * @return Whether the dock-app of `tile_ptr` is in the Dock or the Clip,
+ *     with its column in `column_ptr` and its position in `position_ptr`.
+ */
+static bool _wlmaker_clip_dockapp_place(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    wlmaker_dock_column_t *column_ptr,
+    size_t *position_ptr)
+{
+    int id = wlmaker_clip_dockapps_column_of(server_ptr, tile_ptr);
+    if ((WLMAKER_COLUMN_CLIP != id && WLMAKER_COLUMN_DOCK != id) ||
+        !wlmaker_clip_column_id(server_ptr, id, column_ptr)) return false;
+    int index = wlmaker_dockapps_index(
+        wlmaker_clip_dockapps_id(server_ptr, id), tile_ptr);
+    if (0 > index) return false;
+    *position_ptr = wlmaker_dock_column_dockapp_position(column_ptr, index);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+int wlmaker_clip_dockapp_delta_towards(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    uint32_t direction)
+{
+    wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(server_ptr, tile_ptr);
+    if (NULL == d_ptr) return 0;
+    wlmaker_dock_column_t column;
+    size_t position;
+    if (!_wlmaker_clip_dockapp_place(server_ptr, tile_ptr, &column,
+                                     &position)) {
+        return wlmaker_dockapps_delta_towards(d_ptr, tile_ptr, direction);
+    }
+    bool vertical = wlmaker_dock_place_vertical(column.place);
+    int delta = 0;
+    if (vertical && WLR_EDGE_TOP == direction) delta = -1;
+    if (vertical && WLR_EDGE_BOTTOM == direction) delta = 1;
+    if (!vertical && WLR_EDGE_LEFT == direction) delta = -1;
+    if (!vertical && WLR_EDGE_RIGHT == direction) delta = 1;
+    // Positions count away from the anchor.
+    if (WLR_EDGE_BOTTOM == column.place.anchor ||
+        WLR_EDGE_RIGHT == column.place.anchor) delta = -delta;
+    int to = (int)position + delta;
+    if (0 > to || (int)(column.launchers + column.dockapps) <= to) return 0;
+    return delta;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_clip_move_dockapp_by(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    int delta)
+{
+    wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(server_ptr, tile_ptr);
+    if (NULL == d_ptr || 0 == delta) return;
+    wlmaker_dock_column_t column;
+    size_t position;
+    if (!_wlmaker_clip_dockapp_place(server_ptr, tile_ptr, &column,
+                                     &position)) {
+        wlmaker_dockapps_move(d_ptr, tile_ptr, delta);
+        return;
+    }
+    int step = 0 < delta ? 1 : -1;
+    wlmaker_dockapps_freeze_after(d_ptr, column.launchers);
+    for (int i = 0; i != delta; i += step) {
+        if (!wlmaker_clip_column_id(server_ptr, column.id, &column)) return;
+        int index = wlmaker_dockapps_index(d_ptr, tile_ptr);
+        if (0 > index) return;
+        int to = (int)wlmaker_dock_column_dockapp_position(&column, index) +
+            step;
+        if (0 > to || (int)(column.launchers + column.dockapps) <= to) return;
+        if (wlmaker_dock_column_dockapp_at(&column, to, NULL)) {
+            // Past a dock-app: They swap, after the same launchers.
+            wlmaker_dockapps_move(d_ptr, tile_ptr, step);
+        } else {
+            // Past a launcher.
+            size_t after = wlmaker_dockapps_after_launchers(d_ptr, tile_ptr);
+            wlmaker_dockapps_set_after_launchers(
+                d_ptr, tile_ptr, 0 < step ? after + 1 : after - 1);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_clip_set_dockapp_after(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t launchers)
+{
+    if (NULL == server_ptr->clip_ptr) return;
+    wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(server_ptr, tile_ptr);
+    if (d_ptr != server_ptr->clip_ptr->dockapps_ptr &&
+        d_ptr != server_ptr->clip_ptr->dock_dockapps_ptr) return;
+    wlmaker_dockapps_set_after_launchers(d_ptr, tile_ptr, launchers);
+}
+
+/* ------------------------------------------------------------------------- */
 bool wlmaker_clip_column(
     wlmaker_server_t *server_ptr,
     bool dock,
@@ -1016,6 +1235,9 @@ bool wlmaker_clip_column_id(
             &column_ptr->x, &column_ptr->y);
         column_ptr->launchers = clip_ptr->spacer_tiles;
         column_ptr->dockapps = wlmaker_dockapps_size(clip_ptr->dockapps_ptr);
+        column_ptr->dockapp_positions = wlmaker_dockapps_positions(
+            clip_ptr->dockapps_ptr, column_ptr->launchers);
+        column_ptr->mixed = true;
         return true;
     }
 
@@ -1027,6 +1249,9 @@ bool wlmaker_clip_column_id(
         if (64 > index) column_ptr->drawers |= UINT64_C(1) << index;
     }
     column_ptr->dockapps = wlmaker_dockapps_size(clip_ptr->dock_dockapps_ptr);
+    column_ptr->dockapp_positions = wlmaker_dockapps_positions(
+        clip_ptr->dock_dockapps_ptr, column_ptr->launchers);
+    column_ptr->mixed = true;
     struct wlr_box b;
     if (NULL != server_ptr->dock_layer_panel_ptr &&
         wlmaker_layer_panel_get_box(server_ptr->dock_layer_panel_ptr, &b)) {
@@ -1357,8 +1582,7 @@ static void _wlmaker_clip_menu_restore(void *ud_ptr)
         bspl_dict_add(d, "Launchers", bspl_object_from_array(a)) &&
         wlmaker_state_store_section(server_ptr->files_ptr,
                                     server_ptr->state_fname_ptr, "Clip", d)) {
-        _wlmaker_clip_set_spacers(clip_ptr, bspl_array_size(a),
-                                  &server_ptr->style_ptr->tile);
+        _wlmaker_clip_reload_launchers(clip_ptr);
         // `wlmdock --clip` shows them.
         _wlmaker_clip_signal_wlmdock(server_ptr);
     }
@@ -1402,13 +1626,13 @@ bool wlmaker_clip_add_move_items(
     uint32_t corner = pos_ptr->edge | pos_ptr->anchor;
     return wlmaker_context_menu_add_item(
         context_menu_ptr,
-        wlmaker_i18n((corner & WLR_EDGE_LEFT) ?
-                     "Move to Right Side" : "Move to Left Side"),
+        (corner & WLR_EDGE_LEFT) ?
+        wlmaker_i18n("Move to Right Side") : wlmaker_i18n("Move to Left Side"),
         _wlmaker_clip_menu_flip_side, server_ptr) &&
         wlmaker_context_menu_add_item(
             context_menu_ptr,
-            wlmaker_i18n((corner & WLR_EDGE_TOP) ?
-                         "Move to Bottom" : "Move to Top"),
+            (corner & WLR_EDGE_TOP) ?
+            wlmaker_i18n("Move to Bottom") : wlmaker_i18n("Move to Top"),
             _wlmaker_clip_menu_flip_end, server_ptr);
 }
 
@@ -1432,7 +1656,7 @@ void _wlmaker_clip_open_menu(wlmaker_clip_t *clip_ptr)
         server_ptr->desktop_ptr, _wlmaker_clip_count_workspace, &workspaces);
 
     wlmaker_context_menu_t *cm_ptr = wlmaker_context_menu_create(
-        server_ptr, clip_ptr, "Clip");
+        server_ptr, clip_ptr, "Clip");  // i18n: not translated (a name)
     if (NULL == cm_ptr) return;
     bool rv = true;
     if (1 < workspaces) {
@@ -2045,12 +2269,14 @@ bool _wlmaker_clip_spacer_accepts_motion(
 }
 
 /* ------------------------------------------------------------------------- */
-/** Gives the spacer tiles a transparent background. */
+/** Gives the spacer tiles (of the Clip and the Dock) a transparent background. */
 bool _wlmaker_clip_update_spacers(
     wlmaker_clip_t *clip_ptr,
     const struct wlmtk_tile_style *tile_style_ptr)
 {
-    if (0 == clip_ptr->spacer_tiles) return true;
+    if (0 == clip_ptr->spacer_tiles && 0 == clip_ptr->dock_spacer_tiles) {
+        return true;
+    }
     // A freshly created buffer is all zero, ie. fully transparent.
     struct wlr_buffer *wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(
         tile_style_ptr->size, tile_style_ptr->size);
@@ -2059,6 +2285,10 @@ bool _wlmaker_clip_update_spacers(
     for (size_t i = 0; i < clip_ptr->spacer_tiles; ++i) {
         rv &= wlmtk_tile_set_background_buffer(
             &clip_ptr->spacer_tiles_ptr[i], wlr_buffer_ptr);
+    }
+    for (size_t i = 0; i < clip_ptr->dock_spacer_tiles; ++i) {
+        rv &= wlmtk_tile_set_background_buffer(
+            &clip_ptr->dock_spacer_tiles_ptr[i], wlr_buffer_ptr);
     }
     wlr_buffer_drop(wlr_buffer_ptr);
     return rv;
@@ -2229,9 +2459,11 @@ void _wlmaker_clip_reload_launchers(wlmaker_clip_t *clip_ptr)
     bspl_dict_t *state_dict_ptr = wlmaker_state_load(
         server_ptr->files_ptr, server_ptr->state_fname_ptr);
     if (NULL == state_dict_ptr) return;
-    bspl_array_t *launchers_ptr = bspl_dict_get_array(
-        bspl_dict_get_dict(state_dict_ptr, "Clip"), "Launchers");
+    // As `wlmdock --clip` shows them: Those with an icon.
+    bspl_array_t *launchers_ptr = wlmaker_dock_launchers_load(
+        server_ptr, "Clip");
     size_t spacers = NULL != launchers_ptr ? bspl_array_size(launchers_ptr) : 0;
+    if (NULL != launchers_ptr) bspl_array_unref(launchers_ptr);
     wlmaker_dock_place_t place;
     if (wlmaker_dock_place_decode(
             bspl_dict_get_dict(state_dict_ptr, "Dock"), &place)) {
@@ -2240,17 +2472,23 @@ void _wlmaker_clip_reload_launchers(wlmaker_clip_t *clip_ptr)
     bspl_dict_unref(state_dict_ptr);
 
     bs_log(BS_INFO, "Clip %p: Room for %zu launchers.", clip_ptr, spacers);
-    _wlmaker_clip_set_spacers(clip_ptr, spacers, &server_ptr->style_ptr->tile);
+    _wlmaker_clip_set_spacers(clip_ptr, false, spacers,
+                              &server_ptr->style_ptr->tile);
 
     bspl_array_t *a = wlmaker_dock_launchers_load(server_ptr, "Dock");
     if (NULL != a) {
         clip_ptr->dock_launchers = bspl_array_size(a);
+        if (NULL != clip_ptr->dock_side_ptr) {
+            _wlmaker_clip_set_spacers(clip_ptr, true, clip_ptr->dock_launchers,
+                                      &server_ptr->style_ptr->tile);
+        }
         _wlmaker_clip_update_dock_side(clip_ptr);
         _wlmaker_clip_sync_drawers(clip_ptr, a);
         bspl_array_unref(a);
     } else {
         _wlmaker_clip_update_dock_side(clip_ptr);
     }
+    _wlmaker_clip_arrange(clip_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2310,8 +2548,8 @@ void _wlmaker_clip_sync_drawers(
 /* ------------------------------------------------------------------------- */
 /**
  * Creates the dock for the dock-apps attached to the Dock: Placed over the
- * Dock's column, after its launchers. Without a Dock in the state, there is
- * none.
+ * Dock's column, after its main tile, with room for its launchers among the
+ * dock-apps. Without a Dock in the state, there is none.
  */
 bool _wlmaker_clip_create_dock_side(
     wlmaker_clip_t *clip_ptr,
@@ -2334,6 +2572,9 @@ bool _wlmaker_clip_create_dock_side(
     clip_ptr->dock_dockapps_ptr = wlmaker_dockapps_create_with_key(
         clip_ptr->dock_side_ptr, NULL, clip_ptr->dockapps_fname_ptr, "Dock");
     if (NULL == clip_ptr->dock_dockapps_ptr) return false;
+    wlmaker_dockapps_set_changed_callback(
+        clip_ptr->dock_dockapps_ptr, _wlmaker_clip_handle_dockapps_changed,
+        clip_ptr);
     bspl_array_t *defaults_ptr = bspl_dict_get_array(
         bspl_dict_get_dict(state_dict_ptr, "Dock"), "Dockapps");
     if (NULL != defaults_ptr) {
@@ -2353,14 +2594,16 @@ bool _wlmaker_clip_create_dock_side(
         clip_ptr->dock_launchers = bspl_array_size(a);
         bspl_array_unref(a);
     }
+    if (!_wlmaker_clip_set_spacers(clip_ptr, true, clip_ptr->dock_launchers,
+                                   &style_ptr->tile)) return false;
     _wlmaker_clip_update_dock_side(clip_ptr);
     return true;
 }
 
 /* ------------------------------------------------------------------------- */
 /**
- * Places the Dock's dock-apps right after the Dock's launchers: At the
- * Dock's corner, one tile further than the Dock's main tile and launchers.
+ * Places the Dock's dock-apps (and the room for its launchers) right after
+ * the Dock's main tile: At the Dock's corner, one tile further.
  */
 void _wlmaker_clip_update_dock_side(wlmaker_clip_t *clip_ptr)
 {
@@ -2372,7 +2615,7 @@ void _wlmaker_clip_update_dock_side(wlmaker_clip_t *clip_ptr)
         clip_ptr->dock_side_ptr);
     pos.edge = clip_ptr->dock_place.edge;
     pos.anchor = clip_ptr->dock_place.anchor;
-    pos.margin = (1 + clip_ptr->dock_launchers) * pitch;
+    pos.margin = pitch;
 
     // Where the Dock is: It may be pushed away from the corner by others.
     struct wlr_box b, o;
@@ -2567,38 +2810,214 @@ void _wlmaker_clip_publish_dock_tiles(wlmaker_clip_t *clip_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
-/** Sets the number of empty tiles after the Clip, for its launchers. */
+/**
+ * Sets the number of spacer tiles of the Clip (or the Dock): The room for
+ * the launchers `wlmdock` shows there, among the dock-apps.
+ */
 bool _wlmaker_clip_set_spacers(
     wlmaker_clip_t *clip_ptr,
+    bool dock,
     size_t spacers,
     const struct wlmtk_tile_style *tile_style_ptr)
 {
-    if (spacers == clip_ptr->spacer_tiles) return true;
+    wlmtk_dock_t *wlmtk_dock_ptr = dock ?
+        clip_ptr->dock_side_ptr : clip_ptr->wlmtk_dock_ptr;
+    wlmtk_tile_t **tiles_ptr_ptr = dock ?
+        &clip_ptr->dock_spacer_tiles_ptr : &clip_ptr->spacer_tiles_ptr;
+    size_t *n_ptr = dock ?
+        &clip_ptr->dock_spacer_tiles : &clip_ptr->spacer_tiles;
+    if (NULL == wlmtk_dock_ptr) return true;
+    if (spacers == *n_ptr) return true;
 
-    for (size_t i = 0; i < clip_ptr->spacer_tiles; ++i) {
-        wlmtk_tile_t *t_ptr = &clip_ptr->spacer_tiles_ptr[i];
+    for (size_t i = 0; i < *n_ptr; ++i) {
+        wlmtk_tile_t *t_ptr = &(*tiles_ptr_ptr)[i];
         if (NULL != wlmtk_tile_element(t_ptr)->parent_container_ptr) {
-            wlmtk_dock_remove_tile(clip_ptr->wlmtk_dock_ptr, t_ptr);
+            wlmtk_dock_remove_tile(wlmtk_dock_ptr, t_ptr);
         }
         wlmtk_tile_fini(t_ptr);
     }
-    if (NULL != clip_ptr->spacer_tiles_ptr) free(clip_ptr->spacer_tiles_ptr);
-    clip_ptr->spacer_tiles_ptr = NULL;
-    clip_ptr->spacer_tiles = 0;
-    if (0 == spacers) return true;
-
-    clip_ptr->spacer_tiles_ptr = logged_calloc(spacers, sizeof(wlmtk_tile_t));
-    if (NULL == clip_ptr->spacer_tiles_ptr) return false;
-    for (size_t i = 0; i < spacers; ++i) {
-        wlmtk_tile_t *t_ptr = &clip_ptr->spacer_tiles_ptr[i];
-        if (!_wlmaker_clip_spacer_init(t_ptr, tile_style_ptr)) break;
-        clip_ptr->spacer_tiles = i + 1;
-        wlmtk_element_set_visible(wlmtk_tile_element(t_ptr), true);
-        // Right after the Clip, before the dock-apps.
-        wlmtk_dock_add_tile(clip_ptr->wlmtk_dock_ptr, t_ptr);
-        wlmtk_dock_move_tile(clip_ptr->wlmtk_dock_ptr, t_ptr, 1 + i);
+    if (NULL != *tiles_ptr_ptr) free(*tiles_ptr_ptr);
+    *tiles_ptr_ptr = NULL;
+    *n_ptr = 0;
+    if (0 < spacers) {
+        *tiles_ptr_ptr = logged_calloc(spacers, sizeof(wlmtk_tile_t));
+        if (NULL == *tiles_ptr_ptr) return false;
     }
-    return _wlmaker_clip_update_spacers(clip_ptr, tile_style_ptr);
+    for (size_t i = 0; i < spacers; ++i) {
+        wlmtk_tile_t *t_ptr = &(*tiles_ptr_ptr)[i];
+        if (!_wlmaker_clip_spacer_init(t_ptr, tile_style_ptr)) break;
+        *n_ptr = i + 1;
+        wlmtk_element_set_visible(wlmtk_tile_element(t_ptr), true);
+        // Placed among the dock-apps by _wlmaker_clip_arrange().
+        wlmtk_dock_add_tile(wlmtk_dock_ptr, t_ptr);
+    }
+    bool rv = _wlmaker_clip_update_spacers(clip_ptr, tile_style_ptr);
+    _wlmaker_clip_arrange(clip_ptr);
+    return rv && *n_ptr == spacers;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Arranges the tiles of the Clip and of the Dock's dock-apps: The room for
+ * each launcher (a spacer) and the dock-apps, in the column's order. Then
+ * publishes the layout for `wlmdock`.
+ */
+void _wlmaker_clip_arrange(wlmaker_clip_t *clip_ptr)
+{
+    for (int dock = 0; dock < 2; ++dock) {
+        wlmaker_dock_column_t column;
+        if (!wlmaker_clip_column_id(
+                clip_ptr->server_ptr,
+                dock ? WLMAKER_COLUMN_DOCK : WLMAKER_COLUMN_CLIP,
+                &column)) continue;
+        wlmtk_dock_t *wlmtk_dock_ptr = dock ?
+            clip_ptr->dock_side_ptr : clip_ptr->wlmtk_dock_ptr;
+        wlmaker_dockapps_t *dockapps_ptr = dock ?
+            clip_ptr->dock_dockapps_ptr : clip_ptr->dockapps_ptr;
+        wlmtk_tile_t *spacers_ptr = dock ?
+            clip_ptr->dock_spacer_tiles_ptr : clip_ptr->spacer_tiles_ptr;
+        size_t spacers = dock ?
+            clip_ptr->dock_spacer_tiles : clip_ptr->spacer_tiles;
+        if (NULL == wlmtk_dock_ptr || NULL == dockapps_ptr) continue;
+        // The Clip's own tile comes first; the Dock's is `wlmdock`'s.
+        size_t first = dock ? 0 : 1;
+        for (size_t p = 0; p < column.launchers + column.dockapps; ++p) {
+            size_t index;
+            wlmtk_tile_t *tile_ptr = NULL;
+            if (wlmaker_dock_column_dockapp_at(&column, p, &index)) {
+                tile_ptr = wlmaker_dockapps_tile_at(dockapps_ptr, index);
+            } else if (index < spacers) {
+                tile_ptr = &spacers_ptr[index];
+            }
+            if (NULL != tile_ptr) {
+                wlmtk_dock_move_tile(wlmtk_dock_ptr, tile_ptr, first + p);
+            }
+        }
+    }
+    // The drawers stick out at their tile on the Dock.
+    for (size_t i = 0; i < clip_ptr->drawers; ++i) {
+        wlmaker_drawer_update_position(clip_ptr->drawers_ptr[i]);
+    }
+    _wlmaker_clip_publish_layout(clip_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** The dock-apps of the Clip or the Dock changed: Arranges them. */
+void _wlmaker_clip_handle_dockapps_changed(void *ud_ptr)
+{
+    _wlmaker_clip_arrange(ud_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Adds the layout of the column `id` as `section_ptr` to `dict_ptr`. */
+static bool _wlmaker_clip_layout_section(
+    wlmaker_clip_t *clip_ptr,
+    int id,
+    const char *section_ptr,
+    bspl_dict_t *dict_ptr)
+{
+    wlmaker_dock_column_t column;
+    if (!wlmaker_clip_column_id(clip_ptr->server_ptr, id, &column)) {
+        return true;
+    }
+    wlmaker_dockapps_t *dockapps_ptr = wlmaker_clip_dockapps_id(
+        clip_ptr->server_ptr, id);
+    bspl_dict_t *section_dict_ptr = bspl_dict_create();
+    bspl_array_t *gaps_ptr = bspl_array_create();
+    bspl_dict_t *positions_ptr = bspl_dict_create();
+    bool rv = NULL != section_dict_ptr && NULL != gaps_ptr &&
+        NULL != positions_ptr;
+    // For each launcher: The dock-apps right before it.
+    size_t gap = 0;
+    for (size_t p = 0;
+         rv && p < column.launchers + column.dockapps;
+         ++p) {
+        size_t index;
+        char buf[32];
+        if (wlmaker_dock_column_dockapp_at(&column, p, &index)) {
+            ++gap;
+            const char *name_ptr = NULL == dockapps_ptr ? NULL :
+                wlmaker_dockapps_name(
+                    dockapps_ptr,
+                    wlmaker_dockapps_tile_at(dockapps_ptr, index));
+            if (NULL == name_ptr) continue;
+            // Slot from the anchor: 0 is the Dock's main tile, or the Clip.
+            snprintf(buf, sizeof(buf), "%zu", 1 + p);
+            bspl_string_t *v = bspl_string_create(buf);
+            rv = NULL != v && bspl_dict_add(positions_ptr, name_ptr,
+                                            bspl_object_from_string(v));
+            if (NULL != v) bspl_string_unref(v);
+            continue;
+        }
+        snprintf(buf, sizeof(buf), "%zu", gap);
+        gap = 0;
+        bspl_string_t *v = bspl_string_create(buf);
+        rv = NULL != v && bspl_array_push_back(gaps_ptr,
+                                                bspl_object_from_string(v));
+        if (NULL != v) bspl_string_unref(v);
+    }
+    rv = rv &&
+        bspl_dict_add(section_dict_ptr, "Gaps",
+                      bspl_object_from_array(gaps_ptr)) &&
+        bspl_dict_add(section_dict_ptr, "Positions",
+                      bspl_object_from_dict(positions_ptr)) &&
+        bspl_dict_add(dict_ptr, section_ptr,
+                      bspl_object_from_dict(section_dict_ptr));
+    if (NULL != positions_ptr) bspl_dict_unref(positions_ptr);
+    if (NULL != gaps_ptr) bspl_array_unref(gaps_ptr);
+    if (NULL != section_dict_ptr) bspl_dict_unref(section_dict_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Publishes how launchers and dock-apps share the Dock and the Clip (see
+ * @ref wlmaker_dock_layout_fname): `wlmdock` leaves room for the dock-apps
+ * among its launchers. Tells `wlmdock` when it changed.
+ */
+void _wlmaker_clip_publish_layout(wlmaker_clip_t *clip_ptr)
+{
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    // Not before the Clip is complete.
+    if (server_ptr->clip_ptr != clip_ptr) return;
+    bspl_dict_t *dict_ptr = bspl_dict_create();
+    if (NULL == dict_ptr) return;
+    bs_dynbuf_t dynbuf = {};
+    bool rv = _wlmaker_clip_layout_section(
+        clip_ptr, WLMAKER_COLUMN_DOCK, "Dock", dict_ptr) &&
+        _wlmaker_clip_layout_section(
+            clip_ptr, WLMAKER_COLUMN_CLIP, "Clip", dict_ptr) &&
+        bs_dynbuf_init(&dynbuf, 1024, SIZE_MAX) &&
+        bspl_object_write(bspl_object_from_dict(dict_ptr), &dynbuf) &&
+        bs_dynbuf_append_char(&dynbuf, '\0');
+    bspl_dict_unref(dict_ptr);
+    if (!rv) {
+        bs_dynbuf_fini(&dynbuf);
+        return;
+    }
+    const char *text_ptr = dynbuf.data_ptr;
+    if (NULL != clip_ptr->published_layout_ptr &&
+        0 == strcmp(clip_ptr->published_layout_ptr, text_ptr)) {
+        bs_dynbuf_fini(&dynbuf);
+        return;
+    }
+    char *fname_ptr = wlmaker_dock_layout_fname(server_ptr->wl_socket_name_ptr);
+    if (NULL != fname_ptr) {
+        // Without the terminating NUL.
+        dynbuf.length -= 1;
+        if (bs_dynbuf_write_file(&dynbuf, fname_ptr, S_IRUSR | S_IWUSR)) {
+            if (NULL != clip_ptr->published_layout_ptr) {
+                free(clip_ptr->published_layout_ptr);
+            }
+            clip_ptr->published_layout_ptr = logged_strdup(text_ptr);
+            _wlmaker_clip_signal_wlmdock(server_ptr);
+        } else {
+            bs_log(BS_WARNING, "Failed to write the docks' layout to \"%s\"",
+                   fname_ptr);
+        }
+        free(fname_ptr);
+    }
+    bs_dynbuf_fini(&dynbuf);
 }
 
 /* == Unit tests =========================================================== */

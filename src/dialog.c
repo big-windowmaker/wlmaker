@@ -31,6 +31,8 @@
 #include <wlr/util/box.h>
 #undef WLR_USE_UNSTABLE
 
+#include "app_icon.h"
+#include "dock_menu.h"
 #include "toolkit/toolkit.h"
 
 /* == Declarations ========================================================= */
@@ -52,10 +54,10 @@ struct _wlmaker_dialog_t {
     char                      *message_ptr;
     /** See above. */
     char                      *default_ptr;
-    /** See above. */
+    /** See above. May be NULL: Only the default button. */
     char                      *other_ptr;
-    /** See above. May be NULL. */
-    char                      *icon_path_ptr;
+    /** The icon. May be NULL. */
+    cairo_surface_t           *icon_ptr;
 
     /** Box of the default button. */
     struct wlr_box            default_box;
@@ -97,6 +99,9 @@ static void _wlmaker_dialog_handle_window_set_activated(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
+/** Size of the icon, in pixels: As Window Maker's panels. */
+static const int _wlmaker_dialog_icon_size = 64;
+
 /** The dialog's extension of the buffer element. */
 static const wlmtk_element_vmt_t _wlmaker_dialog_element_vmt = {
     .pointer_button = _wlmaker_dialog_element_pointer_button,
@@ -117,6 +122,33 @@ wlmaker_dialog_t *wlmaker_dialog_confirm(
     void *ud_ptr,
     wlmaker_dialog_free_t free_fn)
 {
+    cairo_surface_t *icon_ptr = NULL;
+    if (NULL != icon_path_ptr) {
+        icon_ptr = cairo_image_surface_create_from_png(icon_path_ptr);
+        if (CAIRO_STATUS_SUCCESS != cairo_surface_status(icon_ptr)) {
+            cairo_surface_destroy(icon_ptr);
+            icon_ptr = NULL;
+        }
+    }
+    wlmaker_dialog_t *dialog_ptr = wlmaker_dialog_confirm_with_icon(
+        server_ptr, title_ptr, message_ptr, default_ptr, other_ptr, icon_ptr,
+        callback, ud_ptr, free_fn);
+    if (NULL != icon_ptr) cairo_surface_destroy(icon_ptr);
+    return dialog_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+wlmaker_dialog_t *wlmaker_dialog_confirm_with_icon(
+    wlmaker_server_t *server_ptr,
+    const char *title_ptr,
+    const char *message_ptr,
+    const char *default_ptr,
+    const char *other_ptr,
+    cairo_surface_t *icon_ptr,
+    wlmaker_dialog_callback_t callback,
+    void *ud_ptr,
+    wlmaker_dialog_free_t free_fn)
+{
     wlmaker_dialog_t *dialog_ptr = logged_calloc(1, sizeof(*dialog_ptr));
     if (NULL == dialog_ptr) {
         if (NULL != free_fn) free_fn(ud_ptr);
@@ -129,12 +161,11 @@ wlmaker_dialog_t *wlmaker_dialog_confirm(
     dialog_ptr->title_ptr = logged_strdup(title_ptr);
     dialog_ptr->message_ptr = logged_strdup(message_ptr);
     dialog_ptr->default_ptr = logged_strdup(default_ptr);
-    dialog_ptr->other_ptr = logged_strdup(other_ptr);
-    if (NULL != icon_path_ptr) {
-        dialog_ptr->icon_path_ptr = logged_strdup(icon_path_ptr);
-    }
+    if (NULL != other_ptr) dialog_ptr->other_ptr = logged_strdup(other_ptr);
+    if (NULL != icon_ptr) dialog_ptr->icon_ptr = cairo_surface_reference(icon_ptr);
     if (NULL == dialog_ptr->title_ptr || NULL == dialog_ptr->message_ptr ||
-        NULL == dialog_ptr->default_ptr || NULL == dialog_ptr->other_ptr ||
+        NULL == dialog_ptr->default_ptr ||
+        (NULL != other_ptr && NULL == dialog_ptr->other_ptr) ||
         !wlmtk_buffer_init(&dialog_ptr->super_buffer)) {
         _wlmaker_dialog_destroy(dialog_ptr);
         return NULL;
@@ -207,13 +238,61 @@ void wlmaker_dialog_answer(wlmaker_dialog_t *dialog_ptr, bool confirmed)
 }
 
 /* ------------------------------------------------------------------------- */
+cairo_surface_t *wlmaker_dialog_app_icon(
+    wlmaker_server_t *server_ptr,
+    const char *app_id_ptr,
+    const char *instance_ptr,
+    const char *icon_path_ptr)
+{
+    cairo_surface_t *s_ptr = wlmaker_app_icon_get(
+        app_id_ptr, instance_ptr, _wlmaker_dialog_icon_size);
+    if (NULL != s_ptr) return cairo_surface_reference(s_ptr);
+
+    if (NULL != icon_path_ptr) {
+        s_ptr = cairo_image_surface_create_from_png(icon_path_ptr);
+        if (CAIRO_STATUS_SUCCESS == cairo_surface_status(s_ptr)) return s_ptr;
+        cairo_surface_destroy(s_ptr);
+    }
+
+    char *path_ptr = NULL != server_ptr->files_ptr ?
+        wlmaker_dock_menu_logo_path(server_ptr) : NULL;
+    if (NULL == path_ptr) return NULL;
+    s_ptr = cairo_image_surface_create_from_png(path_ptr);
+    free(path_ptr);
+    if (CAIRO_STATUS_SUCCESS != cairo_surface_status(s_ptr)) {
+        cairo_surface_destroy(s_ptr);
+        return NULL;
+    }
+    return s_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+uint32_t wlmaker_dialog_panel_color(const wlmtk_style_fill_t *fill_ptr)
+{
+    switch (fill_ptr->type) {
+    case WLMTK_STYLE_COLOR_SOLID:
+        return fill_ptr->param.solid.color;
+    case WLMTK_STYLE_COLOR_HGRADIENT:
+        return fill_ptr->param.hgradient.from;
+    case WLMTK_STYLE_COLOR_VGRADIENT:
+        return fill_ptr->param.vgradient.from;
+    case WLMTK_STYLE_COLOR_DGRADIENT:
+        return fill_ptr->param.dgradient.from;
+    case WLMTK_STYLE_COLOR_ADGRADIENT:
+        return fill_ptr->param.adgradient.from;
+    default:
+        return 0xffaeaaae;  // Window Maker's widget gray.
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 struct wlr_buffer *wlmaker_dialog_draw(
     const struct wlmtk_menu_style *style_ptr,
     const char *title_ptr,
     const char *message_ptr,
     const char *default_ptr,
     const char *other_ptr,
-    const char *icon_path_ptr,
+    cairo_surface_t *icon_ptr,
     int pressed,
     struct wlr_box *default_box_ptr,
     struct wlr_box *other_box_ptr)
@@ -221,7 +300,7 @@ struct wlr_buffer *wlmaker_dialog_draw(
     const struct wlmtk_menu_item_style *is_ptr = &style_ptr->item;
     const wlmtk_style_font_t *f_ptr = &is_ptr->font;
     double size = 0 < f_ptr->size ? f_ptr->size : 14;
-    const int pad = 12, icon = 48;
+    const int pad = 12, icon = _wlmaker_dialog_icon_size;
 
     // Measure.
     cairo_surface_t *ms_ptr = cairo_image_surface_create(
@@ -252,8 +331,11 @@ struct wlr_buffer *wlmaker_dialog_draw(
     }
     cairo_text_extents(m_ptr, default_ptr, &te);
     int default_w = BS_MAX(80, (int)te.x_advance + 40);
-    cairo_text_extents(m_ptr, other_ptr, &te);
-    int other_w = BS_MAX(80, (int)te.x_advance + 24);
+    int other_w = 0;
+    if (NULL != other_ptr) {
+        cairo_text_extents(m_ptr, other_ptr, &te);
+        other_w = BS_MAX(80, (int)te.x_advance + 24);
+    }
     int button_h = (int)line_h + 12;
 
     int width = BS_MAX(360, (int)BS_MAX(pad + icon + pad + title_w + pad,
@@ -270,6 +352,7 @@ struct wlr_buffer *wlmaker_dialog_draw(
     *other_box_ptr = (struct wlr_box){
         .x = default_box_ptr->x - pad / 2 - other_w, .y = buttons_y,
         .width = other_w, .height = button_h };
+    if (NULL == other_ptr) *other_box_ptr = (struct wlr_box){};
 
     struct wlr_buffer *wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(
         width, height);
@@ -280,25 +363,31 @@ struct wlr_buffer *wlmaker_dialog_draw(
         wlr_buffer_ptr = NULL;
         goto done;
     }
-    // Panel: The menu item's fill.
-    wlmaker_primitives_cairo_fill(c_ptr, &is_ptr->fill);
+    // Panel: Flat, as Window Maker's panels, in the theme's light color
+    // (the menu item's, or its gradient's first): Gray, or dark.
+    wlmtk_style_fill_t panel_fill = {
+        .type = WLMTK_STYLE_COLOR_SOLID,
+        .param = { .solid = { .color = wlmaker_dialog_panel_color(
+                    &is_ptr->fill) } } };
+    wlmaker_primitives_cairo_fill(c_ptr, &panel_fill);
 
     // Icon, and the title in large letters.
-    if (NULL != icon_path_ptr) {
-        cairo_surface_t *i_ptr = cairo_image_surface_create_from_png(
-            icon_path_ptr);
-        if (CAIRO_STATUS_SUCCESS == cairo_surface_status(i_ptr)) {
-            int iw = cairo_image_surface_get_width(i_ptr);
-            int ih = cairo_image_surface_get_height(i_ptr);
-            double s = BS_MIN((double)icon / iw, (double)icon / ih);
-            cairo_save(c_ptr);
-            cairo_translate(c_ptr, pad, pad);
-            cairo_scale(c_ptr, s, s);
-            cairo_set_source_surface(c_ptr, i_ptr, 0, 0);
-            cairo_paint(c_ptr);
-            cairo_restore(c_ptr);
-        }
-        cairo_surface_destroy(i_ptr);
+    if (NULL != icon_ptr &&
+        CAIRO_STATUS_SUCCESS == cairo_surface_status(icon_ptr) &&
+        0 < cairo_image_surface_get_width(icon_ptr) &&
+        0 < cairo_image_surface_get_height(icon_ptr)) {
+        int iw = cairo_image_surface_get_width(icon_ptr);
+        int ih = cairo_image_surface_get_height(icon_ptr);
+        double s = BS_MIN((double)icon / iw, (double)icon / ih);
+        cairo_save(c_ptr);
+        // Centered in the icon's square, whatever its proportions.
+        cairo_translate(c_ptr, pad + (icon - iw * s) / 2,
+                        pad + (icon - ih * s) / 2);
+        cairo_scale(c_ptr, s, s);
+        cairo_set_source_surface(c_ptr, icon_ptr, 0, 0);
+        cairo_pattern_set_filter(cairo_get_source(c_ptr), CAIRO_FILTER_GOOD);
+        cairo_paint(c_ptr);
+        cairo_restore(c_ptr);
     }
     cairo_set_source_argb8888(c_ptr, is_ptr->enabled_text_color);
     cairo_select_font_face(c_ptr, f_ptr->face, CAIRO_FONT_SLANT_NORMAL,
@@ -343,11 +432,12 @@ struct wlr_buffer *wlmaker_dialog_draw(
         { other_box_ptr, other_ptr, 2 }, { default_box_ptr, default_ptr, 1 } };
     for (int i = 0; i < 2; ++i) {
         struct wlr_box *b = buttons[i].b;
+        if (NULL == buttons[i].t) continue;
         bool down = pressed == buttons[i].id;
         cairo_save(c_ptr);
         cairo_translate(c_ptr, b->x, b->y);
         wlmaker_primitives_cairo_fill_at(c_ptr, 0, 0, b->width, b->height,
-                                         &is_ptr->fill);
+                                         &panel_fill);
         wlmaker_primitives_draw_bezel_at(c_ptr, 0, 0, b->width, b->height,
                                          BS_MAX(1.0, (double)is_ptr->bezel_width), !down);
         cairo_set_source_argb8888(c_ptr, is_ptr->enabled_text_color);
@@ -415,8 +505,8 @@ void _wlmaker_dialog_destroy(wlmaker_dialog_t *dialog_ptr)
     free(dialog_ptr->title_ptr);
     free(dialog_ptr->message_ptr);
     free(dialog_ptr->default_ptr);
-    free(dialog_ptr->other_ptr);
-    if (NULL != dialog_ptr->icon_path_ptr) free(dialog_ptr->icon_path_ptr);
+    if (NULL != dialog_ptr->other_ptr) free(dialog_ptr->other_ptr);
+    if (NULL != dialog_ptr->icon_ptr) cairo_surface_destroy(dialog_ptr->icon_ptr);
     free(dialog_ptr);
 }
 
@@ -430,7 +520,7 @@ void _wlmaker_dialog_redraw(wlmaker_dialog_t *dialog_ptr)
     struct wlr_buffer *b_ptr = wlmaker_dialog_draw(
         s_ptr, dialog_ptr->title_ptr, dialog_ptr->message_ptr,
         dialog_ptr->default_ptr, dialog_ptr->other_ptr,
-        dialog_ptr->icon_path_ptr, dialog_ptr->pressed,
+        dialog_ptr->icon_ptr, dialog_ptr->pressed,
         &dialog_ptr->default_box, &dialog_ptr->other_box);
     if (NULL == b_ptr) return;
     wlmtk_buffer_set(&dialog_ptr->super_buffer, b_ptr);
@@ -459,7 +549,8 @@ bool _wlmaker_dialog_element_pointer_button(
     double y = element_ptr->last_pointer_motion_event.y;
     int at = 0;
     if (wlr_box_contains_point(&dialog_ptr->default_box, x, y)) at = 1;
-    if (wlr_box_contains_point(&dialog_ptr->other_box, x, y)) at = 2;
+    if (NULL != dialog_ptr->other_ptr &&
+        wlr_box_contains_point(&dialog_ptr->other_box, x, y)) at = 2;
 
     if (WLMTK_BUTTON_DOWN == button_event_ptr->type) {
         dialog_ptr->pressed = at;
@@ -530,10 +621,12 @@ void _wlmaker_dialog_handle_window_set_activated(
 /* == Unit tests =========================================================== */
 
 static void test_draw(bs_test_t *test_ptr);
+static void test_draw_notice(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t _wlmaker_dialog_test_cases[] = {
     { true, "draw", test_draw },
+    { true, "draw_notice", test_draw_notice },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -565,6 +658,47 @@ void test_draw(bs_test_t *test_ptr)
     // The panel's fill, in the corner.
     bs_gfxbuf_t *g_ptr = bs_gfxbuf_from_wlr_buffer(b_ptr);
     BS_TEST_VERIFY_EQ(test_ptr, 0xffc0c0c0, g_ptr->data_ptr[2 * b_ptr->width + 2]);
+    wlr_buffer_drop(b_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * A notice: Only the default button. The panel is flat, in the gradient's
+ * first color; the icon is drawn in the upper left.
+ */
+void test_draw_notice(bs_test_t *test_ptr)
+{
+    struct wlmtk_menu_style style = {
+        .item = {
+            .fill = { .type = WLMTK_STYLE_COLOR_HGRADIENT,
+                      .param = { .hgradient = { .from = 0xff4a4a4a,
+                                                .to = 0xff2e2e2e } } },
+            .font = { .face = "Sans", .size = 14 },
+            .bezel_width = 1,
+            .enabled_text_color = 0xffffffff } };
+    cairo_surface_t *icon_ptr = cairo_image_surface_create(
+        CAIRO_FORMAT_ARGB32, 16, 16);
+    cairo_t *c_ptr = cairo_create(icon_ptr);
+    cairo_set_source_rgb(c_ptr, 1, 0, 0);
+    cairo_paint(c_ptr);
+    cairo_destroy(c_ptr);
+
+    struct wlr_box d, o;
+    struct wlr_buffer *b_ptr = wlmaker_dialog_draw(
+        &style, "Forçar o fechamento", "Isto não é a janela de um aplicativo.",
+        "Ok", NULL, icon_ptr, 0, &d, &o);
+    cairo_surface_destroy(icon_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, b_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, o.width);
+    BS_TEST_VERIFY_TRUE(test_ptr, d.x + d.width < b_ptr->width);
+    bs_gfxbuf_t *g_ptr = bs_gfxbuf_from_wlr_buffer(b_ptr);
+    // Flat: The same color left and right.
+    BS_TEST_VERIFY_EQ(test_ptr, 0xff4a4a4a, g_ptr->data_ptr[2 * b_ptr->width + 2]);
+    BS_TEST_VERIFY_EQ(test_ptr, 0xff4a4a4a,
+                      g_ptr->data_ptr[3 * b_ptr->width - 3]);
+    // The icon, scaled to the icon's square at the upper left.
+    BS_TEST_VERIFY_EQ(test_ptr, 0xffff0000,
+                      g_ptr->data_ptr[40 * b_ptr->width + 40]);
     wlr_buffer_drop(b_ptr);
 }
 

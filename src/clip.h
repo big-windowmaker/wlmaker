@@ -79,6 +79,17 @@ typedef struct _wlmaker_dock_column_t {
     size_t                    dockapps;
     /** The Dock: Bit `i` is set if launcher `i` is a drawer. */
     uint64_t                  drawers;
+    /**
+     * Bit `p` is set if position `p` after the first tile holds a dock-app,
+     * else a launcher. See @ref wlmaker_dock_column_dockapp_at.
+     */
+    uint64_t                  dockapp_positions;
+    /**
+     * Whether launchers and dock-apps share the column in any order, like on
+     * Window Maker's Dock: The Dock and the Clip. A drawer has its launchers
+     * first, then its dock-apps.
+     */
+    bool                      mixed;
     /** The output. */
     struct wlr_box            output;
 } wlmaker_dock_column_t;
@@ -281,6 +292,84 @@ void wlmaker_clip_dock_left(
 
 /** @return Path of the dock-apps state file (`Dockapps.plist`), or NULL. */
 const char *wlmaker_clip_dockapps_fname(wlmaker_server_t *server_ptr);
+
+/**
+ * What is at position `position` of the column (0 is the first after the
+ * Dock's main tile, or the Clip): A dock-app or a launcher, by
+ * @ref wlmaker_dock_column_t::dockapp_positions, and as many as there are.
+ *
+ * @param column_ptr
+ * @param position
+ * @param index_ptr           Set to the index among the dock-apps (or the
+ *                            launchers) of the column. May be NULL.
+ *
+ * @return true for a dock-app, false for a launcher (or past the end).
+ */
+bool wlmaker_dock_column_dockapp_at(
+    const wlmaker_dock_column_t *column_ptr,
+    size_t position,
+    size_t *index_ptr);
+
+/** @return Position of launcher `index` in the column. */
+size_t wlmaker_dock_column_launcher_position(
+    const wlmaker_dock_column_t *column_ptr,
+    size_t index);
+
+/** @return Position of dock-app `index` in the column. */
+size_t wlmaker_dock_column_dockapp_position(
+    const wlmaker_dock_column_t *column_ptr,
+    size_t index);
+
+/**
+ * Sets @ref wlmaker_dock_column_t::dockapp_positions for launchers first,
+ * then dock-apps (as in a drawer).
+ */
+void wlmaker_dock_column_set_sections(wlmaker_dock_column_t *column_ptr);
+
+/**
+ * Launcher `index` of column `column` was inserted (or removed): The
+ * dock-apps there stay after the same launchers. Nothing for drawers.
+ */
+void wlmaker_clip_launcher_inserted(
+    wlmaker_server_t *server_ptr,
+    int column,
+    size_t index,
+    bool removed);
+
+/**
+ * Stores where each dock-app of column `column` (the Dock or the Clip) is
+ * among its launchers, as it is now. Before launchers or dock-apps are
+ * moved there. Nothing for drawers.
+ */
+void wlmaker_clip_freeze_dockapps(wlmaker_server_t *server_ptr, int column);
+
+/**
+ * The move to shift the dock-app of `tile_ptr` by one place on the screen,
+ * towards `direction` (for "Move Up" etc.): In the Dock and the Clip, past
+ * a launcher or a dock-app alike.
+ *
+ * @return +1 or -1 (away from the anchor, or towards it); 0 if across the
+ *     column, or at that end.
+ */
+int wlmaker_clip_dockapp_delta_towards(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    uint32_t direction);
+
+/** Moves the dock-app of `tile_ptr` by `delta` places, see above. */
+void wlmaker_clip_move_dockapp_by(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    int delta);
+
+/**
+ * Puts the dock-app of `tile_ptr` after `launchers` of the launchers of its
+ * column (the Dock or the Clip), and stores it.
+ */
+void wlmaker_clip_set_dockapp_after(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t launchers);
 
 /** Unit test set. */
 extern const bs_test_set_t wlmaker_clip_test_set;

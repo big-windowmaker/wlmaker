@@ -94,6 +94,13 @@ typedef enum {
 
     WLMAKER_ACTION_ZONES,
 
+    WLMAKER_ACTION_ZOOM_IN,
+    WLMAKER_ACTION_ZOOM_OUT,
+    WLMAKER_ACTION_ZOOM_RESET,
+
+    WLMAKER_ACTION_LOCATE_POINTER,
+    WLMAKER_ACTION_FORCE_CLOSE_SELECT,
+
 } wlmaker_action_t;
 
 extern const char *wlmaker_action_config_dict_key;
@@ -116,6 +123,23 @@ wlmaker_action_handle_t *wlmaker_action_bind_keys(
     wlmaker_server_t *server_ptr,
     bspl_dict_t *keybindings_dict_ptr,
     bool add_logo);
+
+struct wlr_pointer_axis_event;
+
+/**
+ * Processes an axis event (wheel, touchpad scrolling) for the bindings of
+ * `WheelUp`, `WheelDown`, `WheelLeft` and `WheelRight`, eg. "Ctrl+Alt+WheelUp".
+ *
+ * @param handle_ptr
+ * @param wlr_pointer_axis_event_ptr
+ * @param modifiers           Keyboard modifiers currently held.
+ *
+ * @return true if a binding took the event. It is then not passed on.
+ */
+bool wlmaker_action_process_axis(
+    wlmaker_action_handle_t *handle_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers);
 
 /**
  * Unbinds actions previously bound by @ref wlmaker_action_bind_keys.

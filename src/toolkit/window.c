@@ -23,6 +23,7 @@
 
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
+#include <libintl.h>
 #include <linux/input-event-codes.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -551,7 +552,9 @@ bool wlmtk_window_set_title(
         new_title_ptr = logged_strdup(title_ptr);
     } else {
         char buf[64];
-        snprintf(buf, sizeof(buf), "Unnamed window %p", window_ptr);
+        // In wlmaker's gettext domain: The toolkit is part of wlmaker.
+        snprintf(buf, sizeof(buf),
+                 dgettext("wlmaker", "Unnamed window %p"), window_ptr);
         new_title_ptr = logged_strdup(buf);
     }
     if (NULL == new_title_ptr) return false;

@@ -33,6 +33,7 @@
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
@@ -42,6 +43,7 @@
 #include "toolkit/toolkit.h"
 #include "wlr-layer-shell-unstable-v1-protocol.h"
 #include "xdg_popup.h"
+#include "appicons.h"
 #include "clip.h"
 #include "dock_fx.h"
 #include "dock_launchers.h"
@@ -84,6 +86,11 @@ struct _wlmaker_layer_panel_t {
     bool                      is_dock;
     /** Whether these are the Clip's launchers (namespace "wlmdock-clip"). */
     bool                      is_clip_launchers;
+    /**
+     * Whether this is the row of application icons (namespace
+     * @ref WLMAKER_APPICONS_NAMESPACE): Window Maker's appicons.
+     */
+    bool                      is_appicons;
     /** Whether the left button is held on the Dock: May become a drag. */
     bool                      drag_pending;
     /** Whether the Dock is being dragged to another corner. */
@@ -124,6 +131,9 @@ static void _wlmaker_layer_panel_element_destroy(
 static bool _wlmaker_layer_panel_element_pointer_button(
     wlmtk_element_t *element_ptr,
     const wlmtk_button_event_t *button_event_ptr);
+static int _wlmaker_layer_panel_launcher_at(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    int index);
 static bool _wlmaker_layer_panel_element_pointer_accepts_motion(
     wlmtk_element_t *element_ptr,
     wlmtk_pointer_motion_event_t *motion_event_ptr);
@@ -145,6 +155,25 @@ static void _wlmaker_layer_panel_start_tile_drag(
     wlmaker_layer_panel_t *layer_panel_ptr,
     double x,
     double y);
+static bool _wlmaker_layer_panel_appicon_at(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y,
+    int *index_ptr,
+    int *tile_x_ptr,
+    int *tile_y_ptr);
+static bool _wlmaker_layer_panel_appicons_button(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    const wlmtk_button_event_t *button_event_ptr);
+static void _wlmaker_layer_panel_start_appicon_drag(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y);
+static uint32_t _wlmaker_layer_panel_modifiers(wlmaker_server_t *server_ptr);
+static bool _wlmaker_layer_panel_double_click(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    int index,
+    uint32_t time_msec);
 static void _wlmaker_layer_panel_balloon(
     wlmaker_layer_panel_t *layer_panel_ptr,
     double x,
@@ -328,6 +357,10 @@ wlmaker_layer_panel_t *_wlmaker_layer_panel_create_from_surface(
         NULL != wlr_layer_surface_v1_ptr->namespace &&
         0 == strcmp(wlr_layer_surface_v1_ptr->namespace,
                     _wlmaker_layer_panel_clip_namespace);
+    layer_panel_ptr->is_appicons =
+        NULL != wlr_layer_surface_v1_ptr->namespace &&
+        0 == strcmp(wlr_layer_surface_v1_ptr->namespace,
+                    WLMAKER_APPICONS_NAMESPACE);
     if (layer_panel_ptr->is_dock) {
         server_ptr->dock_layer_panel_ptr = layer_panel_ptr;
     }
@@ -606,7 +639,8 @@ bool _wlmaker_layer_panel_element_pointer_button(
     bool docklike = layer_panel_ptr->is_dock ||
         layer_panel_ptr->is_clip_launchers;
 
-    if (docklike && NULL != server_ptr->dock_fx_ptr) {
+    if ((docklike || layer_panel_ptr->is_appicons) &&
+        NULL != server_ptr->dock_fx_ptr) {
         wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, NULL);
         layer_panel_ptr->balloon_index = -1;
     }
@@ -657,6 +691,13 @@ bool _wlmaker_layer_panel_element_pointer_button(
         return true;
     }
 
+    // The application icons: Handled here, as Window Maker's. The client
+    // only draws them.
+    if (layer_panel_ptr->is_appicons) {
+        return _wlmaker_layer_panel_appicons_button(
+            layer_panel_ptr, button_event_ptr);
+    }
+
     // Window Maker: The middle button runs the launcher's PasteCommand.
     if (docklike && BTN_MIDDLE == button_event_ptr->button) {
         int index;
@@ -665,7 +706,8 @@ bool _wlmaker_layer_panel_element_pointer_button(
                 element_ptr->last_pointer_motion_event.x,
                 element_ptr->last_pointer_motion_event.y,
                 &index, NULL, NULL)) {
-            int launcher = layer_panel_ptr->is_dock ? index - 1 : index;
+            int launcher = _wlmaker_layer_panel_launcher_at(
+                layer_panel_ptr, index);
             bspl_array_t *a = 0 <= launcher ? wlmaker_dock_launchers_load(
                 server_ptr, layer_panel_ptr->is_dock ? "Dock" : "Clip") : NULL;
             bspl_dict_t *d = NULL;
@@ -691,11 +733,16 @@ bool _wlmaker_layer_panel_element_pointer_button(
                     element_ptr->last_pointer_motion_event.x,
                     element_ptr->last_pointer_motion_event.y,
                     &index, NULL, NULL)) {
-                // On the Dock, 0 is the main tile; launchers follow.
-                wlmaker_dock_menu_open_launcher(
-                    server_ptr, layer_panel_ptr->is_dock ?
-                    WLMAKER_COLUMN_DOCK : WLMAKER_COLUMN_CLIP,
-                    layer_panel_ptr->is_dock ? index - 1 : index);
+                // On the Dock, 0 is the main tile; launchers follow, with
+                // the dock-apps among them.
+                int launcher = _wlmaker_layer_panel_launcher_at(
+                    layer_panel_ptr, index);
+                if (-2 < launcher) {
+                    wlmaker_dock_menu_open_launcher(
+                        server_ptr, layer_panel_ptr->is_dock ?
+                        WLMAKER_COLUMN_DOCK : WLMAKER_COLUMN_CLIP,
+                        launcher);
+                }
             }
         }
         return true;
@@ -775,10 +822,17 @@ bool _wlmaker_layer_panel_element_pointer_accepts_motion(
         double dy = c->y - layer_panel_ptr->drag_start_y;
         if (dx * dx + dy * dy >= _wlmaker_layer_panel_drag_threshold *
             _wlmaker_layer_panel_drag_threshold) {
-            bool launcher = layer_panel_ptr->is_clip_launchers ?
+            bool launcher = layer_panel_ptr->is_appicons ?
                 0 <= layer_panel_ptr->press_index :
-                0 < layer_panel_ptr->press_index;
-            if (launcher) {
+                0 <= _wlmaker_layer_panel_launcher_at(
+                    layer_panel_ptr, layer_panel_ptr->press_index);
+            if (launcher && layer_panel_ptr->is_appicons) {
+                _wlmaker_layer_panel_start_appicon_drag(
+                    layer_panel_ptr, c->x, c->y);
+                if (NULL == layer_panel_ptr->tile_drag_ptr) {
+                    _wlmaker_layer_panel_end_drag(layer_panel_ptr);
+                }
+            } else if (launcher) {
                 _wlmaker_layer_panel_start_tile_drag(
                     layer_panel_ptr, c->x, c->y);
                 if (NULL == layer_panel_ptr->tile_drag_ptr) {
@@ -798,26 +852,47 @@ bool _wlmaker_layer_panel_element_pointer_accepts_motion(
     if (layer_panel_ptr->dragging ||
         NULL != layer_panel_ptr->tile_drag_ptr) return true;
 
+    // The room `wlmdock` leaves for a dock-app among the launchers: The
+    // pointer goes to the dock-app there.
+    int index;
+    if ((layer_panel_ptr->is_dock || layer_panel_ptr->is_clip_launchers) &&
+        !layer_panel_ptr->drag_pending &&
+        _wlmaker_layer_panel_tile_at(
+            layer_panel_ptr, motion_event_ptr->x, motion_event_ptr->y,
+            &index, NULL, NULL) &&
+        -2 == _wlmaker_layer_panel_launcher_at(layer_panel_ptr, index)) {
+        if (NULL != server_ptr->dock_fx_ptr) {
+            wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr,
+                                          layer_panel_ptr);
+        }
+        layer_panel_ptr->balloon_index = -1;
+        return false;
+    }
+
     bool rv = layer_panel_ptr->orig_element_vmt.pointer_accepts_motion(
         element_ptr, motion_event_ptr);
     if (layer_panel_ptr->is_dock || layer_panel_ptr->is_clip_launchers) {
         wlmaker_clip_dock_hovered(server_ptr, layer_panel_ptr->is_dock);
     }
-    if ((layer_panel_ptr->is_dock || layer_panel_ptr->is_clip_launchers) &&
+    if ((layer_panel_ptr->is_dock || layer_panel_ptr->is_clip_launchers ||
+         layer_panel_ptr->is_appicons) &&
         !layer_panel_ptr->drag_pending) {
         _wlmaker_layer_panel_balloon(
             layer_panel_ptr, motion_event_ptr->x, motion_event_ptr->y);
     }
     if (layer_panel_ptr->is_dock) {
         // Window Maker's Autoexpand: A drawer opens on its tile.
-        int index;
-        if (!_wlmaker_layer_panel_tile_at(
+        int index, launcher = -1;
+        if (_wlmaker_layer_panel_tile_at(
                 layer_panel_ptr, motion_event_ptr->x, motion_event_ptr->y,
-                &index, NULL, NULL) ||
-            NULL == wlmaker_clip_drawer_at(server_ptr, index - 1)) {
-            index = 0;
+                &index, NULL, NULL)) {
+            launcher = _wlmaker_layer_panel_launcher_at(layer_panel_ptr, index);
         }
-        _wlmaker_layer_panel_hover_drawer(layer_panel_ptr, index - 1);
+        if (0 > launcher ||
+            NULL == wlmaker_clip_drawer_at(server_ptr, launcher)) {
+            launcher = -1;
+        }
+        _wlmaker_layer_panel_hover_drawer(layer_panel_ptr, launcher);
     }
     return rv;
 }
@@ -839,6 +914,31 @@ void _wlmaker_layer_panel_element_pointer_grab_cancel(
     }
     layer_panel_ptr->tile_drag_ptr = NULL;
     layer_panel_ptr->orig_element_vmt.pointer_grab_cancel(element_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * @return The launcher at tile `index` of the Dock or the Clip's launchers
+ *     (as from @ref _wlmaker_layer_panel_tile_at): Its index among the
+ *     launchers; -1 for the Dock's main tile; -2 for the room `wlmdock`
+ *     leaves for a dock-app there (launchers and dock-apps share the column).
+ */
+static int _wlmaker_layer_panel_launcher_at(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    int index)
+{
+    if (layer_panel_ptr->is_dock) {
+        if (0 == index) return -1;
+        --index;
+    }
+    if (0 > index) return -2;
+    wlmaker_dock_column_t column;
+    if (!wlmaker_clip_column(layer_panel_ptr->server_ptr,
+                             layer_panel_ptr->is_dock, &column)) return index;
+    size_t i;
+    if (wlmaker_dock_column_dockapp_at(&column, index, &i) ||
+        i >= column.launchers) return -2;
+    return i;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -891,19 +991,9 @@ void _wlmaker_layer_panel_click(
                                       e->last_pointer_motion_event.x,
                                       e->last_pointer_motion_event.y,
                                       &index, NULL, NULL)) return;
-    uint64_t msec = 0;
-    const char *msec_ptr = bspl_dict_get_string_value(
-        bspl_dict_get_dict(server_ptr->config_dict_ptr, "Mouse"),
-        "DoubleClickTime");
-    if (NULL == msec_ptr || !bs_strconvert_uint64(msec_ptr, &msec, 10) ||
-        0 == msec) msec = 300;
-    uint32_t t = button_event_ptr->time_msec;
-    bool double_click = 0 != layer_panel_ptr->last_click_msec &&
-        index == layer_panel_ptr->last_click_index &&
-        t - layer_panel_ptr->last_click_msec <= msec;
-    layer_panel_ptr->last_click_msec = double_click ? 0 : (t ? t : 1);
-    layer_panel_ptr->last_click_index = index;
-    int launcher = layer_panel_ptr->is_dock ? index - 1 : index;
+    bool double_click = _wlmaker_layer_panel_double_click(
+        layer_panel_ptr, index, button_event_ptr->time_msec);
+    int launcher = _wlmaker_layer_panel_launcher_at(layer_panel_ptr, index);
 
     // Window Maker: A drawer opens, or closes, as a launcher would launch.
     wlmaker_drawer_t *drawer_ptr = layer_panel_ptr->is_dock ?
@@ -944,7 +1034,8 @@ void _wlmaker_layer_panel_start_tile_drag(
 {
     wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
     bool dock = layer_panel_ptr->is_dock;
-    int index = layer_panel_ptr->press_index - (dock ? 1 : 0);
+    int index = _wlmaker_layer_panel_launcher_at(
+        layer_panel_ptr, layer_panel_ptr->press_index);
     if (0 > index) return;
     bspl_array_t *a = wlmaker_dock_launchers_load(
         server_ptr, dock ? "Dock" : "Clip");
@@ -990,6 +1081,192 @@ void _wlmaker_layer_panel_start_tile_drag(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Finds the application icon at `x`, `y` (panel coordinates): A row of
+ * square tiles from the left, as high as the panel.
+ */
+bool _wlmaker_layer_panel_appicon_at(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y,
+    int *index_ptr,
+    int *tile_x_ptr,
+    int *tile_y_ptr)
+{
+    struct wlr_box b = wlmtk_element_get_dimensions_box(
+        wlmtk_panel_element(&layer_panel_ptr->super_panel));
+    int tx = x - b.x, ty = y - b.y;
+    if (0 >= b.height || 0 > tx || 0 > ty || tx >= b.width ||
+        ty >= b.height) return false;
+    *index_ptr = tx / b.height;
+    if (NULL != tile_x_ptr) *tile_x_ptr = tx - *index_ptr * b.height;
+    if (NULL != tile_y_ptr) *tile_y_ptr = ty;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * @return Whether a click on tile `index` at `time_msec` is the second of a
+ *     double-click (within the `Mouse.DoubleClickTime` of the config).
+ */
+bool _wlmaker_layer_panel_double_click(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    int index,
+    uint32_t time_msec)
+{
+    wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+    uint64_t msec = 0;
+    const char *msec_ptr = bspl_dict_get_string_value(
+        bspl_dict_get_dict(server_ptr->config_dict_ptr, "Mouse"),
+        "DoubleClickTime");
+    if (NULL == msec_ptr || !bs_strconvert_uint64(msec_ptr, &msec, 10) ||
+        0 == msec) msec = 300;
+    uint32_t t = time_msec;
+    bool double_click = 0 != layer_panel_ptr->last_click_msec &&
+        index == layer_panel_ptr->last_click_index &&
+        t - layer_panel_ptr->last_click_msec <= msec;
+    layer_panel_ptr->last_click_msec = double_click ? 0 : (t ? t : 1);
+    layer_panel_ptr->last_click_index = index;
+    return double_click;
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The keyboard modifiers held (WLR_MODIFIER_*). */
+uint32_t _wlmaker_layer_panel_modifiers(wlmaker_server_t *server_ptr)
+{
+    struct wlr_keyboard *kb_ptr = NULL != server_ptr->wlr_seat_ptr ?
+        wlr_seat_get_keyboard(server_ptr->wlr_seat_ptr) : NULL;
+    return NULL != kb_ptr ? wlr_keyboard_get_modifiers(kb_ptr) : 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * A button on the application icons, as Window Maker's appIconMouseDown:
+ * The right button opens the icon's menu, the middle one launches the
+ * application again, a double-click unhides it. Held, the left button drags
+ * the icon to the docks. Not passed to the client.
+ */
+bool _wlmaker_layer_panel_appicons_button(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+    wlmtk_element_t *element_ptr = wlmtk_panel_element(
+        &layer_panel_ptr->super_panel);
+    int index = -1, tx = 0, ty = 0;
+    bool on_tile = _wlmaker_layer_panel_appicon_at(
+        layer_panel_ptr,
+        element_ptr->last_pointer_motion_event.x,
+        element_ptr->last_pointer_motion_event.y,
+        &index, &tx, &ty);
+
+    if (BTN_RIGHT == button_event_ptr->button ||
+        BTN_MIDDLE == button_event_ptr->button) {
+        if (WLMTK_BUTTON_DOWN != button_event_ptr->type || !on_tile) {
+            return true;
+        }
+        bspl_array_t *a = wlmaker_appicons_load(NULL);
+        bspl_dict_t *entry_ptr = wlmaker_appicons_at(a, index);
+        if (BTN_RIGHT == button_event_ptr->button) {
+            wlmaker_appicons_open_menu(server_ptr, entry_ptr);
+        } else {
+            wlmaker_appicons_launch(server_ptr, entry_ptr);
+        }
+        if (NULL != a) bspl_array_unref(a);
+        return true;
+    }
+    if (BTN_LEFT != button_event_ptr->button) return true;
+
+    switch (button_event_ptr->type) {
+    case WLMTK_BUTTON_DOWN:
+        if (NULL == element_ptr->parent_container_ptr ||
+            NULL == server_ptr->input_manager_ptr) break;
+        struct wlr_cursor *c = wlmim_wlr_cursor(server_ptr->input_manager_ptr);
+        layer_panel_ptr->drag_pending = true;
+        layer_panel_ptr->dragging = false;
+        layer_panel_ptr->drag_start_x = c->x;
+        layer_panel_ptr->drag_start_y = c->y;
+        layer_panel_ptr->press_index = on_tile ? index : -1;
+        layer_panel_ptr->press_tile_x = tx;
+        layer_panel_ptr->press_tile_y = ty;
+        wlmtk_container_pointer_grab(
+            element_ptr->parent_container_ptr, element_ptr);
+        break;
+    case WLMTK_BUTTON_UP:
+        if (layer_panel_ptr->drag_pending) {
+            _wlmaker_layer_panel_end_drag(layer_panel_ptr);
+        }
+        break;
+    case WLMTK_BUTTON_CLICK:
+        if (!on_tile || !_wlmaker_layer_panel_double_click(
+                layer_panel_ptr, index, button_event_ptr->time_msec)) break;
+        bspl_array_t *a = wlmaker_appicons_load(NULL);
+        wlmaker_appicons_double_click(
+            server_ptr, wlmaker_appicons_at(a, index),
+            _wlmaker_layer_panel_modifiers(server_ptr));
+        if (NULL != a) bspl_array_unref(a);
+        break;
+    default:
+        break;
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Starts dragging the application icon the button was pressed on, as
+ * Window Maker's wHandleAppIconMove: To the Dock, the Clip or a drawer,
+ * where it becomes a launcher.
+ */
+void _wlmaker_layer_panel_start_appicon_drag(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    double x,
+    double y)
+{
+    wlmaker_server_t *server_ptr = layer_panel_ptr->server_ptr;
+    bspl_array_t *a = wlmaker_appicons_load(NULL);
+    bspl_dict_t *launcher_ptr = wlmaker_appicons_launcher(
+        server_ptr, wlmaker_appicons_at(a, layer_panel_ptr->press_index));
+    if (NULL != a) bspl_array_unref(a);
+    if (NULL == launcher_ptr) {
+        bs_log(BS_INFO, "Appicon %d: Nothing to launch, not docked.",
+               layer_panel_ptr->press_index);
+        return;
+    }
+    char *icon_ptr = wlmaker_dock_launcher_icon_path(
+        server_ptr->files_ptr,
+        wlmaker_dock_launcher_value(launcher_ptr, "Icon"));
+    struct wlr_buffer *image_ptr = wlmaker_dock_tile_buffer(
+        &server_ptr->style_ptr->tile, icon_ptr, NULL);
+    if (NULL != icon_ptr) free(icon_ptr);
+    if (NULL == image_ptr) {
+        bspl_dict_unref(launcher_ptr);
+        return;
+    }
+    // The tile is drawn at the compositor's size: Where it was grabbed.
+    struct wlr_box b = wlmtk_element_get_dimensions_box(
+        wlmtk_panel_element(&layer_panel_ptr->super_panel));
+    int size = server_ptr->style_ptr->tile.size;
+    int grab_x = layer_panel_ptr->press_tile_x, grab_y =
+        layer_panel_ptr->press_tile_y;
+    if (0 < b.height && size != b.height) {
+        grab_x = grab_x * size / b.height;
+        grab_y = grab_y * size / b.height;
+    }
+    wlmaker_tile_drag_source_t source = {
+        .kind = WLMAKER_TILE_DRAG_LAUNCHER,
+        .column = WLMAKER_COLUMN_NONE,
+        .image_ptr = image_ptr,
+        .grab_x = grab_x,
+        .grab_y = grab_y,
+        .launcher_ptr = launcher_ptr };
+    layer_panel_ptr->tile_drag_ptr = wlmaker_tile_drag_start(
+        server_ptr, &source, x, y);
+    wlr_buffer_drop(image_ptr);
+    bspl_dict_unref(launcher_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Shows the balloon of the launcher at `x`, `y` (panel coordinates), like
  * Window Maker's for docked icons. None for the Dock's main tile.
  */
@@ -1002,9 +1279,14 @@ void _wlmaker_layer_panel_balloon(
     if (NULL == server_ptr->dock_fx_ptr) return;
     int index, tx, ty;
     bool dock = layer_panel_ptr->is_dock;
-    if (!_wlmaker_layer_panel_tile_at(layer_panel_ptr, x, y,
-                                      &index, &tx, &ty) ||
-        (dock && 0 == index)) {
+    bool found = layer_panel_ptr->is_appicons ?
+        _wlmaker_layer_panel_appicon_at(layer_panel_ptr, x, y,
+                                        &index, &tx, &ty) :
+        _wlmaker_layer_panel_tile_at(layer_panel_ptr, x, y,
+                                     &index, &tx, &ty);
+    int launcher = (found && !layer_panel_ptr->is_appicons) ?
+        _wlmaker_layer_panel_launcher_at(layer_panel_ptr, index) : index;
+    if (!found || 0 > launcher) {
         wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, layer_panel_ptr);
         layer_panel_ptr->balloon_index = -1;
         return;
@@ -1012,15 +1294,24 @@ void _wlmaker_layer_panel_balloon(
     // Still the same tile: Its balloon is already shown, or pending.
     if (index == layer_panel_ptr->balloon_index) return;
     layer_panel_ptr->balloon_index = index;
-    if (dock) --index;
-    bspl_array_t *a = wlmaker_dock_launchers_load(
-        server_ptr, dock ? "Dock" : "Clip");
+    index = launcher;
     char *text_ptr = NULL;
-    if (NULL != a && (size_t)index < bspl_array_size(a)) {
-        text_ptr = wlmaker_dock_launcher_balloon_text(
-            bspl_dict_from_object(bspl_array_at(a, index)));
+    if (layer_panel_ptr->is_appicons) {
+        // Window Maker's appicons: The application's name.
+        bspl_array_t *a = wlmaker_appicons_load(NULL);
+        const char *n_ptr = wlmaker_dock_launcher_value(
+            wlmaker_appicons_at(a, index), "Name");
+        if (NULL != n_ptr && '\0' != *n_ptr) text_ptr = logged_strdup(n_ptr);
+        if (NULL != a) bspl_array_unref(a);
+    } else {
+        bspl_array_t *a = wlmaker_dock_launchers_load(
+            server_ptr, dock ? "Dock" : "Clip");
+        if (NULL != a && (size_t)index < bspl_array_size(a)) {
+            text_ptr = wlmaker_dock_launcher_balloon_text(
+                bspl_dict_from_object(bspl_array_at(a, index)));
+        }
+        if (NULL != a) bspl_array_unref(a);
     }
-    if (NULL != a) bspl_array_unref(a);
 
     struct wlr_box box;
     struct wlr_box area = {};

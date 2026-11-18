@@ -172,10 +172,10 @@ void wlmaker_dock_menu_open_launcher(
                 const char *t_ptr;
                 if (0 == i) {
                     t_ptr = (corner & WLR_EDGE_LEFT) ?
-                        "Move to Right Side" : "Move to Left Side";
+                        N_("Move to Right Side") : N_("Move to Left Side");
                 } else {
                     t_ptr = (corner & WLR_EDGE_TOP) ?
-                        "Move to Bottom" : "Move to Top";
+                        N_("Move to Bottom") : N_("Move to Top");
                 }
                 rv = _wlmaker_dock_menu_add(
                     cm_ptr, NULL, wlmaker_i18n(t_ptr),
@@ -229,9 +229,9 @@ bool wlmaker_dock_menu_add_dock_items(
             const char *text_ptr;
             wlmaker_dock_level_t level;
         } levels[] = {
-            { "Normal", WLMAKER_DOCK_LEVEL_NORMAL },
-            { "Auto raise & lower", WLMAKER_DOCK_LEVEL_AUTO_RAISE_LOWER },
-            { "Keep on Top", WLMAKER_DOCK_LEVEL_KEEP_ON_TOP },
+            { N_("Normal"), WLMAKER_DOCK_LEVEL_NORMAL },
+            { N_("Auto raise & lower"), WLMAKER_DOCK_LEVEL_AUTO_RAISE_LOWER },
+            { N_("Keep on Top"), WLMAKER_DOCK_LEVEL_KEEP_ON_TOP },
         };
         for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); ++i) {
             if (!_wlmaker_dock_menu_add(
@@ -336,14 +336,15 @@ bool wlmaker_dock_menu_add_icon_items(
         _wlmaker_dock_menu_arg_create(server_ptr, icon_ptr, icon_ptr->column, 0)) &&
         _wlmaker_dock_menu_add(
             context_menu_ptr, NULL,
-            wlmaker_i18n(all_hidden ? "Unhide Here" : "Bring Here"),
+            all_hidden ? wlmaker_i18n("Unhide Here") :
+            wlmaker_i18n("Bring Here"),
             WLMTK_MENU_ITEM_INDICATOR_NONE, false, 0 < windows,
             _wlmaker_dock_menu_bring_here,
             _wlmaker_dock_menu_arg_create(
                 server_ptr, icon_ptr, icon_ptr->column, 0)) &&
         _wlmaker_dock_menu_add(
             context_menu_ptr, NULL,
-            wlmaker_i18n(all_hidden ? "Unhide" : "Hide"),
+            all_hidden ? wlmaker_i18n("Unhide") : wlmaker_i18n("Hide"),
             WLMTK_MENU_ITEM_INDICATOR_NONE, false, 0 < windows,
             _wlmaker_dock_menu_hide,
             _wlmaker_dock_menu_arg_create(
@@ -605,18 +606,23 @@ void _wlmaker_dock_menu_kill(void *ud_ptr)
     const char *name_ptr = NULL != arg_ptr->dockapp_name_ptr ?
         arg_ptr->dockapp_name_ptr : arg_ptr->app_id_ptr;
     char *message_ptr = bs_strdupf(
-        "%s%s", NULL != name_ptr ? name_ptr : "",
-        wlmaker_i18n(" will be forcibly closed.\n"
+        // TRANSLATORS: %s is the name of the application.
+        wlmaker_i18n("%s will be forcibly closed.\n"
                      "Any unsaved changes will be lost.\n"
-                     "Please confirm."));
-    char *icon_ptr = wlmaker_dock_menu_logo_path(arg_ptr->server_ptr);
-    wlmaker_dialog_confirm(
+                     "Please confirm."),
+        NULL != name_ptr ? name_ptr : "");
+    // The application's own icon (or the dock-app's), else the logo.
+    cairo_surface_t *icon_ptr = wlmaker_dialog_app_icon(
+        arg_ptr->server_ptr,
+        NULL != arg_ptr->app_id_ptr ? arg_ptr->app_id_ptr :
+        arg_ptr->dockapp_name_ptr, NULL, NULL);
+    wlmaker_dialog_confirm_with_icon(
         arg_ptr->server_ptr, wlmaker_i18n("Kill Application"),
         NULL != message_ptr ? message_ptr : "",
         wlmaker_i18n("Yes"), wlmaker_i18n("No"), icon_ptr,
         _wlmaker_dock_menu_kill_confirmed, copy_ptr,
         _wlmaker_dock_menu_arg_destroy);
-    if (NULL != icon_ptr) free(icon_ptr);
+    if (NULL != icon_ptr) cairo_surface_destroy(icon_ptr);
     if (NULL != message_ptr) free(message_ptr);
 }
 

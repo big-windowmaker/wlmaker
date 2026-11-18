@@ -509,7 +509,9 @@ bool wlmaker_drawer_column(
 {
     wlmaker_dock_column_t dock;
     if (!wlmaker_clip_column(drawer_ptr->server_ptr, true, &dock)) return false;
-    int d = (1 + (int)drawer_ptr->launcher_index) * dock.pitch;
+    // At its tile on the Dock: Launchers and dock-apps share the Dock.
+    int d = (1 + (int)wlmaker_dock_column_launcher_position(
+                 &dock, drawer_ptr->launcher_index)) * dock.pitch;
     int x = dock.x, y = dock.y;
     switch (dock.place.anchor) {
     case WLR_EDGE_TOP: y += d; break;
@@ -527,6 +529,8 @@ bool wlmaker_drawer_column(
         .launchers = drawer_ptr->launchers,
         .dockapps = wlmaker_dockapps_size(drawer_ptr->dockapps_ptr),
         .output = dock.output };
+    // Its launchers first, then its dock-apps.
+    wlmaker_dock_column_set_sections(column_ptr);
     return true;
 }
 

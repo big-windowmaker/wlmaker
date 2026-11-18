@@ -32,6 +32,7 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_output_management_v1.h>
+#include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #undef WLR_USE_UNSTABLE
 
@@ -68,20 +69,50 @@ struct _wlmbe_output_manager_t {
     struct wlr_scene          *wlr_scene_ptr;
     /** Points to struct wlr_output_layout. */
     struct wlr_output_layout  *wlr_output_layout_ptr;
+    /** The scene's output layout, to add re-enabled outputs to. */
+    struct wlr_scene_output_layout *wlr_scene_output_layout_ptr;
     /** Points to struct wlr_backend. */
     struct wlr_backend        *wlr_backend_ptr;
+    /**
+     * All outputs (@ref wlmbe_output_t), enabled or disabled. Disabled
+     * outputs are not in the output layout, but are listed to clients.
+     */
+    bs_dllist_t               *outputs_ptr;
+    /** An output not to list (while its head is re-created). */
+    struct wlr_output         *excluded_output_ptr;
 };
+
+/** Argument to @ref _wlmbe_output_manager_update_output_configuration. */
+typedef struct {
+    /** The configuration to add heads to. */
+    struct wlr_output_configuration_v1 *config_ptr;
+    /** The output layout, for the position of enabled outputs. */
+    struct wlr_output_layout *wlr_output_layout_ptr;
+    /** Set to false if any head failed to be created. */
+    bool ok;
+    /** An output to leave out, or NULL. */
+    struct wlr_output *excluded_output_ptr;
+} _wlmbe_output_manager_update_arg_t;
 
 /** Argument to @ref _wlmaker_output_manager_config_head_apply. */
 typedef struct {
     /** Points to struct wlr_output_layout. */
     struct wlr_output_layout *wlr_output_layout_ptr;
+    /** The scene and its output layout: For outputs being re-enabled. */
+    struct wlr_scene *wlr_scene_ptr;
+    /** See @ref wlmbe_output_manager_t::wlr_scene_output_layout_ptr. */
+    struct wlr_scene_output_layout *wlr_scene_output_layout_ptr;
     /** Whether to test only, or to apply "really". */
     bool really;
+    /** The output manager. */
+    wlmbe_output_manager_t *output_manager_ptr;
 } _wlmaker_output_manager_config_head_apply_arg_t;
 
-static bool _wlmbe_output_manager_update_output_configuration(
-    struct wl_list *link_ptr,
+static bool _wlmbe_output_manager_fill_configuration(
+    wlmbe_output_manager_t *output_manager_ptr,
+    struct wlr_output_configuration_v1 *wlr_output_configuration_v1_ptr);
+static void _wlmbe_output_manager_update_output_configuration(
+    bs_dllist_node_t *dlnode_ptr,
     void *ud_ptr);
 static bool _wlmaker_output_manager_config_head_scale(
     struct wl_list *link_ptr,
@@ -89,6 +120,9 @@ static bool _wlmaker_output_manager_config_head_scale(
 static bool _wlmaker_output_manager_config_head_apply(
     struct wl_list *link_ptr,
     void *ud_ptr);
+static bool _wlmbe_output_manager_link_scene_output(
+    _wlmaker_output_manager_config_head_apply_arg_t *arg_ptr,
+    struct wlr_output_layout_output *wlr_output_layout_output_ptr);
 static bool _wlmbe_output_manager_apply(
     wlmbe_output_manager_t *output_manager_ptr,
     struct wlr_output_configuration_v1 *wlr_output_configuration_v1_ptr,
@@ -122,12 +156,17 @@ wlmbe_output_manager_t *wlmbe_output_manager_create(
     struct wl_display *wl_display_ptr,
     struct wlr_scene *wlr_scene_ptr,
     struct wlr_output_layout *wlr_output_layout_ptr,
-    struct wlr_backend *wlr_backend_ptr)
+    struct wlr_scene_output_layout *wlr_scene_output_layout_ptr,
+    struct wlr_backend *wlr_backend_ptr,
+    bs_dllist_t *outputs_ptr)
 {
     wlmbe_output_manager_t *output_manager_ptr = logged_calloc(
         1, sizeof(wlmbe_output_manager_t));
     if (NULL == output_manager_ptr) return NULL;
     output_manager_ptr->wlr_backend_ptr = wlr_backend_ptr;
+    output_manager_ptr->wlr_scene_output_layout_ptr =
+        wlr_scene_output_layout_ptr;
+    output_manager_ptr->outputs_ptr = outputs_ptr;
     output_manager_ptr->wlr_scene_ptr = wlr_scene_ptr;
     output_manager_ptr->wlr_output_layout_ptr = wlr_output_layout_ptr;
 
@@ -205,10 +244,8 @@ void wlmbe_output_manager_scale(
     }
 
     // First: retrieve each head's status, then scale them. Then, apply.
-    if (wlmtk_util_wl_list_for_each(
-            &output_manager_ptr->wlr_output_layout_ptr->outputs,
-            _wlmbe_output_manager_update_output_configuration,
-            wlr_output_configuration_v1_ptr)) {
+    if (_wlmbe_output_manager_fill_configuration(
+            output_manager_ptr, wlr_output_configuration_v1_ptr)) {
         wlmtk_util_wl_list_for_each(
             &wlr_output_configuration_v1_ptr->heads,
             _wlmaker_output_manager_config_head_scale,
@@ -225,51 +262,102 @@ void wlmbe_output_manager_scale(
         &output_manager_ptr->output_layout_change_listener, NULL);
 }
 
+/* ------------------------------------------------------------------------- */
+bool wlmbe_output_manager_apply(
+    wlmbe_output_manager_t *output_manager_ptr,
+    struct wlr_output_configuration_v1 *wlr_output_configuration_v1_ptr)
+{
+    bool rv = _wlmbe_output_manager_apply(
+        output_manager_ptr, wlr_output_configuration_v1_ptr, true);
+    wlmbe_output_manager_update(output_manager_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_output_manager_v1 *wlmbe_output_manager_wlr(
+    wlmbe_output_manager_t *output_manager_ptr)
+{
+    return output_manager_ptr->wlr_output_manager_v1_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmbe_output_manager_update(wlmbe_output_manager_t *output_manager_ptr)
+{
+    if (NULL == output_manager_ptr) return;
+    _wlmbe_output_manager_handle_output_layout_change(
+        &output_manager_ptr->output_layout_change_listener, NULL);
+}
+
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */
 /**
- * Iterator for the `struct wlr_output_layout_output` referenced from
- * `struct wlr_output_layout::outputs`.
+ * Adds a configuration head for each output, enabled or disabled.
  *
- * Adds the configuration head for the given output to the provided output
- * configuration.
+ * Disabled outputs are not part of the output layout. They are listed all
+ * the same, so that clients can enable them again.
  *
- * @param link_ptr            struct wlr_output_layout_output::link.
- * @param ud_ptr              The output configuration, a pointer to
- *                            `struct wlr_output_configuration_v1`.
+ * @param output_manager_ptr
+ * @param wlr_output_configuration_v1_ptr
  *
  * @return true on success.
  */
-bool _wlmbe_output_manager_update_output_configuration(
-    struct wl_list *link_ptr,
+bool _wlmbe_output_manager_fill_configuration(
+    wlmbe_output_manager_t *output_manager_ptr,
+    struct wlr_output_configuration_v1 *wlr_output_configuration_v1_ptr)
+{
+    _wlmbe_output_manager_update_arg_t arg = {
+        .config_ptr = wlr_output_configuration_v1_ptr,
+        .wlr_output_layout_ptr = output_manager_ptr->wlr_output_layout_ptr,
+        .ok = true,
+        .excluded_output_ptr = output_manager_ptr->excluded_output_ptr
+    };
+    if (NULL == output_manager_ptr->outputs_ptr) return false;
+    bs_dllist_for_each(
+        output_manager_ptr->outputs_ptr,
+        _wlmbe_output_manager_update_output_configuration,
+        &arg);
+    return arg.ok;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Iterator for @ref wlmbe_output_manager_t::outputs_ptr.
+ *
+ * Adds the configuration head for the given output to the provided output
+ * configuration. Enabled outputs carry their position in the layout.
+ *
+ * @param dlnode_ptr          @ref wlmbe_output_t::dlnode.
+ * @param ud_ptr              Points to @ref _wlmbe_output_manager_update_arg_t.
+ */
+void _wlmbe_output_manager_update_output_configuration(
+    bs_dllist_node_t *dlnode_ptr,
     void *ud_ptr)
 {
-    struct wlr_output_layout_output *wlr_output_layout_output_ptr =
-        BS_CONTAINER_OF(link_ptr, struct wlr_output_layout_output, link);
-    struct wlr_output_configuration_v1 *wlr_output_configuration_v1_ptr =
-        ud_ptr;
+    _wlmbe_output_manager_update_arg_t *arg_ptr = ud_ptr;
+    struct wlr_output *wlr_output_ptr = wlmbe_wlr_output_from_output(
+        wlmbe_output_from_dlnode(dlnode_ptr));
+    if (NULL == wlr_output_ptr ||
+        wlr_output_ptr == arg_ptr->excluded_output_ptr) return;
 
     struct wlr_output_configuration_head_v1 *head_v1_ptr =
         wlr_output_configuration_head_v1_create(
-            wlr_output_configuration_v1_ptr,
-            wlr_output_layout_output_ptr->output);
+            arg_ptr->config_ptr, wlr_output_ptr);
     if (NULL == head_v1_ptr) {
         bs_log(BS_ERROR,
                "Failed wlr_output_configuration_head_v1_create(%p, %p)",
-               wlr_output_configuration_v1_ptr,
-               wlr_output_layout_output_ptr->output);
-        return false;
+               arg_ptr->config_ptr, wlr_output_ptr);
+        arg_ptr->ok = false;
+        return;
     }
 
+    if (NULL == wlr_output_layout_get(arg_ptr->wlr_output_layout_ptr,
+                                      wlr_output_ptr)) return;
     struct wlr_box box;
     wlr_output_layout_get_box(
-        wlr_output_layout_output_ptr->layout,
-        wlr_output_layout_output_ptr->output,
-        &box);
+        arg_ptr->wlr_output_layout_ptr, wlr_output_ptr, &box);
     head_v1_ptr->state.x = box.x;
     head_v1_ptr->state.y = box.y;
-    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -327,17 +415,41 @@ static bool _wlmaker_output_manager_config_head_apply(
     if (!wlr_output_test_state(wlr_output_ptr, &state)) return false;
     if (!arg_ptr->really) return true;
 
+    // Enabling an output without modes (nested or headless backends): wlroots
+    // then sends a virtual mode to each client's head, but only if no client
+    // has one already, and asserts when a client that bound while the output
+    // was disabled has none. Re-creating the head gives every client one.
+    if (head_v1_ptr->state.enabled && !wlr_output_ptr->enabled &&
+        wl_list_empty(&wlr_output_ptr->modes) &&
+        NULL != arg_ptr->output_manager_ptr) {
+        arg_ptr->output_manager_ptr->excluded_output_ptr = wlr_output_ptr;
+        wlmbe_output_manager_update(arg_ptr->output_manager_ptr);
+        arg_ptr->output_manager_ptr->excluded_output_ptr = NULL;
+    }
+
     if (!wlr_output_commit_state(wlr_output_ptr, &state)) return false;
 
     int x = head_v1_ptr->state.x, y = head_v1_ptr->state.y;
     struct wlr_output_layout *wlr_output_layout_ptr =
         arg_ptr->wlr_output_layout_ptr;
-    if (head_v1_ptr->state.enabled &&
-        !wlr_output_layout_add(wlr_output_layout_ptr, wlr_output_ptr, x, y)) {
-        bs_log(BS_ERROR, "Failed wlr_output_layout_add(%p, %p, %d, %d)",
-               wlr_output_layout_ptr, wlr_output_ptr, x, y);
-        return false;
-    } else if (!head_v1_ptr->state.enabled) {
+    bool was_in_layout =
+        NULL != wlr_output_layout_get(wlr_output_layout_ptr, wlr_output_ptr);
+    if (head_v1_ptr->state.enabled) {
+        struct wlr_output_layout_output *wlr_output_layout_output_ptr =
+            wlr_output_layout_add(wlr_output_layout_ptr, wlr_output_ptr, x, y);
+        if (NULL == wlr_output_layout_output_ptr) {
+            bs_log(BS_ERROR, "Failed wlr_output_layout_add(%p, %p, %d, %d)",
+                   wlr_output_layout_ptr, wlr_output_ptr, x, y);
+            return false;
+        }
+        // An output (re-)entering the layout: The scene output must follow
+        // the new layout output (removing it from the layout had unlinked
+        // them), or be created if the output was created disabled.
+        if (!was_in_layout && !_wlmbe_output_manager_link_scene_output(
+                arg_ptr, wlr_output_layout_output_ptr)) {
+            return false;
+        }
+    } else {
         wlr_output_layout_remove(wlr_output_layout_ptr, wlr_output_ptr);
     }
 
@@ -366,6 +478,42 @@ static bool _wlmaker_output_manager_config_head_apply(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Links the output's scene output to its (new) layout output, creating the
+ * scene output if there is none yet.
+ *
+ * @param arg_ptr
+ * @param wlr_output_layout_output_ptr
+ *
+ * @return true on success.
+ */
+bool _wlmbe_output_manager_link_scene_output(
+    _wlmaker_output_manager_config_head_apply_arg_t *arg_ptr,
+    struct wlr_output_layout_output *wlr_output_layout_output_ptr)
+{
+    if (NULL == arg_ptr->wlr_scene_ptr ||
+        NULL == arg_ptr->wlr_scene_output_layout_ptr) return true;
+
+    struct wlr_output *wlr_output_ptr = wlr_output_layout_output_ptr->output;
+    struct wlr_scene_output *wlr_scene_output_ptr =
+        wlr_scene_get_scene_output(arg_ptr->wlr_scene_ptr, wlr_output_ptr);
+    if (NULL == wlr_scene_output_ptr) {
+        wlr_scene_output_ptr = wlr_scene_output_create(
+            arg_ptr->wlr_scene_ptr, wlr_output_ptr);
+    }
+    if (NULL == wlr_scene_output_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_scene_output_create(%p, %p)",
+               arg_ptr->wlr_scene_ptr, wlr_output_ptr);
+        return false;
+    }
+    wlr_scene_output_layout_add_output(
+        arg_ptr->wlr_scene_output_layout_ptr,
+        wlr_output_layout_output_ptr,
+        wlr_scene_output_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Tests and applies an output configuration.
  *
  * @param output_manager_ptr
@@ -381,7 +529,11 @@ bool _wlmbe_output_manager_apply(
 {
     _wlmaker_output_manager_config_head_apply_arg_t arg = {
         .wlr_output_layout_ptr = output_manager_ptr->wlr_output_layout_ptr,
-        .really = really
+        .wlr_scene_ptr = output_manager_ptr->wlr_scene_ptr,
+        .wlr_scene_output_layout_ptr =
+            output_manager_ptr->wlr_scene_output_layout_ptr,
+        .really = really,
+        .output_manager_ptr = output_manager_ptr
     };
     if (!wlmtk_util_wl_list_for_each(
             &wlr_output_configuration_v1_ptr->heads,
@@ -526,10 +678,8 @@ void _wlmbe_output_manager_handle_output_layout_change(
         return;
     }
 
-    if (wlmtk_util_wl_list_for_each(
-            &output_manager_ptr->wlr_output_layout_ptr->outputs,
-            _wlmbe_output_manager_update_output_configuration,
-            wlr_output_configuration_v1_ptr)) {
+    if (_wlmbe_output_manager_fill_configuration(
+            output_manager_ptr, wlr_output_configuration_v1_ptr)) {
         wlr_output_manager_v1_set_configuration(
             output_manager_ptr->wlr_output_manager_v1_ptr,
             wlr_output_configuration_v1_ptr);

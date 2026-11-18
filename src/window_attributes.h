@@ -38,7 +38,8 @@ extern "C" {
  * "instance.class", "instance", "class" or "*" (the most specific key with
  * the attribute wins). A Wayland app ID is both instance and class.
  *
- * Attributes: `NoMiniaturizeButton`, `NoCloseButton`, `NoResizebar`.
+ * Attributes: `NoMiniaturizeButton`, `NoCloseButton`, `NoResizebar`
+ * (and `ServerDecoration`, @ref wlmaker_window_attributes_server_decoration).
  * As on Window Maker, a window of fixed size has no resize bar.
  *
  * @param config_dict_ptr     The configuration, or NULL.
@@ -55,6 +56,26 @@ uint32_t wlmaker_window_attributes_properties(
     const char *class_ptr,
     const char *instance_ptr,
     bool fixed_size);
+
+/**
+ * Whether wlmaker frames the application's windows regardless of what the
+ * client asks: The attribute `ServerDecoration` of `WindowAttributes`
+ * (looked up as for @ref wlmaker_window_attributes_properties). `Yes`
+ * gives the window Window Maker's title bar and resize bar even if the
+ * client draws its own decorations (xdg-decoration client-side, no
+ * decoration protocol, or X11 `_MOTIF_WM_HINTS` without decorations);
+ * `No` never frames it.
+ *
+ * @param config_dict_ptr     The configuration, or NULL.
+ * @param class_ptr           WM_CLASS class, or the app ID. May be NULL.
+ * @param instance_ptr        WM_CLASS instance, or the app ID. May be NULL.
+ *
+ * @return 1 (Yes), 0 (No) or -1 (not set: the client decides).
+ */
+int wlmaker_window_attributes_server_decoration(
+    bspl_dict_t *config_dict_ptr,
+    const char *class_ptr,
+    const char *instance_ptr);
 
 /** Unit test cases. */
 extern const bs_test_set_t wlmaker_window_attributes_test_set;

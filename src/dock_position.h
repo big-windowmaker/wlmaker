@@ -116,6 +116,15 @@ bool wlmaker_dock_place_decode(
  */
 bspl_dict_t *wlmaker_dock_place_encode(wlmaker_dock_place_t place);
 
+/**
+ * @return Path of the file where the compositor publishes how launchers and
+ *     dock-apps share the Dock and the Clip, for `wlmdock` (which leaves
+ *     room for the dock-apps among its launchers) and other clients. In
+ *     `$XDG_RUNTIME_DIR`, for the Wayland display `display_ptr`. NULL on
+ *     error. To be free()-d.
+ */
+char *wlmaker_dock_layout_fname(const char *display_ptr);
+
 /** Unit test cases. */
 extern const bs_test_set_t wlmaker_dock_position_test_set;
 

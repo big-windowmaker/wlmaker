@@ -306,9 +306,21 @@ void wlmaker_context_menu_open(wlmaker_context_menu_t *context_menu_ptr)
                         WLMTK_MENU_MODE_RIGHTCLICK);
     wlmtk_menu_set_open(context_menu_ptr->menu_ptr, true);
 
-    // Not over an open drawer (which is above the windows): Below, or
-    // above it. With its items, the menu has its full size now.
+    // With its items, the menu has its full size now: Within the usable
+    // area again (Window Maker's wMenuMapAt keeps it on the screen), eg.
+    // opened from an application icon at the bottom.
     bbox = wlmtk_window_get_bounding_box(context_menu_ptr->window_ptr);
+    pos = wlmaker_context_menu_confine(
+        &area, bbox.x, bbox.y, bbox.width, bbox.height);
+    if (pos.x != bbox.x || pos.y != bbox.y) {
+        wx += pos.x - bbox.x;
+        wy += pos.y - bbox.y;
+        wlmtk_workspace_set_window_position(
+            workspace_ptr, context_menu_ptr->window_ptr, wx, wy);
+        bbox = wlmtk_window_get_bounding_box(context_menu_ptr->window_ptr);
+    }
+    // Not over an open drawer (which is above the windows): Below, or
+    // above it.
     struct wlr_box moved = bbox;
     for (int id = 2; NULL != server_ptr->clip_ptr &&
              id < wlmaker_clip_columns(server_ptr); ++id) {

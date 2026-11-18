@@ -36,6 +36,8 @@
 #include <wayland-util.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/backend.h>
+#include <wlr/backend/headless.h>
+#include <wlr/backend/multi.h>
 #include <wlr/backend/session.h>
 #include <wlr/backend/wayland.h>
 #include <wlr/config.h>
@@ -54,6 +56,7 @@
 #include <wlr/types/wlr_gamma_control_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_output_management_v1.h>
 #include <wlr/types/wlr_output_power_management_v1.h>
 #include <wlr/types/wlr_presentation_time.h>
 #include <wlr/types/wlr_scene.h>
@@ -65,6 +68,7 @@
 #include "output.h"
 #include "output_config.h"
 #include "output_manager.h"
+#include "zoom.h"
 
 /* == Declarations ========================================================= */
 
@@ -105,6 +109,8 @@ struct _wlmbe_backend_t {
     struct wl_listener        output_power_set_mode_listener;
     /** The output manager(s). */
     wlmbe_output_manager_t    *output_manager_ptr;
+    /** The accessibility zoom of all outputs. */
+    wlmbe_zoom_t              *zoom_ptr;
 
     /** Listener for wlr_backend::events::new_output. */
     struct wl_listener        new_output_listener;
@@ -298,6 +304,17 @@ wlmbe_backend_t *wlmbe_backend_create(
         return NULL;
     }
 
+    backend_ptr->zoom_ptr = wlmbe_zoom_create(
+        wlr_scene_ptr,
+        wlr_output_layout_ptr,
+        backend_ptr->wlr_renderer_ptr,
+        backend_ptr->wlr_allocator_ptr,
+        bspl_dict_get_dict(config_dict_ptr, "Zoom"));
+    if (NULL == backend_ptr->zoom_ptr) {
+        wlmbe_backend_destroy(backend_ptr);
+        return NULL;
+    }
+
     backend_ptr->wlr_scene_output_layout_ptr =
         wlr_scene_attach_output_layout(
             wlr_scene_ptr,
@@ -404,7 +421,9 @@ wlmbe_backend_t *wlmbe_backend_create(
         wl_display_ptr,
         wlr_scene_ptr,
         wlr_output_layout_ptr,
-        backend_ptr->wlr_backend_ptr);
+        backend_ptr->wlr_scene_output_layout_ptr,
+        backend_ptr->wlr_backend_ptr,
+        &backend_ptr->outputs);
     if (NULL == backend_ptr->output_manager_ptr) {
         wlmbe_backend_destroy(backend_ptr);
         return NULL;
@@ -427,6 +446,19 @@ void wlmbe_backend_destroy(wlmbe_backend_t *backend_ptr)
     if (NULL != backend_ptr->output_manager_ptr) {
         wlmbe_output_manager_destroy(backend_ptr->output_manager_ptr);
         backend_ptr->output_manager_ptr = NULL;
+    }
+
+    // The outputs are destroyed with the wlr_backend, after this: They must
+    // not refer to the list any longer.
+    for (bs_dllist_node_t *dlnode_ptr = backend_ptr->outputs.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = backend_ptr->outputs.head_ptr) {
+        wlmbe_output_set_list(wlmbe_output_from_dlnode(dlnode_ptr), NULL);
+    }
+
+    if (NULL != backend_ptr->zoom_ptr) {
+        wlmbe_zoom_destroy(backend_ptr->zoom_ptr);
+        backend_ptr->zoom_ptr = NULL;
     }
 
     if (NULL != backend_ptr->wlr_renderer_ptr) {
@@ -515,6 +547,12 @@ void wlmbe_backend_reduce(wlmbe_backend_t *backend_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+wlmbe_zoom_t *wlmbe_backend_zoom(wlmbe_backend_t *backend_ptr)
+{
+    return backend_ptr->zoom_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 bool wlmbe_backend_save_ephemeral_output_configs(wlmbe_backend_t *backend_ptr)
 {
     bspl_dict_t *dict_ptr = bspl_encode_dict(
@@ -559,6 +597,20 @@ bool _wlmbe_backend_add_output(
     BS_ASSERT(NULL != attr_ptr);
 
     struct wlr_output *wlrop = wlmbe_wlr_output_from_output(output_ptr);
+
+    // In the list before entering the layout: The layout's change event
+    // makes the output manager list all outputs to its clients.
+    wlmbe_output_set_list(output_ptr, &backend_ptr->outputs);
+
+    // A disabled output stays out of the layout, but is kept: Output
+    // management clients list it, and may enable it.
+    if (!wlrop->enabled) {
+        wlmbe_output_manager_update(backend_ptr->output_manager_ptr);
+        bs_log(BS_INFO, "Created: Output <%s> disabled",
+               wlmbe_output_description(output_ptr));
+        return true;
+    }
+
     struct wlr_output_layout_output *wlr_output_layout_output_ptr = NULL;
     if (attr_ptr->has_position) {
         wlr_output_layout_output_ptr = wlr_output_layout_add(
@@ -583,10 +635,6 @@ bool _wlmbe_backend_add_output(
         backend_ptr->wlr_scene_output_layout_ptr,
         wlr_output_layout_output_ptr,
         wlr_scene_output_ptr);
-
-    bs_dllist_push_back(
-        &backend_ptr->outputs,
-        wlmbe_dlnode_from_output(output_ptr));
 
     bs_log(BS_INFO,
            "Created: Output <%s> %s to %dx%d@%.2f x%.2f position (%d,%d) %s",
@@ -618,21 +666,21 @@ void _wlmbe_backend_handle_new_output(
     }
 
     // See if there is an exact match among the ephemeral output configs. If
-    // yes, pick that configuration. Otherwise, create a new one.
+    // yes, pick that configuration. Otherwise, create a new one. An output
+    // explicitly configured as disabled is created disabled (and listed for
+    // output management clients, which can enable it again).
     wlmbe_output_config_t *config_ptr = wlmbe_output_config_from_dlnode(
         bs_dllist_find(
             &backend_ptr->ephemeral_output_configs,
             wlmbe_output_config_equals,
             wlr_output_ptr));
-    if (NULL != config_ptr &&
-        !wlmbe_output_config_attributes(config_ptr)->enabled) {
-        // Explicitly configured to be disabled. Skip that output.
-        wlr_output_destroy(wlr_output_ptr);
-        return;
-    }
-
     if (NULL == config_ptr) {
         config_ptr = wlmbe_output_config_create_from_wlr(wlr_output_ptr);
+        if (NULL == config_ptr) {
+            wlr_output_destroy(wlr_output_ptr);
+            return;
+        }
+        wlmbe_output_config_init_discovered(config_ptr, wlr_output_ptr);
         bs_dllist_push_front(
             &backend_ptr->ephemeral_output_configs,
             wlmbe_dlnode_from_output_config(config_ptr));
@@ -657,6 +705,7 @@ void _wlmbe_backend_handle_new_output(
         backend_ptr->wlr_allocator_ptr,
         backend_ptr->wlr_renderer_ptr,
         backend_ptr->wlr_scene_ptr,
+        backend_ptr->zoom_ptr,
         config_ptr,
         backend_ptr->width,
         backend_ptr->height);
@@ -885,11 +934,13 @@ bool _wlmbe_autocreated_renderer_is_software(
 
 static void _wlmbe_backend_test_find(bs_test_t *test_ptr);
 static void _wlmbe_backend_test_encode_output_configs(bs_test_t *test_ptr);
+static void _wlmbe_backend_test_disabled_output(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmbe_backend_test_cases[] = {
     { 1, "find", _wlmbe_backend_test_find },
     { 1, "encode_output_configs", _wlmbe_backend_test_encode_output_configs },
+    { 1, "disabled_output", _wlmbe_backend_test_disabled_output },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -1034,6 +1085,165 @@ void _wlmbe_backend_test_encode_output_configs(bs_test_t *test_ptr)
     bspl_dict_unref(dict_ptr);
     wlmbe_output_config_destroy(c2);
     wlmbe_output_config_destroy(c1);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Callback for wlr_multi_for_each_backend: Finds the headless backend. */
+static void _wlmbe_backend_test_find_headless(
+    struct wlr_backend *wlr_backend_ptr,
+    void *ud_ptr)
+{
+    if (wlr_backend_is_headless(wlr_backend_ptr)) {
+        *(struct wlr_backend**)ud_ptr = wlr_backend_ptr;
+    }
+}
+
+/** Returns the head of `wlr_output_ptr` in the output manager, or NULL. */
+static struct wlr_output_head_v1 *_wlmbe_backend_test_head(
+    wlmbe_backend_t *backend_ptr,
+    struct wlr_output *wlr_output_ptr)
+{
+    struct wlr_output_manager_v1 *m = wlmbe_output_manager_wlr(
+        backend_ptr->output_manager_ptr);
+    struct wlr_output_head_v1 *head_ptr;
+    wl_list_for_each(head_ptr, &m->heads, link) {
+        if (head_ptr->state.output == wlr_output_ptr) return head_ptr;
+    }
+    return NULL;
+}
+
+/** Applies a configuration with `wlr_output_ptr` enabled or not, at x. */
+static bool _wlmbe_backend_test_configure(
+    wlmbe_backend_t *backend_ptr,
+    struct wlr_output *wlr_output_ptr,
+    bool enabled,
+    int x)
+{
+    struct wlr_output_configuration_v1 *c =
+        wlr_output_configuration_v1_create();
+    for (bs_dllist_node_t *dlnode_ptr = backend_ptr->outputs.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = dlnode_ptr->next_ptr) {
+        struct wlr_output *o = wlmbe_wlr_output_from_output(
+            wlmbe_output_from_dlnode(dlnode_ptr));
+        struct wlr_output_configuration_head_v1 *h =
+            wlr_output_configuration_head_v1_create(c, o);
+        if (o == wlr_output_ptr) {
+            h->state.enabled = enabled;
+            h->state.x = x;
+        } else {
+            struct wlr_box box;
+            wlr_output_layout_get_box(
+                backend_ptr->wlr_output_layout_ptr, o, &box);
+            h->state.x = box.x;
+            h->state.y = box.y;
+        }
+    }
+    bool rv = wlmbe_output_manager_apply(backend_ptr->output_manager_ptr, c);
+    wlr_output_configuration_v1_destroy(c);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tests that a disabled output stays listed to output management clients,
+ * can be enabled again (rendered at its new position), and that an output
+ * configured as disabled is created disabled instead of being destroyed.
+ */
+void _wlmbe_backend_test_disabled_output(bs_test_t *test_ptr)
+{
+    setenv("WLR_BACKENDS", "headless", 1);
+    setenv("WLR_RENDERER", "pixman", 1);
+    struct wl_display *wl_display_ptr = wl_display_create();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, wl_display_ptr);
+    struct wlr_scene *wlr_scene_ptr = wlr_scene_create();
+    struct wlr_output_layout *wlr_output_layout_ptr =
+        wlr_output_layout_create(wl_display_ptr);
+    bspl_object_t *config_ptr = bspl_create_object_from_plist_string(
+        "{Outputs = ();}");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, config_ptr);
+    bspl_dict_t *config_dict_ptr = bspl_dict_from_object(config_ptr);
+    bspl_object_t *state_ptr = bspl_create_object_from_plist_string(
+        "{Outputs = ({Name = \"HEADLESS-4\"; Enabled = False; "
+        "Transformation = Normal; Scale = 1.0;});}");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, state_ptr);
+
+    wlmbe_backend_t *be = wlmbe_backend_create(
+        wl_display_ptr, wlr_scene_ptr, wlr_output_layout_ptr, 0, 0,
+        config_dict_ptr, "/nonexistent/OutputState.plist");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, be);
+    BS_TEST_VERIFY_TRUE(
+        test_ptr,
+        bspl_decode_dict(bspl_dict_from_object(state_ptr),
+                         _wlmbe_outputs_state_desc, be));
+    struct wlr_backend *headless_ptr = NULL;
+    wlr_multi_for_each_backend(
+        be->wlr_backend_ptr, _wlmbe_backend_test_find_headless, &headless_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, headless_ptr);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlr_backend_start(be->wlr_backend_ptr));
+
+    struct wlr_output *a = wlr_headless_add_output(headless_ptr, 640, 480);
+    struct wlr_output *b = wlr_headless_add_output(headless_ptr, 800, 600);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, a);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, b);
+    // The headless backend starts with one output of its own.
+    BS_TEST_VERIFY_EQ(test_ptr, 3, bs_dllist_size(&be->outputs));
+    BS_TEST_VERIFY_TRUE(test_ptr, a->enabled);
+    BS_TEST_VERIFY_TRUE(test_ptr, b->enabled);
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, _wlmbe_backend_test_head(be, b));
+
+    // Disable 'b': Leaves the layout, but stays listed (disabled).
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmbe_backend_test_configure(be, b, false, 0));
+    BS_TEST_VERIFY_FALSE(test_ptr, b->enabled);
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlr_output_layout_get(
+                          wlr_output_layout_ptr, b));
+    struct wlr_output_head_v1 *h = _wlmbe_backend_test_head(be, b);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, h);
+    BS_TEST_VERIFY_FALSE(test_ptr, h->state.enabled);
+
+    // Enable 'b' again, at 2000: In the layout, scene output follows.
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmbe_backend_test_configure(be, b, true, 2000));
+    BS_TEST_VERIFY_TRUE(test_ptr, b->enabled);
+    struct wlr_box box;
+    wlr_output_layout_get_box(wlr_output_layout_ptr, b, &box);
+    BS_TEST_VERIFY_EQ(test_ptr, 2000, box.x);
+    struct wlr_scene_output *so = wlr_scene_get_scene_output(wlr_scene_ptr, b);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, so);
+    BS_TEST_VERIFY_EQ(test_ptr, 2000, so->x);
+    h = _wlmbe_backend_test_head(be, b);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, h);
+    BS_TEST_VERIFY_TRUE(test_ptr, h->state.enabled);
+    BS_TEST_VERIFY_EQ(test_ptr, 2000, h->state.x);
+
+    // An output configured as disabled: Created disabled, listed, enabled.
+    struct wlr_output *c = wlr_headless_add_output(headless_ptr, 640, 480);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, c);
+    BS_TEST_VERIFY_STREQ(test_ptr, "HEADLESS-4", c->name);
+    BS_TEST_VERIFY_EQ(test_ptr, 4, bs_dllist_size(&be->outputs));
+    BS_TEST_VERIFY_FALSE(test_ptr, c->enabled);
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlr_output_layout_get(
+                          wlr_output_layout_ptr, c));
+    h = _wlmbe_backend_test_head(be, c);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, h);
+    BS_TEST_VERIFY_FALSE(test_ptr, h->state.enabled);
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmbe_backend_test_configure(be, c, true, 3000));
+    BS_TEST_VERIFY_TRUE(test_ptr, c->enabled);
+    so = wlr_scene_get_scene_output(wlr_scene_ptr, c);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, so);
+    BS_TEST_VERIFY_EQ(test_ptr, 3000, so->x);
+
+    // Unplugging an output removes it from the list and from the heads.
+    wlr_output_destroy(a);
+    BS_TEST_VERIFY_EQ(test_ptr, 3, bs_dllist_size(&be->outputs));
+    wlmbe_output_manager_update(be->output_manager_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, _wlmbe_backend_test_head(be, a));
+
+    bspl_object_unref(state_ptr);
+    bspl_object_unref(config_ptr);
+    wlmbe_backend_destroy(be);
+    wl_display_destroy_clients(wl_display_ptr);
+    wl_display_destroy(wl_display_ptr);
+    wlr_scene_node_destroy(&wlr_scene_ptr->tree.node);
 }
 
 /* == End of backend.c ===================================================== */

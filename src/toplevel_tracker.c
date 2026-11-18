@@ -23,6 +23,7 @@
 #include <libbase/libbase.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <wayland-server-core.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
@@ -75,6 +76,11 @@ struct wlmaker_toplevel_tracker_handle {
     struct wl_listener        request_close_listener;
     /** Window activation changes, mirrored as the `activated` state. */
     struct wl_listener        window_set_activated_listener;
+    /**
+     * Window state changes (minimized by the compositor: its button, the
+     * Dock's or an application icon's "Hide"), mirrored as `minimized`.
+     */
+    struct wl_listener        window_state_changed_listener;
 };
 
 static void _wlmaker_toplevel_tracker_handle_request_activate(
@@ -84,6 +90,8 @@ static void _wlmaker_toplevel_tracker_handle_request_minimize(
 static void _wlmaker_toplevel_tracker_handle_request_close(
     struct wl_listener *listener_ptr, void *data_ptr);
 static void _wlmaker_toplevel_tracker_handle_window_set_activated(
+    struct wl_listener *listener_ptr, void *data_ptr);
+static void _wlmaker_toplevel_tracker_handle_window_state_changed(
     struct wl_listener *listener_ptr, void *data_ptr);
 
 static void _wlmaker_toplevel_tracker_destroy(
@@ -155,6 +163,10 @@ struct wlmaker_toplevel_tracker_handle *wlmaker_toplevel_tracker_handle_create(
                 &wlmtk_window_events(window_ptr)->set_activated,
                 &handle_ptr->window_set_activated_listener,
                 _wlmaker_toplevel_tracker_handle_window_set_activated);
+            wlmtk_util_connect_listener_signal(
+                &wlmtk_window_events(window_ptr)->state_changed,
+                &handle_ptr->window_state_changed_listener,
+                _wlmaker_toplevel_tracker_handle_window_state_changed);
         }
     }
 
@@ -176,6 +188,8 @@ void wlmaker_toplevel_tracker_handle_destroy(
         if (NULL != handle_ptr->window_ptr) {
             wlmtk_util_disconnect_listener(
                 &handle_ptr->window_set_activated_listener);
+            wlmtk_util_disconnect_listener(
+                &handle_ptr->window_state_changed_listener);
         }
         wlr_foreign_toplevel_handle_v1_destroy(handle_ptr->wlr_handle_ptr);
         handle_ptr->wlr_handle_ptr = NULL;
@@ -326,6 +340,20 @@ void _wlmaker_toplevel_tracker_handle_request_close(
 }
 
 /* ------------------------------------------------------------------------- */
+/** Mirrors the window's minimized state as the handle's `minimized`. */
+void _wlmaker_toplevel_tracker_handle_window_state_changed(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    struct wlmaker_toplevel_tracker_handle *handle_ptr = BS_CONTAINER_OF(
+        listener_ptr, struct wlmaker_toplevel_tracker_handle,
+        window_state_changed_listener);
+    wlr_foreign_toplevel_handle_v1_set_minimized(
+        handle_ptr->wlr_handle_ptr,
+        wlmtk_window_is_minimized(handle_ptr->window_ptr));
+}
+
+/* ------------------------------------------------------------------------- */
 /** Mirrors the window's activation into the `activated` state. */
 void _wlmaker_toplevel_tracker_handle_window_set_activated(
     struct wl_listener *listener_ptr,
@@ -385,9 +413,32 @@ size_t wlmaker_toplevel_tracker_for_each_app_window(
         dlnode_ptr = dlnode_ptr->next_ptr;
         if (NULL == handle_ptr->window_ptr ||
             NULL == handle_ptr->app_id_ptr ||
-            0 != strcmp(handle_ptr->app_id_ptr, app_id_ptr)) continue;
+            0 != strcasecmp(handle_ptr->app_id_ptr, app_id_ptr)) continue;
         ++windows;
         if (NULL != callback) callback(handle_ptr->window_ptr, ud_ptr);
+    }
+    return windows;
+}
+
+/* ------------------------------------------------------------------------- */
+size_t wlmaker_toplevel_tracker_for_each_window(
+    struct wlmaker_toplevel_tracker *toplevel_tracker_ptr,
+    wlmaker_toplevel_tracker_any_window_callback_t callback,
+    void *ud_ptr)
+{
+    if (NULL == toplevel_tracker_ptr) return 0;
+    size_t windows = 0;
+    bs_dllist_node_t *dlnode_ptr = toplevel_tracker_ptr->toplevels.head_ptr;
+    while (NULL != dlnode_ptr) {
+        struct wlmaker_toplevel_tracker_handle *handle_ptr = BS_CONTAINER_OF(
+            dlnode_ptr, struct wlmaker_toplevel_tracker_handle, dlnode);
+        // The callback may close the window: Step ahead first.
+        dlnode_ptr = dlnode_ptr->next_ptr;
+        if (NULL == handle_ptr->window_ptr) continue;
+        ++windows;
+        if (NULL != callback) {
+            callback(handle_ptr->window_ptr, handle_ptr->app_id_ptr, ud_ptr);
+        }
     }
     return windows;
 }
@@ -433,6 +484,17 @@ static void _test_count_window(__UNUSED__ wlmtk_window_t *w, void *ud_ptr)
     ++*(int*)ud_ptr;
 }
 
+/** Counts the windows of "firefox", for the test. */
+static void _test_count_firefox(
+    __UNUSED__ wlmtk_window_t *w,
+    const char *app_id_ptr,
+    void *ud_ptr)
+{
+    if (NULL != app_id_ptr && 0 == strcmp(app_id_ptr, "firefox")) {
+        ++*(int*)ud_ptr;
+    }
+}
+
 /** Tests finding the windows of an application by app ID. */
 void _wlmaker_toplevel_tracker_test_app_windows(bs_test_t *test_ptr)
 {
@@ -456,6 +518,15 @@ void _wlmaker_toplevel_tracker_test_app_windows(bs_test_t *test_ptr)
                           &tracker, "", NULL, NULL));
     BS_TEST_VERIFY_EQ(test_ptr, 0, wlmaker_toplevel_tracker_for_each_app_window(
                           &tracker, NULL, NULL, NULL));
+
+    // All windows, with their app IDs (a window without one too).
+    h[1].app_id_ptr = NULL;
+    int firefox = 0;
+    BS_TEST_VERIFY_EQ(test_ptr, 3, wlmaker_toplevel_tracker_for_each_window(
+                          &tracker, _test_count_firefox, &firefox));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, firefox);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmaker_toplevel_tracker_for_each_window(
+                          NULL, _test_count_firefox, &firefox));
 }
 
 /* == End of toplevel_tracker.c ============================================ */

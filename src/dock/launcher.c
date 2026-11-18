@@ -268,15 +268,24 @@ wlmdock_launcher_t *wlmdock_launcher_create_from_plist(
         launcher_ptr->resolved_icon_path_ptr,
         launcher_ptr->super_tile.style.content_size,
         launcher_ptr->super_tile.style.content_size);
-    if (NULL == launcher_ptr->image_ptr) {
+    if (NULL == launcher_ptr->image_ptr &&
+        !bs_file_realpath_is(launcher_ptr->resolved_icon_path_ptr, S_IFREG)) {
         wlmdock_launcher_destroy(launcher_ptr);
         return NULL;
     }
-    wlmtk_element_set_visible(
-        wlmtk_image_element(launcher_ptr->image_ptr), true);
-    wlmtk_tile_set_content(
-        &launcher_ptr->super_tile,
-        wlmtk_image_element(launcher_ptr->image_ptr));
+    // An icon file that can't be loaded (eg. broken): The launcher stays,
+    // as an empty tile. The compositor counts it (its icon file is there);
+    // leaving it out would shift the launchers after it.
+    if (NULL == launcher_ptr->image_ptr) {
+        bs_log(BS_WARNING, "Failed to load icon \"%s\": Empty tile.",
+               launcher_ptr->resolved_icon_path_ptr);
+    } else {
+        wlmtk_element_set_visible(
+            wlmtk_image_element(launcher_ptr->image_ptr), true);
+        wlmtk_tile_set_content(
+            &launcher_ptr->super_tile,
+            wlmtk_image_element(launcher_ptr->image_ptr));
+    }
 
     wlmtk_element_set_visible(
         wlmtk_tile_element(&launcher_ptr->super_tile), true);
@@ -765,7 +774,7 @@ void _wlmdock_launcher_handle_app_id_changed(
     if (NULL == app_id_ptr ||
         NULL == launcher_ptr->app_id_ptr ||
         '\0' == *launcher_ptr->app_id_ptr ||
-        0 != strcmp(app_id_ptr, launcher_ptr->app_id_ptr)) return;
+        0 != strcasecmp(app_id_ptr, launcher_ptr->app_id_ptr)) return;
 
     _wlmdock_launcher_update_overlay(launcher_ptr);
 }
@@ -785,7 +794,9 @@ bool _wlmdock_launcher_set_content_size(
 
     wlmtk_element_set_visible(wlmtk_image_element(image_ptr), true);
     wlmtk_tile_set_content(tile_ptr, wlmtk_image_element(image_ptr));
-    wlmtk_image_destroy(launcher_ptr->image_ptr);
+    if (NULL != launcher_ptr->image_ptr) {
+        wlmtk_image_destroy(launcher_ptr->image_ptr);
+    }
     launcher_ptr->image_ptr = image_ptr;
     return true;
 }

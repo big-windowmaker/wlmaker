@@ -30,6 +30,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <stdio.h>
 #include <unistd.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/interfaces/wlr_buffer.h>
@@ -167,6 +168,76 @@ static int _wlmaker_dock_launchers_drawer_index(
 }
 
 /* ------------------------------------------------------------------------- */
+/** @return Whether `wlmdock` shows the entry: A dict, with its icon found. */
+static bool _wlmaker_dock_launchers_is_shown(
+    wlmaker_server_t *server_ptr,
+    bspl_object_t *object_ptr)
+{
+    bspl_dict_t *d = bspl_dict_from_object(object_ptr);
+    if (NULL == d) return false;
+    char *p = wlmaker_dock_launcher_icon_path(
+        server_ptr->files_ptr, wlmaker_dock_launcher_value(d, "Icon"));
+    if (NULL == p) return false;
+    free(p);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * @return The index in the stored `array_ptr` of the entry shown at
+ *     `shown_index` (those not shown are counted, not kept out); or the
+ *     array's size, past the last one shown.
+ */
+static size_t _wlmaker_dock_launchers_stored_index(
+    wlmaker_server_t *server_ptr,
+    bspl_array_t *array_ptr,
+    size_t shown_index)
+{
+    size_t n = NULL != array_ptr ? bspl_array_size(array_ptr) : 0;
+    size_t shown = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (!_wlmaker_dock_launchers_is_shown(
+                server_ptr, bspl_array_at(array_ptr, i))) continue;
+        if (shown == shown_index) return i;
+        ++shown;
+    }
+    return n;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Loads the `Launchers` of column `column` as stored: Also those `wlmdock`
+ * does not show (eg. their icon is missing for now). Edits keep them.
+ */
+static bspl_array_t *_wlmaker_dock_launchers_load_stored(
+    wlmaker_server_t *server_ptr,
+    int column)
+{
+    bspl_dict_t *state_dict_ptr = wlmaker_state_load(
+        server_ptr->files_ptr, server_ptr->state_fname_ptr);
+    if (NULL == state_dict_ptr) return NULL;
+    bspl_array_t *a = bspl_dict_get_array(
+        bspl_dict_get_dict(state_dict_ptr,
+                           WLMAKER_COLUMN_CLIP == column ? "Clip" : "Dock"),
+        "Launchers");
+    if (WLMAKER_COLUMN_CLIP != column && WLMAKER_COLUMN_DOCK != column) {
+        wlmaker_drawer_t *drawer_ptr = wlmaker_clip_drawer(server_ptr, column);
+        int i = NULL != drawer_ptr ? _wlmaker_dock_launchers_drawer_index(
+            a, wlmaker_drawer_id(drawer_ptr)) : -1;
+        if (0 > i) {
+            bspl_dict_unref(state_dict_ptr);
+            return NULL;
+        }
+        a = bspl_dict_get_array(
+            bspl_dict_from_object(bspl_array_at(a, i)), "Launchers");
+    }
+    // None yet: An empty array, to add to.
+    a = NULL != a ? bspl_array_ref(a) : bspl_array_create();
+    bspl_dict_unref(state_dict_ptr);
+    return a;
+}
+
+/* ------------------------------------------------------------------------- */
 bspl_array_t *wlmaker_dock_launchers_load_column(
     wlmaker_server_t *server_ptr,
     int column)
@@ -256,28 +327,40 @@ bool wlmaker_dock_launchers_move(
     int to_column,
     size_t to_index)
 {
-    bspl_array_t *from_ptr = wlmaker_dock_launchers_load_column(
+    bspl_array_t *from_ptr = _wlmaker_dock_launchers_load_stored(
         server_ptr, from_column);
     bspl_array_t *to_ptr = from_column == to_column ? NULL :
-        wlmaker_dock_launchers_load_column(server_ptr, to_column);
+        _wlmaker_dock_launchers_load_stored(server_ptr, to_column);
     bspl_array_t *new_from = NULL, *new_to = NULL, *dock_ptr = NULL;
-    bool rv = NULL != from_ptr && from_index < bspl_array_size(from_ptr) &&
+    size_t from_stored = _wlmaker_dock_launchers_stored_index(
+        server_ptr, from_ptr, from_index);
+    bool rv = NULL != from_ptr && from_stored < bspl_array_size(from_ptr) &&
         (from_column == to_column || NULL != to_ptr);
     if (!rv) goto done;
-    bspl_object_t *moved_ptr = bspl_array_at(from_ptr, from_index);
+    bspl_object_t *moved_ptr = bspl_array_at(from_ptr, from_stored);
 
     bspl_array_t *without_ptr = _wlmaker_dock_launchers_edited(
-        from_ptr, from_index, NULL);
+        from_ptr, from_stored, NULL);
     if (from_column == to_column) {
-        new_from = _wlmaker_dock_launchers_edited(
-            without_ptr, to_index, moved_ptr);
+        new_from = NULL != without_ptr ? _wlmaker_dock_launchers_edited(
+            without_ptr,
+            _wlmaker_dock_launchers_stored_index(
+                server_ptr, without_ptr, to_index),
+            moved_ptr) : NULL;
         if (NULL != without_ptr) bspl_array_unref(without_ptr);
     } else {
         new_from = without_ptr;
-        new_to = _wlmaker_dock_launchers_edited(to_ptr, to_index, moved_ptr);
+        new_to = _wlmaker_dock_launchers_edited(
+            to_ptr,
+            _wlmaker_dock_launchers_stored_index(server_ptr, to_ptr, to_index),
+            moved_ptr);
     }
     rv = NULL != new_from && (from_column == to_column || NULL != new_to);
     if (!rv) goto done;
+
+    // The dock-apps among the launchers stay after the same launchers.
+    wlmaker_clip_launcher_inserted(server_ptr, from_column, from_index, true);
+    wlmaker_clip_launcher_inserted(server_ptr, to_column, to_index, false);
 
     // The Clip's are separate; the Dock's and the drawers' go together.
     bspl_array_t *dock_new_ptr = NULL;
@@ -298,7 +381,7 @@ bool wlmaker_dock_launchers_move(
     }
     if (rv && (NULL != dock_new_ptr || NULL != ids[0] || NULL != ids[1])) {
         dock_ptr = NULL != dock_new_ptr ? bspl_array_ref(dock_new_ptr) :
-            wlmaker_dock_launchers_load(server_ptr, "Dock");
+            _wlmaker_dock_launchers_load_stored(server_ptr, WLMAKER_COLUMN_DOCK);
         rv = NULL != dock_ptr &&
             _wlmaker_dock_launchers_store_dock(server_ptr, dock_ptr, ids, arrays);
     }
@@ -319,12 +402,20 @@ bool wlmaker_dock_launchers_edit(
     size_t index,
     bspl_dict_t *entry_ptr)
 {
-    bspl_array_t *a = wlmaker_dock_launchers_load_column(server_ptr, column);
+    bspl_array_t *a = _wlmaker_dock_launchers_load_stored(server_ptr, column);
     if (NULL == a) return false;
+    size_t stored = _wlmaker_dock_launchers_stored_index(server_ptr, a, index);
+    if (NULL == entry_ptr && stored >= bspl_array_size(a)) {
+        bspl_array_unref(a);
+        return false;
+    }
     bspl_array_t *n = _wlmaker_dock_launchers_edited(
-        a, index, NULL != entry_ptr ? bspl_object_from_dict(entry_ptr) : NULL);
+        a, stored,
+        NULL != entry_ptr ? bspl_object_from_dict(entry_ptr) : NULL);
     bspl_array_unref(a);
     if (NULL == n) return false;
+    // The dock-apps among the launchers stay after the same launchers.
+    wlmaker_clip_launcher_inserted(server_ptr, column, index, NULL == entry_ptr);
     bool rv;
     if (WLMAKER_COLUMN_CLIP == column) {
         rv = wlmaker_dock_launchers_store(server_ptr, "Clip", n);
@@ -335,7 +426,8 @@ bool wlmaker_dock_launchers_edit(
         const char *ids[2] = { NULL != d_ptr ? wlmaker_drawer_id(d_ptr) : NULL,
                                NULL };
         bspl_array_t *arrays[2] = { n, NULL };
-        bspl_array_t *dock_ptr = wlmaker_dock_launchers_load(server_ptr, "Dock");
+        bspl_array_t *dock_ptr = _wlmaker_dock_launchers_load_stored(
+            server_ptr, WLMAKER_COLUMN_DOCK);
         rv = NULL != dock_ptr && NULL != ids[0] &&
             _wlmaker_dock_launchers_store_dock(server_ptr, dock_ptr, ids, arrays);
         if (NULL != dock_ptr) bspl_array_unref(dock_ptr);
@@ -350,7 +442,8 @@ bool wlmaker_dock_launchers_replace_drawer(
     const char *id_ptr,
     bspl_dict_t *entry_ptr)
 {
-    bspl_array_t *dock_ptr = wlmaker_dock_launchers_load(server_ptr, "Dock");
+    bspl_array_t *dock_ptr = _wlmaker_dock_launchers_load_stored(
+        server_ptr, WLMAKER_COLUMN_DOCK);
     if (NULL == dock_ptr) return false;
     int i = _wlmaker_dock_launchers_drawer_index(dock_ptr, id_ptr);
     bool rv = false;
@@ -373,7 +466,8 @@ bool wlmaker_dock_launchers_set_drawer_flag(
     const char *key_ptr,
     bool value)
 {
-    bspl_array_t *dock_ptr = wlmaker_dock_launchers_load(server_ptr, "Dock");
+    bspl_array_t *dock_ptr = _wlmaker_dock_launchers_load_stored(
+        server_ptr, WLMAKER_COLUMN_DOCK);
     if (NULL == dock_ptr) return false;
     int i = _wlmaker_dock_launchers_drawer_index(dock_ptr, id_ptr);
     bool rv = false;
@@ -1001,6 +1095,7 @@ static void test_balloon_text(bs_test_t *test_ptr);
 static void test_index_at(bs_test_t *test_ptr);
 static void test_tile_buffer(bs_test_t *test_ptr);
 static void test_edited(bs_test_t *test_ptr);
+static void test_stored_index(bs_test_t *test_ptr);
 static void test_command_script(bs_test_t *test_ptr);
 
 /** Unit test cases. */
@@ -1009,6 +1104,7 @@ static const bs_test_case_t _wlmaker_dock_launchers_test_cases[] = {
     { true, "index_at", test_index_at },
     { true, "tile_buffer", test_tile_buffer },
     { true, "edited", test_edited },
+    { true, "stored_index", test_stored_index },
     { true, "command_script", test_command_script },
     BS_TEST_CASE_SENTINEL()
 };
@@ -1133,6 +1229,47 @@ void test_command_script(bs_test_t *test_ptr)
     s = wlmaker_dock_launcher_command_script("echo %d %s", 's');
     BS_TEST_VERIFY_STREQ(test_ptr, "echo %d \"$@\"", s);
     free(s);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tests that edits keep launchers `wlmdock` does not show (eg. their icon is
+ * missing for now): The shown index maps to the stored one.
+ */
+void test_stored_index(bs_test_t *test_ptr)
+{
+    const char *icon_ptr = bs_test_temp_path(test_ptr, "icon.png");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, icon_ptr);
+    FILE *f = fopen(icon_ptr, "w");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, f);
+    fclose(f);
+    char *plist_ptr = bs_strdupf(
+        "({Icon = \"%s\"; AppID = a;}, {Icon = \"/nonexistent/x.png\"; "
+        "AppID = gone;}, {Icon = \"%s\"; AppID = c;})", icon_ptr, icon_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, plist_ptr);
+    bspl_object_t *o = bspl_create_object_from_plist_string(plist_ptr);
+    free(plist_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, o);
+    bspl_array_t *a = bspl_array_from_object(o);
+    wlmaker_server_t server = {};
+
+    // Shown: "a", "c". The second shown is the third stored.
+    BS_TEST_VERIFY_EQ(test_ptr, 0, _wlmaker_dock_launchers_stored_index(
+                          &server, a, 0));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, _wlmaker_dock_launchers_stored_index(
+                          &server, a, 1));
+    BS_TEST_VERIFY_EQ(test_ptr, 3, _wlmaker_dock_launchers_stored_index(
+                          &server, a, 2));
+    // Removing the second shown keeps "gone"; inserting before it too.
+    bspl_array_t *r = _wlmaker_dock_launchers_edited(
+        a, _wlmaker_dock_launchers_stored_index(&server, a, 1), NULL);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, bspl_array_size(r));
+    BS_TEST_VERIFY_STREQ(test_ptr, "gone", wlmaker_dock_launcher_value(
+                             bspl_dict_from_object(bspl_array_at(r, 1)),
+                             "AppID"));
+    bspl_array_unref(r);
+    unlink(icon_ptr);
+    bspl_object_unref(o);
 }
 
 /* == End of dock_launchers.c ============================================== */

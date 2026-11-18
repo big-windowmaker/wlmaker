@@ -161,6 +161,11 @@ wlmaker_xwl_t *wlmaker_xwl_create(wlmaker_server_t *server_ptr)
         wlmaker_xwl_destroy(xwl_ptr);
         return NULL;
     }
+    // Without a seat, wlroots bridges neither the selections (clipboard,
+    // primary) nor drag and drop between X11 and Wayland clients. The seat
+    // is applied once the XWM is up (also in lazy mode), and released by
+    // wlr_xwayland_destroy() -- or by wlroots, if the seat goes first.
+    wlr_xwayland_set_seat(xwl_ptr->wlr_xwayland_ptr, server_ptr->wlr_seat_ptr);
 
     wlmtk_util_connect_listener_signal(
         &xwl_ptr->wlr_xwayland_ptr->events.ready,

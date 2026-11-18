@@ -36,6 +36,7 @@
 #include "dock_fx.h"
 #include "dock_launchers.h"
 #include "dockapps.h"
+#include "i18n.h"
 #include "input/manager.h"
 
 /* == Declarations ========================================================= */
@@ -58,6 +59,16 @@ struct _wlmaker_tile_drag_t {
     bool                      has_target;
     /** Whether it was dropped: Slides, and is then applied. */
     bool                      dropped;
+    /** Whether it holds the keyboard: Esc cancels. */
+    bool                      key_grab;
+    /** The column that is full, over which the tile is. -1: None. */
+    int                       full_column;
+    /** Where the full column ends: Its last tile, in layout coordinates. */
+    struct wlr_box            full_box;
+    /** The output of the full column. */
+    struct wlr_box            full_area;
+    /** Whether the balloon telling the column is full is shown. */
+    bool                      full_balloon;
 };
 
 static bool _wlmaker_tile_drag_find_target(
@@ -86,6 +97,21 @@ static int _wlmaker_tile_drag_slot_position(
     const wlmaker_dock_column_t *column_ptr,
     size_t slot,
     int *y_ptr);
+static bool _wlmaker_tile_drag_key(
+    xkb_keysym_t keysym,
+    uint32_t modifiers,
+    void *ud_ptr);
+static void _wlmaker_tile_drag_count_before(
+    const wlmaker_dock_column_t *column_ptr,
+    size_t position,
+    size_t own_position,
+    size_t *launchers_ptr,
+    size_t *dockapps_ptr);
+static void _wlmaker_tile_drag_place_dockapps(
+    wlmaker_tile_drag_t *tile_drag_ptr);
+static void _wlmaker_tile_drag_full_balloon(
+    wlmaker_tile_drag_t *tile_drag_ptr,
+    bool over_full);
 
 /* == Data ================================================================= */
 
@@ -112,24 +138,42 @@ wlmaker_tile_drag_t *wlmaker_tile_drag_start(
     if (NULL == tile_drag_ptr) return NULL;
     tile_drag_ptr->server_ptr = server_ptr;
     tile_drag_ptr->source = *source_ptr;
+    tile_drag_ptr->full_column = -1;
     wlr_buffer_lock(tile_drag_ptr->source.image_ptr);
+    if (NULL != source_ptr->launcher_ptr) {
+        bspl_dict_ref(source_ptr->launcher_ptr);
+    }
     if (NULL != source_ptr->name_ptr) {
         tile_drag_ptr->name_ptr = logged_strdup(source_ptr->name_ptr);
     }
     tile_drag_ptr->source.name_ptr = tile_drag_ptr->name_ptr;
     server_ptr->tile_drag_ptr = tile_drag_ptr;
 
-    // Where it was: Its slot in the column.
+    // Esc cancels, unless something else holds the keyboard.
+    if (NULL != server_ptr->input_manager_ptr &&
+        !wlmim_has_key_grab(server_ptr->input_manager_ptr)) {
+        wlmim_set_key_grab(server_ptr->input_manager_ptr,
+                           _wlmaker_tile_drag_key, server_ptr);
+        tile_drag_ptr->key_grab = true;
+    }
+
+    // Where it was: Its slot in the column. A new launcher has none.
     wlmaker_dock_column_t column;
-    if (wlmaker_clip_column_id(server_ptr, source_ptr->column, &column)) {
-        size_t slot = 1 + source_ptr->index;
-        if (WLMAKER_TILE_DRAG_DOCKAPP == source_ptr->kind) {
-            slot += column.launchers;
-        }
+    if (WLMAKER_COLUMN_NONE != source_ptr->column &&
+        wlmaker_clip_column_id(server_ptr, source_ptr->column, &column)) {
+        size_t position = (WLMAKER_TILE_DRAG_DOCKAPP == source_ptr->kind) ?
+            wlmaker_dock_column_dockapp_position(&column, source_ptr->index) :
+            wlmaker_dock_column_launcher_position(&column, source_ptr->index);
+        size_t slot = 1 + position;
         tile_drag_ptr->origin = (wlmaker_tile_drag_target_t){
             .column = source_ptr->column,
             .index = source_ptr->index,
-            .slot = slot };
+            .slot = slot,
+            .position = position };
+        _wlmaker_tile_drag_count_before(
+            &column, position, position,
+            &tile_drag_ptr->origin.launchers_before,
+            &tile_drag_ptr->origin.dockapps_before);
         tile_drag_ptr->origin.x = _wlmaker_tile_drag_slot_position(
             &column, slot, &tile_drag_ptr->origin.y);
         tile_drag_ptr->has_origin = true;
@@ -170,8 +214,10 @@ void wlmaker_tile_drag_motion(
         server_ptr->dock_fx_ptr, NULL,
         x - tile_drag_ptr->source.grab_x, y - tile_drag_ptr->source.grab_y);
 
-    wlmaker_tile_drag_target_t target;
-    if (_wlmaker_tile_drag_find_target(tile_drag_ptr, x, y, &target)) {
+    wlmaker_tile_drag_target_t target = {};
+    tile_drag_ptr->full_column = -1;
+    bool found = _wlmaker_tile_drag_find_target(tile_drag_ptr, x, y, &target);
+    if (found) {
         tile_drag_ptr->target = target;
         tile_drag_ptr->has_target = true;
     } else if (!_wlmaker_tile_drag_may_detach(tile_drag_ptr)) {
@@ -179,6 +225,7 @@ void wlmaker_tile_drag_motion(
     } else {
         tile_drag_ptr->has_target = false;
     }
+    _wlmaker_tile_drag_full_balloon(tile_drag_ptr, !found);
 
     if (tile_drag_ptr->has_target) {
         wlmaker_dock_fx_ghost_show(
@@ -203,6 +250,13 @@ void wlmaker_tile_drag_drop(
     tile_drag_ptr->dropped = true;
     wlmaker_dock_fx_ghost_hide(server_ptr->dock_fx_ptr);
 
+    if (!tile_drag_ptr->has_target && 0 <= tile_drag_ptr->full_column) {
+        // Dropped on a full column: Refused. It goes back where it was.
+        bs_log(BS_INFO, "Column %d is full: Tile drag refused.",
+               tile_drag_ptr->full_column);
+        wlmaker_tile_drag_cancel(tile_drag_ptr);
+        return;
+    }
     if (!tile_drag_ptr->has_target) {
         wlmaker_dock_fx_drag_hide(server_ptr->dock_fx_ptr);
         wlmaker_dock_fx_cover_hide(server_ptr->dock_fx_ptr);
@@ -247,10 +301,12 @@ bool wlmaker_tile_drag_snap(
     const wlmaker_dock_column_t *column_ptr,
     wlmaker_tile_drag_kind_t kind,
     bool own_column,
+    size_t own_position,
     int x,
     int y,
     wlmaker_tile_drag_target_t *target_ptr)
 {
+    target_ptr->full = false;
     int pitch = column_ptr->pitch;
     if (0 >= pitch) return false;
     // As wDockSnapIcon: The slot nearest the tile's position.
@@ -280,28 +336,63 @@ bool wlmaker_tile_drag_snap(
         return false;
     }
     if (0 > along) return false;
+    if (!own_column) own_position = SIZE_MAX;
 
-    // Launchers come right after the first tile; dock-apps after them.
-    // Within its own area, a tile keeps one of the existing slots.
-    size_t first, count;
-    if (WLMAKER_TILE_DRAG_LAUNCHER == kind) {
-        first = 1;
-        count = column_ptr->launchers;
-    } else {
-        first = 1 + column_ptr->launchers;
-        count = column_ptr->dockapps;
+    // A tile more: The last one must stay on the output.
+    const struct wlr_box *o_ptr = &column_ptr->output;
+    if (!own_column && !wlr_box_empty(o_ptr)) {
+        int lx, ly;
+        lx = _wlmaker_tile_drag_slot_position(
+            column_ptr, 1 + column_ptr->launchers + column_ptr->dockapps, &ly);
+        if (lx < o_ptr->x || ly < o_ptr->y ||
+            lx + column_ptr->size > o_ptr->x + o_ptr->width ||
+            ly + column_ptr->size > o_ptr->y + o_ptr->height) {
+            target_ptr->full = true;
+            return false;
+        }
     }
-    size_t max_index = (own_column && 0 < count) ? count - 1 : count;
-    size_t index = (along < (int)first) ? 0 : (size_t)along - first;
-    if (index > max_index) index = max_index;
 
-    target_ptr->index = index;
-    target_ptr->slot = first + index;
+    size_t position;
+    if (column_ptr->mixed) {
+        // Launchers and dock-apps share the column: Any slot after the first
+        // tile, up to right after the last one (the tile's own, if from
+        // here).
+        size_t n = column_ptr->launchers + column_ptr->dockapps;
+        size_t max_position = (SIZE_MAX != own_position && 0 < n) ? n - 1 : n;
+        position = (1 > along) ? 0 : (size_t)along - 1;
+        if (position > max_position) position = max_position;
+        _wlmaker_tile_drag_count_before(
+            column_ptr, position, own_position,
+            &target_ptr->launchers_before, &target_ptr->dockapps_before);
+        target_ptr->index = (WLMAKER_TILE_DRAG_LAUNCHER == kind) ?
+            target_ptr->launchers_before : target_ptr->dockapps_before;
+    } else {
+        // Launchers come right after the first tile; dock-apps after them.
+        // Within its own area, a tile keeps one of the existing slots.
+        size_t first, count;
+        if (WLMAKER_TILE_DRAG_LAUNCHER == kind) {
+            first = 1;
+            count = column_ptr->launchers;
+        } else {
+            first = 1 + column_ptr->launchers;
+            count = column_ptr->dockapps;
+        }
+        size_t max_index = (own_column && 0 < count) ? count - 1 : count;
+        size_t index = (along < (int)first) ? 0 : (size_t)along - first;
+        if (index > max_index) index = max_index;
+        target_ptr->index = index;
+        position = first - 1 + index;
+        bool launcher = WLMAKER_TILE_DRAG_LAUNCHER == kind;
+        target_ptr->launchers_before = launcher ? index :
+            column_ptr->launchers;
+        target_ptr->dockapps_before = launcher ? 0 : index;
+    }
+    target_ptr->position = position;
+    target_ptr->slot = 1 + position;
     target_ptr->x = _wlmaker_tile_drag_slot_position(
         column_ptr, target_ptr->slot, &target_ptr->y);
 
     // Not off the output.
-    const struct wlr_box *o_ptr = &column_ptr->output;
     if (!wlr_box_empty(o_ptr) &&
         (target_ptr->x < o_ptr->x || target_ptr->y < o_ptr->y ||
          target_ptr->x + column_ptr->size > o_ptr->x + o_ptr->width ||
@@ -335,6 +426,34 @@ int _wlmaker_tile_drag_slot_position(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Counts the launchers and the dock-apps of the column that will be before
+ * a tile at `position`, leaving out the tile at `own_position` (SIZE_MAX:
+ * none), which is the one moved.
+ */
+void _wlmaker_tile_drag_count_before(
+    const wlmaker_dock_column_t *column_ptr,
+    size_t position,
+    size_t own_position,
+    size_t *launchers_ptr,
+    size_t *dockapps_ptr)
+{
+    size_t launchers = 0, dockapps = 0, before = 0;
+    size_t n = column_ptr->launchers + column_ptr->dockapps;
+    for (size_t p = 0; p < n && before < position; ++p) {
+        if (p == own_position) continue;
+        if (wlmaker_dock_column_dockapp_at(column_ptr, p, NULL)) {
+            ++dockapps;
+        } else {
+            ++launchers;
+        }
+        ++before;
+    }
+    *launchers_ptr = launchers;
+    *dockapps_ptr = dockapps;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Finds where the tile attaches, for the pointer at `x`, `y`: The column it
  * comes from first, then the other one.
  */
@@ -354,7 +473,8 @@ bool _wlmaker_tile_drag_find_target(
     wlmaker_server_t *server_ptr = tile_drag_ptr->server_ptr;
     int own = tile_drag_ptr->source.column;
     // The column it comes from first: With Window Maker's threshold.
-    if (_wlmaker_tile_drag_try_column(tile_drag_ptr, own, true, x, y,
+    if (WLMAKER_COLUMN_NONE != own &&
+        _wlmaker_tile_drag_try_column(tile_drag_ptr, own, true, x, y,
                                       target_ptr)) return true;
     // A drawer's tile stays on the Dock.
     if (tile_drag_ptr->source.drawer) return false;
@@ -405,15 +525,33 @@ bool _wlmaker_tile_drag_try_column(
                                    .width = dc.size, .height = dc.size };
             if (!wlr_box_contains_point(&box, x, y)) continue;
             wlmaker_drawer_hovered(d_ptr);
-            if (!wlmaker_tile_drag_snap(&dc, tile_drag_ptr->source.kind,
-                                        d == tile_drag_ptr->source.column,
-                                        dc.x, dc.y, target_ptr)) return false;
+            bool own = d == tile_drag_ptr->source.column;
+            if (!wlmaker_tile_drag_snap(
+                    &dc, tile_drag_ptr->source.kind, own,
+                    own && tile_drag_ptr->has_origin ?
+                    tile_drag_ptr->origin.position : SIZE_MAX,
+                    dc.x, dc.y, target_ptr)) return false;
             target_ptr->column = d;
             return true;
         }
     }
-    if (!wlmaker_tile_drag_snap(&column, tile_drag_ptr->source.kind, own,
-                                tx, ty, target_ptr)) return false;
+    if (!wlmaker_tile_drag_snap(
+            &column, tile_drag_ptr->source.kind, own,
+            own && tile_drag_ptr->has_origin ?
+            tile_drag_ptr->origin.position : SIZE_MAX,
+            tx, ty, target_ptr)) {
+        if (target_ptr->full && 0 > tile_drag_ptr->full_column) {
+            // Over a full column: Tell, at its last tile.
+            size_t last = column.launchers + column.dockapps;
+            tile_drag_ptr->full_column = id;
+            tile_drag_ptr->full_box.x = _wlmaker_tile_drag_slot_position(
+                &column, last, &tile_drag_ptr->full_box.y);
+            tile_drag_ptr->full_box.width = column.size;
+            tile_drag_ptr->full_box.height = column.size;
+            tile_drag_ptr->full_area = column.output;
+        }
+        return false;
+    }
     target_ptr->column = id;
     return true;
 }
@@ -467,25 +605,114 @@ void _wlmaker_tile_drag_apply(wlmaker_tile_drag_t *tile_drag_ptr)
     wlmaker_tile_drag_source_t *s_ptr = &tile_drag_ptr->source;
     wlmaker_tile_drag_target_t *t_ptr = &tile_drag_ptr->target;
     bool moved = s_ptr->column != t_ptr->column || s_ptr->index != t_ptr->index;
+    // In the Dock and the Clip, the place among the others of the other
+    // kind may change too.
+    bool reordered = moved || !tile_drag_ptr->has_origin ||
+        t_ptr->position != tile_drag_ptr->origin.position;
+    wlmaker_dock_column_t column;
+    bool mixed = wlmaker_clip_column_id(server_ptr, t_ptr->column, &column) &&
+        column.mixed;
 
     if (WLMAKER_TILE_DRAG_DOCKAPP == s_ptr->kind) {
         if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);
-        if (moved && NULL != s_ptr->tile_ptr) {
-            wlmaker_clip_move_dockapp(server_ptr, s_ptr->tile_ptr,
-                                      t_ptr->column, t_ptr->index);
+        if (reordered && NULL != s_ptr->tile_ptr) {
+            // The others stay where they are among the launchers.
+            wlmaker_clip_freeze_dockapps(server_ptr, s_ptr->column);
+            wlmaker_clip_freeze_dockapps(server_ptr, t_ptr->column);
+            if (moved) {
+                wlmaker_clip_move_dockapp(server_ptr, s_ptr->tile_ptr,
+                                          t_ptr->column, t_ptr->index);
+            }
+            if (mixed) {
+                wlmaker_clip_set_dockapp_after(
+                    server_ptr, s_ptr->tile_ptr, t_ptr->launchers_before);
+            }
         }
         wlmaker_dock_fx_cover_hide(server_ptr->dock_fx_ptr);
         return;
     }
 
-    if (moved) {
-        wlmaker_dock_launchers_move(
-            server_ptr, s_ptr->column, s_ptr->index,
-            t_ptr->column, t_ptr->index);
+    if (NULL != s_ptr->launcher_ptr) {
+        // A new launcher, from an application's icon: Inserted there.
+        bs_log(BS_INFO, "Docking \"%s\" in column %d at %zu (slot %zu)",
+               wlmaker_dock_launcher_value(s_ptr->launcher_ptr, "CommandLine"),
+               t_ptr->column, t_ptr->index, t_ptr->slot);
+        wlmaker_clip_freeze_dockapps(server_ptr, t_ptr->column);
+        wlmaker_dock_launchers_edit(server_ptr, t_ptr->column, t_ptr->index,
+                                    s_ptr->launcher_ptr);
+        if (mixed) _wlmaker_tile_drag_place_dockapps(tile_drag_ptr);
+        wlmaker_dock_fx_cover_hide(server_ptr->dock_fx_ptr);
+        if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);
+        return;
+    }
+    if (reordered) {
+        wlmaker_clip_freeze_dockapps(server_ptr, s_ptr->column);
+        wlmaker_clip_freeze_dockapps(server_ptr, t_ptr->column);
+        if (moved) {
+            wlmaker_dock_launchers_move(
+                server_ptr, s_ptr->column, s_ptr->index,
+                t_ptr->column, t_ptr->index);
+        }
+        if (mixed) _wlmaker_tile_drag_place_dockapps(tile_drag_ptr);
     }
     // `wlmdock` shows the launcher where it now is.
     wlmaker_dock_fx_cover_hide(server_ptr->dock_fx_ptr);
     if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Shows (or hides) the balloon telling that the column the tile is over is
+ * full, as found by the last @ref _wlmaker_tile_drag_find_target.
+ */
+void _wlmaker_tile_drag_full_balloon(
+    wlmaker_tile_drag_t *tile_drag_ptr,
+    bool over_full)
+{
+    wlmaker_dock_fx_t *fx_ptr = tile_drag_ptr->server_ptr->dock_fx_ptr;
+    if (NULL == fx_ptr) return;
+    if (!over_full || 0 > tile_drag_ptr->full_column) {
+        if (tile_drag_ptr->full_balloon) {
+            wlmaker_dock_fx_balloon_leave(fx_ptr, tile_drag_ptr);
+            tile_drag_ptr->full_balloon = false;
+        }
+        return;
+    }
+    if (tile_drag_ptr->full_balloon) return;
+    const char *text_ptr = N_("The drawer is full");
+    if (WLMAKER_COLUMN_DOCK == tile_drag_ptr->full_column) {
+        text_ptr = N_("The Dock is full");
+    } else if (WLMAKER_COLUMN_CLIP == tile_drag_ptr->full_column) {
+        text_ptr = N_("The Clip is full");
+    }
+    wlmaker_dock_fx_balloon_enter(
+        fx_ptr, tile_drag_ptr, wlmaker_i18n(text_ptr),
+        &tile_drag_ptr->full_box, &tile_drag_ptr->full_area);
+    tile_drag_ptr->full_balloon = true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * A launcher was put at the target, in the Dock or the Clip: The dock-apps
+ * that were before the target stay before it, the others after it.
+ */
+void _wlmaker_tile_drag_place_dockapps(wlmaker_tile_drag_t *tile_drag_ptr)
+{
+    wlmaker_server_t *server_ptr = tile_drag_ptr->server_ptr;
+    wlmaker_tile_drag_target_t *t_ptr = &tile_drag_ptr->target;
+    wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_id(
+        server_ptr, t_ptr->column);
+    if (NULL == d_ptr) return;
+    size_t i = t_ptr->index;
+    for (size_t j = 0; j < wlmaker_dockapps_size(d_ptr); ++j) {
+        wlmtk_tile_t *tile_ptr = wlmaker_dockapps_tile_at(d_ptr, j);
+        size_t after = wlmaker_dockapps_after_launchers(d_ptr, tile_ptr);
+        if (j < t_ptr->dockapps_before && after > i) {
+            wlmaker_clip_set_dockapp_after(server_ptr, tile_ptr, i);
+        } else if (j >= t_ptr->dockapps_before && after <= i) {
+            wlmaker_clip_set_dockapp_after(server_ptr, tile_ptr, i + 1);
+        }
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -534,6 +761,11 @@ void _wlmaker_tile_drag_remove(
         return;
     }
 
+    // An application's icon, not docked: It stays an application's icon.
+    if (NULL != s_ptr->launcher_ptr) {
+        if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);
+        return;
+    }
     // A launcher: Kaboom, unless its application runs (Window Maker).
     if (!s_ptr->running) {
         wlmaker_dock_fx_kaboom(server_ptr->dock_fx_ptr, s_ptr->image_ptr,
@@ -543,12 +775,39 @@ void _wlmaker_tile_drag_remove(
 }
 
 /* ------------------------------------------------------------------------- */
+/** Keys while dragging: Esc cancels, the tile goes back. */
+bool _wlmaker_tile_drag_key(
+    xkb_keysym_t keysym,
+    __UNUSED__ uint32_t modifiers,
+    void *ud_ptr)
+{
+    wlmaker_server_t *server_ptr = ud_ptr;
+    wlmaker_tile_drag_t *tile_drag_ptr = server_ptr->tile_drag_ptr;
+    if (XKB_KEY_Escape != keysym || NULL == tile_drag_ptr) return false;
+    // Dropped: It slides into its slot. Too late.
+    if (tile_drag_ptr->dropped) return true;
+    bs_log(BS_INFO, "Tile drag cancelled (Esc).");
+    wlmaker_tile_drag_cancel(tile_drag_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 /** Destroys the drag. */
 void _wlmaker_tile_drag_destroy(wlmaker_tile_drag_t *tile_drag_ptr)
 {
     wlmaker_server_t *server_ptr = tile_drag_ptr->server_ptr;
     if (server_ptr->tile_drag_ptr == tile_drag_ptr) {
         server_ptr->tile_drag_ptr = NULL;
+    }
+    if (tile_drag_ptr->key_grab && NULL != server_ptr->input_manager_ptr) {
+        wlmim_set_key_grab(server_ptr->input_manager_ptr, NULL, NULL);
+    }
+    if (tile_drag_ptr->full_balloon && NULL != server_ptr->dock_fx_ptr) {
+        wlmaker_dock_fx_balloon_leave(server_ptr->dock_fx_ptr, tile_drag_ptr);
+    }
+    if (NULL != tile_drag_ptr->source.launcher_ptr) {
+        bspl_dict_unref(tile_drag_ptr->source.launcher_ptr);
+        tile_drag_ptr->source.launcher_ptr = NULL;
     }
     // Drawers opened while dragging close again, with Autocollapse.
     for (int id = 2; NULL != server_ptr->clip_ptr &&
@@ -566,10 +825,12 @@ void _wlmaker_tile_drag_destroy(wlmaker_tile_drag_t *tile_drag_ptr)
 /* == Unit tests =========================================================== */
 
 static void test_snap(bs_test_t *test_ptr);
+static void test_snap_mixed(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t _wlmaker_tile_drag_test_cases[] = {
     { true, "snap", test_snap },
+    { true, "snap_mixed", test_snap_mixed },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -591,7 +852,7 @@ void test_snap(bs_test_t *test_ptr)
     // A dock-app from the Clip, right over the Dock's 4th slot: Attaches to
     // the end of the Dock's dock-apps.
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
-                            &dock, WLMAKER_TILE_DRAG_DOCKAPP, false,
+                            &dock, WLMAKER_TILE_DRAG_DOCKAPP, false, SIZE_MAX,
                             1850, 4 * 65 + 10, &t));
     BS_TEST_VERIFY_EQ(test_ptr, 1, t.index);
     BS_TEST_VERIFY_EQ(test_ptr, 4, t.slot);
@@ -599,42 +860,42 @@ void test_snap(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 260, t.y);
     // Far down the column: Still the end.
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
-                            &dock, WLMAKER_TILE_DRAG_DOCKAPP, false,
+                            &dock, WLMAKER_TILE_DRAG_DOCKAPP, false, SIZE_MAX,
                             1856, 900, &t));
     BS_TEST_VERIFY_EQ(test_ptr, 1, t.index);
     // Over the launchers: The first dock-app slot.
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
-                            &dock, WLMAKER_TILE_DRAG_DOCKAPP, false,
+                            &dock, WLMAKER_TILE_DRAG_DOCKAPP, false, SIZE_MAX,
                             1856, 65, &t));
     BS_TEST_VERIFY_EQ(test_ptr, 0, t.index);
     BS_TEST_VERIFY_EQ(test_ptr, 3, t.slot);
     // One tile to the left: Not over the Dock, not attached.
     BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_tile_drag_snap(
-                             &dock, WLMAKER_TILE_DRAG_DOCKAPP, false,
+                             &dock, WLMAKER_TILE_DRAG_DOCKAPP, false, SIZE_MAX,
                              1856 - 65, 260, &t));
     // ... unless it comes from the Dock: Up to 3 tiles away.
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
-                            &dock, WLMAKER_TILE_DRAG_DOCKAPP, true,
+                            &dock, WLMAKER_TILE_DRAG_DOCKAPP, true, 0,
                             1856 - 3 * 65, 260, &t));
     BS_TEST_VERIFY_EQ(test_ptr, 0, t.index);
     BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_tile_drag_snap(
-                             &dock, WLMAKER_TILE_DRAG_DOCKAPP, true,
+                             &dock, WLMAKER_TILE_DRAG_DOCKAPP, true, 0,
                              1856 - 5 * 65, 260, &t));
 
     // A launcher over the main tile: The first launcher slot.
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
-                            &dock, WLMAKER_TILE_DRAG_LAUNCHER, true,
+                            &dock, WLMAKER_TILE_DRAG_LAUNCHER, true, 0,
                             1856, 0, &t));
     BS_TEST_VERIFY_EQ(test_ptr, 0, t.index);
     BS_TEST_VERIFY_EQ(test_ptr, 1, t.slot);
     // Within its own launchers, it keeps one of the 2 slots.
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
-                            &dock, WLMAKER_TILE_DRAG_LAUNCHER, true,
+                            &dock, WLMAKER_TILE_DRAG_LAUNCHER, true, 0,
                             1856, 500, &t));
     BS_TEST_VERIFY_EQ(test_ptr, 1, t.index);
     // From the Clip, it can go after them.
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
-                            &dock, WLMAKER_TILE_DRAG_LAUNCHER, false,
+                            &dock, WLMAKER_TILE_DRAG_LAUNCHER, false, SIZE_MAX,
                             1856, 500, &t));
     BS_TEST_VERIFY_EQ(test_ptr, 2, t.index);
 
@@ -645,18 +906,145 @@ void test_snap(bs_test_t *test_ptr)
         .launchers = 0, .dockapps = 2,
         .output = { .width = 1920, .height = 1080 } };
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
-                            &clip, WLMAKER_TILE_DRAG_DOCKAPP, true,
+                            &clip, WLMAKER_TILE_DRAG_DOCKAPP, true, 0,
                             5, 1016 - 65, &t));
     BS_TEST_VERIFY_EQ(test_ptr, 0, t.index);
     BS_TEST_VERIFY_EQ(test_ptr, 1016 - 65, t.y);
     BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
-                            &clip, WLMAKER_TILE_DRAG_DOCKAPP, false,
+                            &clip, WLMAKER_TILE_DRAG_DOCKAPP, false, SIZE_MAX,
                             5, 1016 - 3 * 65, &t));
     BS_TEST_VERIFY_EQ(test_ptr, 2, t.index);
     // Below the Clip (off the output): Not attached.
     BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_tile_drag_snap(
-                             &clip, WLMAKER_TILE_DRAG_DOCKAPP, false,
+                             &clip, WLMAKER_TILE_DRAG_DOCKAPP, false, SIZE_MAX,
                              5, 1100, &t));
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tests the Dock and the Clip, where launchers and dock-apps share one order:
+ * Any slot is reachable, for either kind, up to right after the last tile.
+ */
+void test_snap_mixed(bs_test_t *test_ptr)
+{
+    // The Clip at the top left: Clip, L0, D0 (wlmeyes), L1, D1 (zones).
+    wlmaker_dock_column_t clip = {
+        .place = { WLR_EDGE_LEFT, WLR_EDGE_TOP },
+        .x = 0, .y = 0, .size = 64, .pitch = 65,
+        .launchers = 2, .dockapps = 2,
+        .dockapp_positions = (1 << 1) | (1 << 3),
+        .mixed = true,
+        .output = { .width = 1920, .height = 1080 } };
+    wlmaker_tile_drag_target_t t;
+    size_t i;
+
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_dock_column_dockapp_at(&clip, 0, &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, i);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dock_column_dockapp_at(&clip, 1, &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, i);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_dock_column_dockapp_at(&clip, 2, &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, i);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dock_column_dockapp_at(&clip, 3, &i));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, i);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, wlmaker_dock_column_launcher_position(&clip, 1));
+    BS_TEST_VERIFY_EQ(test_ptr, 3, wlmaker_dock_column_dockapp_position(&clip, 1));
+
+    // A new launcher (from an appicon) after the last dock-app: Slot 5.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_LAUNCHER, false, SIZE_MAX,
+                            5, 5 * 65 + 3, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 5, t.slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 4, t.position);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.index);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.launchers_before);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.dockapps_before);
+    // Far below: Still right after the last.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_LAUNCHER, false, SIZE_MAX,
+                            5, 900, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 5, t.slot);
+    // Between D0 and L1 (over L1's slot 3): Launcher index 1, after D0.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_LAUNCHER, false, SIZE_MAX,
+                            5, 3 * 65, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.position);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t.index);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t.dockapps_before);
+    // Over D0's slot 2: Before D0.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_LAUNCHER, false, SIZE_MAX,
+                            5, 2 * 65, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t.index);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t.dockapps_before);
+    // Over the Clip itself: The first slot.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_LAUNCHER, false, SIZE_MAX,
+                            5, 0, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t.position);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t.index);
+
+    // L0 (position 0) moved within: Up to the last slot, after D1.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_LAUNCHER, true, 0,
+                            5, 900, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 3, t.position);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t.index);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t.launchers_before);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.dockapps_before);
+    // ... or between D0 and L1: Still launcher 0, but after D0.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_LAUNCHER, true, 0,
+                            5, 2 * 65, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t.position);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t.index);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t.dockapps_before);
+
+    // D1 (position 3) moved to the first slot: Before all launchers.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_DOCKAPP, true, 3,
+                            5, 65, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t.position);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t.index);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t.launchers_before);
+    // D0 (position 1) moved after L1: Index 0 among the others, 2 launchers.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_DOCKAPP, true, 1,
+                            5, 3 * 65, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.position);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t.index);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.launchers_before);
+    // A dock-app from the Dock, at the very end of the Clip.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &clip, WLMAKER_TILE_DRAG_DOCKAPP, false, SIZE_MAX,
+                            5, 900, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 4, t.position);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.index);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.launchers_before);
+
+    // A full Clip: No room for one more (refused, and told). Its own tiles
+    // still move within.
+    wlmaker_dock_column_t full = clip;
+    full.output.height = 5 * 65;
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_tile_drag_snap(
+                             &full, WLMAKER_TILE_DRAG_LAUNCHER, false,
+                             SIZE_MAX, 5, 65, &t));
+    BS_TEST_VERIFY_TRUE(test_ptr, t.full);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &full, WLMAKER_TILE_DRAG_LAUNCHER, true, 0,
+                            5, 4 * 65, &t));
+    BS_TEST_VERIFY_FALSE(test_ptr, t.full);
+    BS_TEST_VERIFY_EQ(test_ptr, 3, t.position);
+
+    // A drawer: Launchers first. Sections, as before.
+    wlmaker_dock_column_t drawer = clip;
+    drawer.mixed = false;
+    wlmaker_dock_column_set_sections(&drawer);
+    BS_TEST_VERIFY_EQ(test_ptr, (1 << 2) | (1 << 3), drawer.dockapp_positions);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_tile_drag_snap(
+                            &drawer, WLMAKER_TILE_DRAG_LAUNCHER, false,
+                            SIZE_MAX, 5, 900, &t));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.index);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, t.position);
 }
 
 /* == End of tile_drag.c =================================================== */

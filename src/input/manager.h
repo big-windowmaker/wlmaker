@@ -46,6 +46,7 @@ extern "C" {
 #endif  // __cplusplus
 
 struct wlmim_cursor_style;
+struct wlr_buffer;
 
 /** Forward declaration. */
 typedef struct _wlmim_t wlmim_t;
@@ -104,6 +105,38 @@ struct wlmim_keybinding_combo {
  *
  * @return true if the key can be considered "consumed".
  */
+struct wlr_pointer_axis_event;
+
+/**
+ * Filter for axis events (wheel, touchpad scrolling).
+ *
+ * @param ud_ptr
+ * @param wlr_pointer_axis_event_ptr
+ * @param modifiers           The keyboard modifiers currently held.
+ *
+ * @return true if the event was consumed: It is not passed on to clients.
+ */
+typedef bool (*wlmim_axis_filter_t)(
+    void *ud_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers);
+
+struct wlr_pointer_button_event;
+
+/**
+ * Filter for button events: Runs before the toolkit and clients.
+ *
+ * @param ud_ptr
+ * @param wlr_pointer_button_event_ptr
+ * @param modifiers           The keyboard modifiers currently held.
+ *
+ * @return true if the event was consumed: It is not passed on.
+ */
+typedef bool (*wlmim_button_filter_t)(
+    void *ud_ptr,
+    const struct wlr_pointer_button_event *wlr_pointer_button_event_ptr,
+    uint32_t modifiers);
+
 typedef bool (*wlmim_keybinding_callback_t)(
     const struct wlmim_keybinding_combo *kc);
 
@@ -154,8 +187,92 @@ bool wlmim_set_style(
     wlmim_t *input_manager_ptr,
     const struct wlmim_cursor_style *style_ptr);
 
+/**
+ * Sets the filter for axis events. There is one filter; this replaces it.
+ *
+ * @param input_manager_ptr
+ * @param filter              The filter, or NULL to clear it.
+ * @param ud_ptr              Passed to `filter`.
+ */
+void wlmim_set_axis_filter(
+    wlmim_t *input_manager_ptr,
+    wlmim_axis_filter_t filter,
+    void *ud_ptr);
+
+/**
+ * Runs the axis filter, if any.
+ *
+ * @return true if the event was consumed by the filter.
+ */
+bool wlmim_filter_axis(
+    wlmim_t *input_manager_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers);
+
+/**
+ * Sets the filter for button events. There is one filter; this replaces it.
+ *
+ * @param input_manager_ptr
+ * @param filter              The filter, or NULL to clear it.
+ * @param ud_ptr              Passed to `filter`.
+ */
+void wlmim_set_button_filter(
+    wlmim_t *input_manager_ptr,
+    wlmim_button_filter_t filter,
+    void *ud_ptr);
+
+/**
+ * Runs the button filter, if any.
+ *
+ * @return true if the event was consumed by the filter.
+ */
+bool wlmim_filter_button(
+    wlmim_t *input_manager_ptr,
+    const struct wlr_pointer_button_event *wlr_pointer_button_event_ptr,
+    uint32_t modifiers);
+
 /** @return Pointer to struct wlr_cursor of @ref wlmim_t::cursor_ptr. */
 struct wlr_cursor *wlmim_wlr_cursor(wlmim_t *input_manager_ptr);
+
+/**
+ * Magnifies the cursor image. See @ref wlmim_cursor_set_magnification.
+ *
+ * @param input_manager_ptr
+ * @param magnification       1.0: The regular image.
+ * @param max_magnification
+ */
+void wlmim_set_cursor_magnification(
+    wlmim_t *input_manager_ptr,
+    double magnification,
+    double max_magnification);
+
+/**
+ * Replaces the cursor image. See @ref wlmim_cursor_set_override.
+ *
+ * @param input_manager_ptr
+ * @param wlr_buffer_ptr      NULL to show the regular image again.
+ * @param hotspot_x
+ * @param hotspot_y
+ * @param scale
+ */
+void wlmim_set_cursor_override(
+    wlmim_t *input_manager_ptr,
+    struct wlr_buffer *wlr_buffer_ptr,
+    int32_t hotspot_x,
+    int32_t hotspot_y,
+    float scale);
+
+/** See @ref wlmim_cursor_create_xcursor_buffer. */
+struct wlr_buffer *wlmim_create_cursor_buffer(
+    wlmim_t *input_manager_ptr,
+    const char *theme_name_ptr,
+    const char *const *names_ptr,
+    int32_t *hotspot_x_ptr,
+    int32_t *hotspot_y_ptr,
+    float *scale_ptr);
+
+/** @return Whether the cursor has an image: Clients may hide it. */
+bool wlmim_cursor_visible(wlmim_t *input_manager_ptr);
 
 /**
  * Reports input activity. Used to reset idle timers.
@@ -261,6 +378,9 @@ void wlmim_set_key_grab(
     wlmim_t *input_manager_ptr,
     wlmim_key_grab_callback_t callback,
     void *ud_ptr);
+
+/** @return Whether the keyboard is grabbed, see @ref wlmim_set_key_grab. */
+bool wlmim_has_key_grab(wlmim_t *input_manager_ptr);
 
 /**
  * Processes key combo: Call back if a matching binding is found.

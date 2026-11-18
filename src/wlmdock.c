@@ -150,6 +150,17 @@ typedef struct {
     wlmtk_element_vmt_t       menu_orig_vmt;
     /** Listener for @ref wlmcl_client_events::pointer_leave. */
     struct wl_listener        pointer_leave_listener;
+    /**
+     * Empty tiles: The room left for the dock-apps among the launchers, as
+     * the compositor places them (see @ref wlmaker_dock_layout_fname).
+     */
+    wlmtk_tile_t              *gap_tiles_ptr;
+    /** Number of tiles in @ref wlmdock_t::gap_tiles_ptr. */
+    size_t                    gap_tiles;
+    /** For each launcher: The number of dock-apps right before it. */
+    size_t                    *gaps_ptr;
+    /** Number of elements in @ref wlmdock_t::gaps_ptr. */
+    size_t                    gaps_len;
 } wlmdock_t;
 
 /** Actions of the launcher's menu. */
@@ -203,6 +214,7 @@ static wlmdock_t *_wlmdock_create(
     const wlmtk_dock_positioning_t positioning,
     wlmaker_config_style_t *style_ptr);
 static void _wlmdock_destroy(wlmdock_t *dock_ptr);
+static void _wlmdock_clear_gap_tiles(wlmdock_t *dock_ptr);
 static int handle_client_signal(int fd, uint32_t mask, void *data_ptr);
 /** The program's arguments, for starting over (SIGHUP). */
 static char **_wlmdock_argv;
@@ -340,6 +352,7 @@ int main(int argc, const char **argv)
     for (int i = 0; NULL != _wlmdock_argv && i < argc; ++i) {
         _wlmdock_argv[i] = strdup(argv[i]);
     }
+    wlmaker_i18n_init();
     if (!wlm_util_backtrace_setup(argv[0]) ||
         // Ideally: xdgStateHome. But: libxdg-basedir is using FreeDesktop
         // specification v0.7, and XDG_STATE_HOME was added with v0.8 only.
@@ -741,6 +754,11 @@ void _wlmdock_destroy(wlmdock_t *dock_ptr)
     if (NULL != dock_ptr->wlr_allocator_ptr) {
         wlr_allocator_destroy(dock_ptr->wlr_allocator_ptr);
         dock_ptr->wlr_allocator_ptr = NULL;
+    }
+    if (NULL != dock_ptr->tilebox_ptr) _wlmdock_clear_gap_tiles(dock_ptr);
+    if (NULL != dock_ptr->gaps_ptr) {
+        free(dock_ptr->gaps_ptr);
+        dock_ptr->gaps_ptr = NULL;
     }
     if (NULL != dock_ptr->tilebox_ptr) {
         wlmtk_element_t *e = wlmdock_tilebox_element(dock_ptr->tilebox_ptr);
@@ -1245,16 +1263,17 @@ void _wlmdock_open_main_menu(
             dock_ptr, WLR_EDGE_LEFT | WLR_EDGE_RIGHT)) {
         rv = rv && _wlmdock_menu_add(
             dock_ptr,
-            wlmaker_i18n((corner & WLR_EDGE_LEFT) ?
-                         "Move to Right Side" : "Move to Left Side"),
+            (corner & WLR_EDGE_LEFT) ?
+            wlmaker_i18n("Move to Right Side") :
+            wlmaker_i18n("Move to Left Side"),
             WLMDOCK_MENU_FLIP_SIDE);
     }
     if (0 != _wlmdock_flipped_corner(
             dock_ptr, WLR_EDGE_TOP | WLR_EDGE_BOTTOM)) {
         rv = rv && _wlmdock_menu_add(
             dock_ptr,
-            wlmaker_i18n((corner & WLR_EDGE_TOP) ?
-                         "Move to Bottom" : "Move to Top"),
+            (corner & WLR_EDGE_TOP) ?
+            wlmaker_i18n("Move to Bottom") : wlmaker_i18n("Move to Top"),
             WLMDOCK_MENU_FLIP_END);
     }
     bspl_array_t *a = _wlmdock_default_launchers(dock_ptr);
@@ -1303,6 +1322,90 @@ static bool _wlmdock_dicts_equal(bspl_dict_t *dict_ptr,
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Loads where the compositor places dock-apps among this dock's launchers:
+ * For each launcher, the number of dock-apps right before it.
+ *
+ * @return An array of `*len_ptr` elements, to free(); NULL if there are
+ *     none (or no layout is published: launchers come first, then).
+ */
+static size_t *_wlmdock_load_gaps(wlmdock_t *dock_ptr, size_t *len_ptr)
+{
+    *len_ptr = 0;
+    char *fname_ptr = wlmaker_dock_layout_fname(getenv("WAYLAND_DISPLAY"));
+    if (NULL == fname_ptr) return NULL;
+    bspl_object_t *o = NULL;
+    if (bs_file_realpath_is(fname_ptr, S_IFREG)) {
+        o = bspl_create_object_from_plist_file(fname_ptr);
+    }
+    free(fname_ptr);
+    bspl_array_t *a = bspl_dict_get_array(
+        bspl_dict_get_dict(bspl_dict_from_object(o), dock_ptr->section_ptr),
+        "Gaps");
+    size_t n = NULL != a ? bspl_array_size(a) : 0;
+    size_t *gaps_ptr = 0 < n ? logged_calloc(n, sizeof(size_t)) : NULL;
+    bool any = false;
+    for (size_t i = 0; NULL != gaps_ptr && i < n; ++i) {
+        uint64_t v;
+        const char *s_ptr = bspl_array_string_value_at(a, i);
+        // At most a screen full: No runaway from a broken file.
+        if (NULL != s_ptr && bs_strconvert_uint64(s_ptr, &v, 10) && 64 > v) {
+            gaps_ptr[i] = v;
+            any |= 0 < v;
+        }
+    }
+    if (NULL != o) bspl_object_unref(o);
+    if (!any) {
+        if (NULL != gaps_ptr) free(gaps_ptr);
+        return NULL;
+    }
+    *len_ptr = n;
+    return gaps_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Removes the empty tiles left for dock-apps. */
+static void _wlmdock_clear_gap_tiles(wlmdock_t *dock_ptr)
+{
+    for (size_t i = 0; i < dock_ptr->gap_tiles; ++i) {
+        wlmtk_tile_t *t_ptr = &dock_ptr->gap_tiles_ptr[i];
+        if (NULL != wlmtk_tile_element(t_ptr)->parent_container_ptr) {
+            wlmdock_tilebox_remove_tile(dock_ptr->tilebox_ptr, t_ptr);
+        }
+        wlmtk_tile_fini(t_ptr);
+    }
+    if (NULL != dock_ptr->gap_tiles_ptr) free(dock_ptr->gap_tiles_ptr);
+    dock_ptr->gap_tiles_ptr = NULL;
+    dock_ptr->gap_tiles = 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Creates `n` empty, transparent tiles: Room for the dock-apps the
+ * compositor places there, over this surface.
+ */
+static bool _wlmdock_create_gap_tiles(wlmdock_t *dock_ptr, size_t n)
+{
+    if (0 == n) return true;
+    dock_ptr->gap_tiles_ptr = logged_calloc(n, sizeof(wlmtk_tile_t));
+    if (NULL == dock_ptr->gap_tiles_ptr) return false;
+    const struct wlmtk_tile_style *ts_ptr = &dock_ptr->style_ptr->tile;
+    // A freshly created buffer is all zero, ie. fully transparent.
+    struct wlr_buffer *wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(
+        ts_ptr->size, ts_ptr->size);
+    if (NULL == wlr_buffer_ptr) return false;
+    for (size_t i = 0; i < n; ++i) {
+        wlmtk_tile_t *t_ptr = &dock_ptr->gap_tiles_ptr[i];
+        if (!wlmtk_tile_init(t_ptr, ts_ptr)) break;
+        dock_ptr->gap_tiles = i + 1;
+        wlmtk_tile_set_background_buffer(t_ptr, wlr_buffer_ptr);
+        wlmtk_element_set_visible(wlmtk_tile_element(t_ptr), true);
+    }
+    wlr_buffer_drop(wlr_buffer_ptr);
+    return dock_ptr->gap_tiles == n;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Sets the dock's launchers to those of `launchers_array_ptr`, after the main
  * tile. Keeps the dock as it is when they are the same. Launchers that can't
  * be created (eg. a missing icon) are left out.
@@ -1312,6 +1415,14 @@ void _wlmdock_set_launchers(
     bspl_array_t *launchers_array_ptr)
 {
     if (NULL == launchers_array_ptr) return;
+    size_t gaps_len;
+    size_t *gaps_ptr = _wlmdock_load_gaps(dock_ptr, &gaps_len);
+    bool gaps_equal = gaps_len == dock_ptr->gaps_len &&
+        (0 == gaps_len ||
+         0 == memcmp(gaps_ptr, dock_ptr->gaps_ptr, gaps_len * sizeof(size_t)));
+    if (NULL != dock_ptr->gaps_ptr) free(dock_ptr->gaps_ptr);
+    dock_ptr->gaps_ptr = gaps_ptr;
+    dock_ptr->gaps_len = gaps_len;
     size_t n = wlmdock_tilebox_tiles(dock_ptr->tilebox_ptr, NULL, 0);
     wlmtk_tile_t **tiles_ptr = NULL;
     if (0 < n) {
@@ -1334,7 +1445,8 @@ void _wlmdock_set_launchers(
         }
         ++launchers;
     }
-    if (equal && launchers == bspl_array_size(launchers_array_ptr)) {
+    if (equal && gaps_equal &&
+        launchers == bspl_array_size(launchers_array_ptr)) {
         if (NULL != tiles_ptr) free(tiles_ptr);
         return;
     }
@@ -1347,7 +1459,16 @@ void _wlmdock_set_launchers(
         wlmdock_launcher_destroy(l_ptr);
     }
     if (NULL != tiles_ptr) free(tiles_ptr);
+    _wlmdock_clear_gap_tiles(dock_ptr);
+    size_t gap_tiles = 0;
+    for (size_t i = 0; i < dock_ptr->gaps_len; ++i) {
+        gap_tiles += dock_ptr->gaps_ptr[i];
+    }
+    if (!_wlmdock_create_gap_tiles(dock_ptr, gap_tiles)) {
+        bs_log(BS_WARNING, "wlmdock: Failed to leave room for dock-apps.");
+    }
 
+    size_t shown = 0, gap = 0;
     for (size_t i = 0; i < bspl_array_size(launchers_array_ptr); ++i) {
         bspl_dict_t *dict_ptr = bspl_dict_from_object(
             bspl_array_at(launchers_array_ptr, i));
@@ -1367,6 +1488,15 @@ void _wlmdock_set_launchers(
         }
         wlmdock_launcher_set_menu_handler(
             launcher_ptr, _wlmdock_open_menu, dock_ptr);
+        // Room for the dock-apps the compositor places before it.
+        for (size_t g = 0;
+             shown < dock_ptr->gaps_len && g < dock_ptr->gaps_ptr[shown] &&
+                 gap < dock_ptr->gap_tiles;
+             ++g) {
+            wlmdock_tilebox_add_tile(dock_ptr->tilebox_ptr,
+                                     &dock_ptr->gap_tiles_ptr[gap++]);
+        }
+        ++shown;
         wlmdock_tilebox_add_tile(
             dock_ptr->tilebox_ptr,
             wlmdock_launcher_tile(launcher_ptr));

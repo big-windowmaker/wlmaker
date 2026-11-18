@@ -298,6 +298,12 @@ typedef struct {
     int                       y;
     /** For transient windows (eg. dialogs): Parent to center on. Or NULL. */
     wlmtk_window_t            *parent_ptr;
+    /**
+     * Exactly at @ref x, @ref y, not kept within the usable area (beside
+     * the docks): A window covering an output, eg. a game in borderless
+     * fullscreen.
+     */
+    bool                      exact;
 } wlmtk_window_placement_hint_t;
 
 /**

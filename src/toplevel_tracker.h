@@ -100,6 +100,23 @@ size_t wlmaker_toplevel_tracker_for_each_app_window(
     wlmaker_toplevel_tracker_window_callback_t callback,
     void *ud_ptr);
 
+/** Callback for @ref wlmaker_toplevel_tracker_for_each_window. */
+typedef void (*wlmaker_toplevel_tracker_any_window_callback_t)(
+    wlmtk_window_t *window_ptr,
+    const char *app_id_ptr,
+    void *ud_ptr);
+
+/**
+ * Calls `callback` for each window, with its app ID (may be NULL). Eg. for
+ * Window Maker's "hide the other applications".
+ *
+ * @return Number of windows.
+ */
+size_t wlmaker_toplevel_tracker_for_each_window(
+    struct wlmaker_toplevel_tracker *toplevel_tracker_ptr,
+    wlmaker_toplevel_tracker_any_window_callback_t callback,
+    void *ud_ptr);
+
 /** Toplevel tracker test set. */
 extern const bs_test_set_t wlmaker_toplevel_tracker_test_set;
 

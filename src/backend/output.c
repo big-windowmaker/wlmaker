@@ -62,8 +62,20 @@ struct _wlmbe_output_t {
     struct wlr_scene          *wlr_scene_ptr;
     /** This output's configuration. */
     wlmbe_output_config_t     *output_config_ptr;
+    /** The accessibility zoom. */
+    wlmbe_zoom_t              *zoom_ptr;
+    /** This output's state of the zoom. */
+    wlmbe_zoom_output_t       zoom_output;
+    /** The list this output is a member of, through `dlnode`. Or NULL. */
+    bs_dllist_t               *dllist_ptr;
 };
 
+static void _wlmbe_output_state_set_attributes(
+    wlmbe_output_t *output_ptr,
+    struct wlr_output_state *state_ptr,
+    const wlmbe_output_config_attributes_t *attr_ptr,
+    int width,
+    int height);
 static void _wlmbe_output_handle_destroy(
     struct wl_listener *listener_ptr,
     void *data_ptr);
@@ -84,6 +96,7 @@ wlmbe_output_t *wlmbe_output_create(
     struct wlr_allocator *wlr_allocator_ptr,
     struct wlr_renderer *wlr_renderer_ptr,
     struct wlr_scene *wlr_scene_ptr,
+    wlmbe_zoom_t *zoom_ptr,
     wlmbe_output_config_t *config_ptr,
     int width,
     int height)
@@ -93,6 +106,7 @@ wlmbe_output_t *wlmbe_output_create(
     output_ptr->wlr_output_ptr = wlr_output_ptr;
     output_ptr->wlr_scene_ptr = wlr_scene_ptr;
     output_ptr->output_config_ptr = config_ptr;
+    output_ptr->zoom_ptr = zoom_ptr;
     output_ptr->wlr_output_ptr->data = output_ptr;
 
     output_ptr->description_ptr = bs_strdupf(
@@ -137,47 +151,11 @@ wlmbe_output_t *wlmbe_output_create(
     struct wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, attr_ptr->enabled);
-    wlr_output_state_set_scale(&state, BS_MAX(1.0, attr_ptr->scale));
-
-    // Issue #97: Found that X11 and transformations do not translate
-    // cursor coordinates well. Force it to 'Normal'.
-    enum wl_output_transform transformation =
-        attr_ptr->transformation;
-    if (wlr_output_is_x11(wlr_output_ptr) &&
-        transformation != WL_OUTPUT_TRANSFORM_NORMAL) {
-        bs_log(BS_WARNING, "X11 backend: Transformation changed to 'Normal'.");
-        transformation = WL_OUTPUT_TRANSFORM_NORMAL;
-    }
-    wlr_output_state_set_transform(&state, transformation);
-
-    // Set modes for backends that have them.
-    if (attr_ptr->has_mode) {
-        wlr_output_state_set_custom_mode(
-            &state,
-            attr_ptr->mode.width,
-            attr_ptr->mode.height,
-            attr_ptr->mode.refresh);
-    } else {
-        if (!wl_list_empty(&output_ptr->wlr_output_ptr->modes)) {
-            struct wlr_output_mode *mode_ptr = wlr_output_preferred_mode(
-                output_ptr->wlr_output_ptr);
-            bs_log(BS_INFO, "Setting mode %dx%d @ %.2fHz",
-                   mode_ptr->width, mode_ptr->height, 1e-3 * mode_ptr->refresh);
-            wlr_output_state_set_mode(&state, mode_ptr);
-        } else {
-            bs_log(BS_INFO, "No modes available on %s",
-                   output_ptr->wlr_output_ptr->name);
-        }
-    }
-
-    if ((wlr_output_is_x11(wlr_output_ptr) ||
-         wlr_output_is_wl(wlr_output_ptr))
-        && 0 < width && 0 < height) {
-        bs_log(BS_INFO, "Overriding output dimensions to %"PRIu32"x%"PRIu32,
-               width, height);
-        wlr_output_state_set_custom_mode(
-            &state, width, height, 0);
-    }
+    // An output configured as disabled is created, but not enabled: It stays
+    // listed for output management clients, which can enable it again.
+    // wlroots refuses mode, scale or transform on a disabled output.
+    if (attr_ptr->enabled) _wlmbe_output_state_set_attributes(
+            output_ptr, &state, attr_ptr, width, height);
 
     if (!wlr_output_test_state(output_ptr->wlr_output_ptr, &state)) {
         bs_log(BS_ERROR, "Failed wlr_output_test_state() on %s",
@@ -208,6 +186,7 @@ void wlmbe_output_destroy(wlmbe_output_t *output_ptr)
     }
 
     _wlmbe_output_handle_destroy(&output_ptr->output_destroy_listener, NULL);
+    wlmbe_output_set_list(output_ptr, NULL);
 
     if (NULL != output_ptr->description_ptr) {
         free(output_ptr->description_ptr);
@@ -249,6 +228,18 @@ void wlmbe_output_update_attributes(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmbe_output_set_list(wlmbe_output_t *output_ptr, bs_dllist_t *dllist_ptr)
+{
+    if (NULL != output_ptr->dllist_ptr) {
+        bs_dllist_remove(output_ptr->dllist_ptr, &output_ptr->dlnode);
+    }
+    output_ptr->dllist_ptr = dllist_ptr;
+    if (NULL != output_ptr->dllist_ptr) {
+        bs_dllist_push_back(output_ptr->dllist_ptr, &output_ptr->dlnode);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 bs_dllist_node_t *wlmbe_dlnode_from_output(wlmbe_output_t *output_ptr)
 {
     return &output_ptr->dlnode;
@@ -265,14 +256,81 @@ wlmbe_output_t *wlmbe_output_from_dlnode(bs_dllist_node_t *dlnode_ptr)
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Sets mode, scale and transformation from the configured attributes.
+ *
+ * @param output_ptr
+ * @param state_ptr
+ * @param attr_ptr
+ * @param width               Overrides the width, for windowed backends.
+ * @param height              Overrides the height, for windowed backends.
+ */
+void _wlmbe_output_state_set_attributes(
+    wlmbe_output_t *output_ptr,
+    struct wlr_output_state *state_ptr,
+    const wlmbe_output_config_attributes_t *attr_ptr,
+    int width,
+    int height)
+{
+    struct wlr_output *wlr_output_ptr = output_ptr->wlr_output_ptr;
+    wlr_output_state_set_scale(state_ptr, BS_MAX(1.0, attr_ptr->scale));
+
+    // Issue #97: Found that X11 and transformations do not translate
+    // cursor coordinates well. Force it to 'Normal'.
+    enum wl_output_transform transformation =
+        attr_ptr->transformation;
+    if (wlr_output_is_x11(wlr_output_ptr) &&
+        transformation != WL_OUTPUT_TRANSFORM_NORMAL) {
+        bs_log(BS_WARNING, "X11 backend: Transformation changed to 'Normal'.");
+        transformation = WL_OUTPUT_TRANSFORM_NORMAL;
+    }
+    wlr_output_state_set_transform(state_ptr, transformation);
+
+    // Set modes for backends that have them.
+    if (attr_ptr->has_mode) {
+        wlr_output_state_set_custom_mode(
+            state_ptr,
+            attr_ptr->mode.width,
+            attr_ptr->mode.height,
+            attr_ptr->mode.refresh);
+    } else {
+        if (!wl_list_empty(&wlr_output_ptr->modes)) {
+            struct wlr_output_mode *mode_ptr = wlr_output_preferred_mode(
+                wlr_output_ptr);
+            bs_log(BS_INFO, "Setting mode %dx%d @ %.2fHz",
+                   mode_ptr->width, mode_ptr->height, 1e-3 * mode_ptr->refresh);
+            wlr_output_state_set_mode(state_ptr, mode_ptr);
+        } else {
+            bs_log(BS_INFO, "No modes available on %s",
+                   wlr_output_ptr->name);
+        }
+    }
+
+    if ((wlr_output_is_x11(wlr_output_ptr) ||
+         wlr_output_is_wl(wlr_output_ptr))
+        && 0 < width && 0 < height) {
+        bs_log(BS_INFO, "Overriding output dimensions to %"PRIu32"x%"PRIu32,
+               width, height);
+        wlr_output_state_set_custom_mode(
+            state_ptr, width, height, 0);
+    }
+}
+
+
+/* ------------------------------------------------------------------------- */
+/**
  * Event handler for the `destroy` signal raised by `wlr_output`.
  *
+ * When raised by `wlr_output` (the output got unplugged, or the backend shut
+ * down), the output also leaves its list and is freed: Nothing refers to it
+ * any longer. Called with a NULL `data_ptr` from @ref wlmbe_output_destroy,
+ * which frees it itself.
+ *
  * @param listener_ptr
- * @param data_ptr
+ * @param data_ptr            The `struct wlr_output`, or NULL.
  */
 void _wlmbe_output_handle_destroy(
     struct wl_listener *listener_ptr,
-    __UNUSED__ void *data_ptr)
+    void *data_ptr)
 {
     wlmbe_output_t *output_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmbe_output_t, output_destroy_listener);
@@ -280,7 +338,12 @@ void _wlmbe_output_handle_destroy(
     wlmtk_util_disconnect_listener(&output_ptr->output_request_state_listener);
     wlmtk_util_disconnect_listener(&output_ptr->output_frame_listener);
     wlmtk_util_disconnect_listener(&output_ptr->output_destroy_listener);
+    wlmbe_zoom_output_fini(&output_ptr->zoom_output, output_ptr->wlr_output_ptr);
     output_ptr->wlr_output_ptr = NULL;
+
+    if (NULL != data_ptr) {
+        wlmbe_output_destroy(output_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -300,7 +363,13 @@ void _wlmbe_output_handle_frame(
     struct wlr_scene_output *wlr_scene_output_ptr = wlr_scene_get_scene_output(
         output_ptr->wlr_scene_ptr,
         output_ptr->wlr_output_ptr);
-    wlr_scene_output_commit(wlr_scene_output_ptr, NULL);
+    // While zoomed, the zoom renders and commits the (magnified) frame.
+    if (NULL == output_ptr->zoom_ptr ||
+        !wlmbe_zoom_output_frame(output_ptr->zoom_ptr,
+                                 &output_ptr->zoom_output,
+                                 wlr_scene_output_ptr)) {
+        wlr_scene_output_commit(wlr_scene_output_ptr, NULL);
+    }
 
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);

@@ -22,6 +22,7 @@
 #include "primitives.h"
 
 #include <libbase/libbase.h>
+#include <libintl.h>
 #include <stddef.h>
 
 /** Space between the title and the ends of the title bar, in pixels. */
@@ -277,7 +278,8 @@ void wlmaker_primitives_draw_window_title(
         _wlmaker_primitives_title_margin, 2 + font_style_ptr->size,
         font_style_ptr,
         color,
-        title_ptr ? title_ptr : "Unnamed");
+        // In wlmaker's gettext domain: The toolkit is part of wlmaker.
+        title_ptr ? title_ptr : dgettext("wlmaker", "Unnamed"));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -289,7 +291,7 @@ void wlmaker_primitives_draw_justified_window_title(
     unsigned width,
     wlmtk_style_justify_t justify)
 {
-    if (NULL == title_ptr) title_ptr = "Unnamed";
+    if (NULL == title_ptr) title_ptr = dgettext("wlmaker", "Unnamed");
 
     cairo_text_extents_t extents = {};
     cairo_save(cairo_ptr);

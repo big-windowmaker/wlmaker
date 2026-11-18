@@ -21,6 +21,8 @@
 #include "dockapp_prefs.h"
 
 #include <dirent.h>
+#include <libgen.h>
+#include <libintl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +41,11 @@ struct _wlmaker_dockapp_prefs_t {
     bspl_dict_t               *schema_dict_ptr;
     /** The dock-app's dict in it. */
     bspl_dict_t               *app_dict_ptr;
+    /**
+     * The dock-app's dict, from its own file (Dockapps.d/<name>.plist, eg.
+     * shipped by the dock-app's package), when not in Dockapps.plist.
+     */
+    bspl_dict_t               *own_dict_ptr;
     /** The values stored in the preferences file. Maybe empty. */
     bspl_dict_t               *values_dict_ptr;
     /** Path of the preferences file. */
@@ -107,29 +114,54 @@ wlmaker_dockapp_prefs_t *wlmaker_dockapp_prefs_load(
             files_ptr, "Dockapps.plist", S_IFREG);
         schema_fname_ptr = found_ptr;
     }
-    if (NULL == schema_fname_ptr || NULL == name_ptr) return NULL;
+    if (NULL == name_ptr) return NULL;
 
-    bspl_object_t *o = bspl_create_object_from_plist_file(schema_fname_ptr);
-    if (NULL != found_ptr) free(found_ptr);
-    bspl_dict_t *schema_dict_ptr = bspl_dict_from_object(o);
-    if (NULL == schema_dict_ptr) {
-        if (NULL != o) bspl_object_unref(o);
-        return NULL;
+    bspl_object_t *o = NULL;
+    bspl_dict_t *schema_dict_ptr = NULL;
+    if (NULL != schema_fname_ptr) {
+        o = bspl_create_object_from_plist_file(schema_fname_ptr);
+        schema_dict_ptr = bspl_dict_from_object(o);
+        if (NULL == schema_dict_ptr && NULL != o) bspl_object_unref(o);
     }
+    if (NULL != found_ptr) free(found_ptr);
     bspl_dict_t *app_dict_ptr = bspl_dict_get_dict(
         bspl_dict_get_dict(schema_dict_ptr, "Dockapps"), name_ptr);
+
+    // Not in Dockapps.plist: The dock-app's own schema, eg. installed by its
+    // package in /usr/share/wlmaker/Dockapps.d/<name>.plist.
+    bspl_dict_t *own_dict_ptr = NULL;
+    if (NULL == app_dict_ptr && NULL != files_ptr &&
+        NULL == strchr(name_ptr, '/')) {
+        char *rel_ptr = bs_strdupf("Dockapps.d/%s.plist", name_ptr);
+        char *own_fname_ptr = NULL != rel_ptr ?
+            wlm_util_files_xdg_data_find(files_ptr, rel_ptr, S_IFREG) : NULL;
+        if (NULL != rel_ptr) free(rel_ptr);
+        if (NULL != own_fname_ptr) {
+            o = bspl_create_object_from_plist_file(own_fname_ptr);
+            own_dict_ptr = bspl_dict_from_object(o);
+            if (NULL == own_dict_ptr && NULL != o) bspl_object_unref(o);
+            free(own_fname_ptr);
+        }
+        app_dict_ptr = own_dict_ptr;
+    }
     if (NULL == app_dict_ptr) {
-        bspl_dict_unref(schema_dict_ptr);
+        if (NULL != schema_dict_ptr) bspl_dict_unref(schema_dict_ptr);
         return NULL;
     }
 
     wlmaker_dockapp_prefs_t *prefs_ptr = logged_calloc(1, sizeof(*prefs_ptr));
     if (NULL == prefs_ptr) {
-        bspl_dict_unref(schema_dict_ptr);
+        if (NULL != schema_dict_ptr) bspl_dict_unref(schema_dict_ptr);
+        if (NULL != own_dict_ptr) bspl_dict_unref(own_dict_ptr);
         return NULL;
     }
     prefs_ptr->schema_dict_ptr = schema_dict_ptr;
     prefs_ptr->app_dict_ptr = app_dict_ptr;
+    prefs_ptr->own_dict_ptr = own_dict_ptr;
+    // Titles in the dock-app's own catalog (TextDomain), else wlmaker's.
+    const char *domain_ptr = bspl_dict_get_string_value(
+        app_dict_ptr, "TextDomain");
+    if (NULL != domain_ptr) bind_textdomain_codeset(domain_ptr, "UTF-8");
 
     if (NULL != prefs_fname_ptr) {
         prefs_ptr->fname_ptr = logged_strdup(prefs_fname_ptr);
@@ -173,8 +205,26 @@ void wlmaker_dockapp_prefs_destroy(wlmaker_dockapp_prefs_t *prefs_ptr)
     if (NULL != prefs_ptr->schema_dict_ptr) {
         bspl_dict_unref(prefs_ptr->schema_dict_ptr);
     }
+    if (NULL != prefs_ptr->own_dict_ptr) {
+        bspl_dict_unref(prefs_ptr->own_dict_ptr);
+    }
     if (NULL != prefs_ptr->fname_ptr) free(prefs_ptr->fname_ptr);
     free(prefs_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** A title, in the dock-app's catalog (`TextDomain`) or else wlmaker's. */
+static const char *_wlmaker_dockapp_prefs_tr(
+    wlmaker_dockapp_prefs_t *prefs_ptr,
+    const char *text_ptr)
+{
+    const char *domain_ptr = bspl_dict_get_string_value(
+        prefs_ptr->app_dict_ptr, "TextDomain");
+    if (NULL != domain_ptr && NULL != text_ptr) {
+        const char *t = dgettext(domain_ptr, text_ptr);
+        if (t != text_ptr) return t;
+    }
+    return wlmaker_i18n(text_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -210,7 +260,7 @@ bool wlmaker_dockapp_prefs_add_actions(
         arg_ptr->server_ptr = server_ptr;
         arg_ptr->command_ptr = expanded_ptr;
         if (!wlmaker_context_menu_add_option(
-                context_menu_ptr, NULL, wlmaker_i18n(title_ptr),
+                context_menu_ptr, NULL, _wlmaker_dockapp_prefs_tr(prefs_ptr, title_ptr),
                 WLMTK_MENU_ITEM_INDICATOR_NONE, false,
                 _wlmaker_dockapp_prefs_action_callback, arg_ptr,
                 _wlmaker_dockapp_prefs_action_arg_free)) return false;
@@ -268,7 +318,7 @@ bool wlmaker_dockapp_prefs_add_preferences_titled(
             }
             if (!_wlmaker_dockapp_prefs_add_option(
                     prefs_ptr, context_menu_ptr, menu_ptr,
-                    wlmaker_i18n(title_ptr),
+                    _wlmaker_dockapp_prefs_tr(prefs_ptr, title_ptr),
                     WLMTK_MENU_ITEM_INDICATOR_CHECK, on,
                     key_ptr, on ? "No" : "Yes")) return false;
             continue;
@@ -276,7 +326,8 @@ bool wlmaker_dockapp_prefs_add_preferences_titled(
 
         // A choice: A submenu, with a radio button per value.
         wlmtk_menu_t *sub_ptr = wlmaker_context_menu_add_submenu(
-            context_menu_ptr, menu_ptr, wlmaker_i18n(title_ptr));
+            context_menu_ptr, menu_ptr,
+            _wlmaker_dockapp_prefs_tr(prefs_ptr, title_ptr));
         if (NULL == sub_ptr) return false;
         bspl_array_t *choices_ptr = _wlmaker_dockapp_prefs_choices(
             prefs_ptr, p_ptr);
@@ -289,9 +340,48 @@ bool wlmaker_dockapp_prefs_add_preferences_titled(
                     prefs_ptr, context_menu_ptr, sub_ptr, key_ptr,
                     current_ptr,
                     bspl_array_string_value_at(pair_ptr, 0),
-                    wlmaker_i18n(bspl_array_string_value_at(pair_ptr, 1)))) {
+                    _wlmaker_dockapp_prefs_tr(
+                        prefs_ptr, bspl_array_string_value_at(pair_ptr, 1)))) {
                 return false;
             }
+        }
+
+        // A file the dock-app keeps up to date (eg. the monitors, which come
+        // and go): A list of (Value, Title) pairs, next to the preferences
+        // file (relative name) or anywhere (absolute).
+        const char *cfile_ptr = bspl_dict_get_string_value(p_ptr, "ChoicesFile");
+        if (NULL != cfile_ptr && NULL != prefs_ptr->fname_ptr) {
+            char *path_ptr = NULL;
+            if ('/' == cfile_ptr[0]) {
+                path_ptr = logged_strdup(cfile_ptr);
+            } else {
+                char *dir_copy_ptr = logged_strdup(prefs_ptr->fname_ptr);
+                if (NULL != dir_copy_ptr) {
+                    path_ptr = bs_strdupf("%s/%s", dirname(dir_copy_ptr),
+                                          cfile_ptr);
+                    free(dir_copy_ptr);
+                }
+            }
+            struct stat cst;
+            bspl_object_t *co = NULL != path_ptr && 0 == stat(path_ptr, &cst) ?
+                bspl_create_object_from_plist_file(path_ptr) : NULL;
+            if (NULL != path_ptr) free(path_ptr);
+            bspl_array_t *file_choices_ptr = bspl_array_from_object(co);
+            for (size_t c = 0; NULL != file_choices_ptr &&
+                     c < bspl_array_size(file_choices_ptr); ++c) {
+                bspl_array_t *pair_ptr = bspl_array_from_object(
+                    bspl_array_at(file_choices_ptr, c));
+                if (NULL == pair_ptr || 2 > bspl_array_size(pair_ptr)) continue;
+                if (!_wlmaker_dockapp_prefs_add_choice(
+                        prefs_ptr, context_menu_ptr, sub_ptr, key_ptr,
+                        current_ptr,
+                        bspl_array_string_value_at(pair_ptr, 0),
+                        bspl_array_string_value_at(pair_ptr, 1))) {
+                    bspl_object_unref(co);
+                    return false;
+                }
+            }
+            if (NULL != co) bspl_object_unref(co);
         }
 
         // Entries of a directory, eg. the network interfaces.
@@ -463,6 +553,9 @@ bspl_array_t *_wlmaker_dockapp_prefs_choices(
     if (NULL != a_ptr) return a_ptr;
     const char *name_ptr = bspl_string_value_from_object(o);
     if (NULL == name_ptr) return NULL;
+    bspl_array_t *own_ptr = bspl_dict_get_array(
+        bspl_dict_get_dict(prefs_ptr->app_dict_ptr, "Choices"), name_ptr);
+    if (NULL != own_ptr) return own_ptr;
     return bspl_dict_get_array(
         bspl_dict_get_dict(prefs_ptr->schema_dict_ptr, "Choices"), name_ptr);
 }

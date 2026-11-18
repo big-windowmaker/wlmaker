@@ -70,6 +70,20 @@ uint32_t wlmaker_window_attributes_properties(
     return properties;
 }
 
+/* ------------------------------------------------------------------------- */
+int wlmaker_window_attributes_server_decoration(
+    bspl_dict_t *config_dict_ptr,
+    const char *class_ptr,
+    const char *instance_ptr)
+{
+    if (NULL == config_dict_ptr) return -1;
+    bspl_dict_t *attrs_dict_ptr = bspl_dict_get_dict(
+        config_dict_ptr, "WindowAttributes");
+    if (NULL == attrs_dict_ptr) return -1;
+    return _wlmaker_window_attributes_lookup(
+        attrs_dict_ptr, class_ptr, instance_ptr, "ServerDecoration");
+}
+
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -132,6 +146,8 @@ void _wlmaker_window_attributes_test(bs_test_t *test_ptr)
         "\"*\" = {NoCloseButton = Yes;};"
         "About = {NoMiniaturizeButton = Yes; NoResizebar = Yes;};"
         "\"xterm.XTerm\" = {NoCloseButton = No;};"
+        "steam = {ServerDecoration = Yes;};"
+        "\"org.example.Csd\" = {ServerDecoration = No;};"
         "};}");
     BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, o);
     bspl_dict_t *d = bspl_dict_from_object(o);
@@ -145,6 +161,15 @@ void _wlmaker_window_attributes_test(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(
         test_ptr, all,
         wlmaker_window_attributes_properties(d, "XTerm", "xterm", false));
+
+    BS_TEST_VERIFY_EQ(test_ptr, -1, wlmaker_window_attributes_server_decoration(
+                          NULL, "steam", "steam"));
+    BS_TEST_VERIFY_EQ(test_ptr, -1, wlmaker_window_attributes_server_decoration(
+                          d, "XTerm", "xterm"));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, wlmaker_window_attributes_server_decoration(
+                          d, "steam", "steamwebhelper"));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmaker_window_attributes_server_decoration(
+                          d, "org.example.Csd", "org.example.Csd"));
     bspl_object_unref(o);
 }
 

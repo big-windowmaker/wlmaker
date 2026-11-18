@@ -505,7 +505,8 @@ bspl_dict_t *_wlmaker_dnd_launcher_at(
             continue;
         }
         for (size_t i = 0; i < column.launchers; ++i) {
-            int d = (int)(1 + i) * column.pitch;
+            int d = (int)(1 + wlmaker_dock_column_launcher_position(
+                              &column, i)) * column.pitch;
             struct wlr_box box = { .x = column.x, .y = column.y,
                                    .width = column.size,
                                    .height = column.size };

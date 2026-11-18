@@ -30,11 +30,14 @@
 #include "corner.h"
 #include "dialog.h"
 #include "dnd.h"
+#include "force_close.h"
+#include "locate_pointer.h"
 #include "drawer.h"
 #include "dock_fx.h"
 #include "dock_launchers.h"
 #include "dock_menu.h"
 #include "app_icon.h"
+#include "appicons.h"
 #include "dock_position.h"
 #include "window_attributes.h"
 #include "dockapp_prefs.h"
@@ -70,10 +73,13 @@ int main(int argc, const char **argv)
         &wlmaker_action_test_set,
         &wlmaker_clip_test_set,
         &wlmaker_app_icon_test_set,
+        &wlmaker_appicons_test_set,
         &wlmaker_config_test_set,
         &wlmaker_context_menu_test_set,
         &wlmaker_corner_test_set,
         &wlmaker_dialog_test_set,
+        &wlmaker_locate_pointer_test_set,
+        &wlmaker_force_close_test_set,
         &wlmaker_dnd_test_set,
         &wlmaker_drawer_test_set,
         &wlmaker_dock_fx_test_set,

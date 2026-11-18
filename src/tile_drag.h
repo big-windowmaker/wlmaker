@@ -40,6 +40,12 @@ struct wlr_buffer;
 extern "C" {
 #endif  // __cplusplus
 
+/**
+ * The column of a tile that comes from none: A new launcher, made from an
+ * application's icon (see @ref wlmaker_tile_drag_source_t::launcher_ptr).
+ */
+#define WLMAKER_COLUMN_NONE -1
+
 /** What is dragged. */
 typedef enum {
     /**
@@ -87,6 +93,13 @@ typedef struct {
     bool                      running;
     /** Whether it is locked: It always stays on the docks. */
     bool                      locked;
+    /**
+     * A new launcher, from an application's icon (Window Maker: an appicon
+     * dragged to the Dock or the Clip): Inserted where it is dropped, with
+     * @ref WLMAKER_COLUMN_NONE as `column`. Dropped elsewhere, nothing
+     * happens: The application keeps its icon. Referenced while dragging.
+     */
+    bspl_dict_t               *launcher_ptr;
     /** Called when lifted off its slot, and put back. May be NULL. */
     wlmaker_tile_drag_lift_t  lift;
     /** Argument to @ref wlmaker_tile_drag_source_t::lift. */
@@ -101,6 +114,21 @@ typedef struct {
     size_t                    index;
     /** Slot in the column: 0 is the Dock's main tile, or the Clip. */
     size_t                    slot;
+    /**
+     * Position among the launchers and dock-apps of the column, as it will
+     * be: `slot - 1`.
+     */
+    size_t                    position;
+    /** Launchers before it, of those staying in the column. */
+    size_t                    launchers_before;
+    /** Dock-apps before it, of those staying in the column. */
+    size_t                    dockapps_before;
+    /**
+     * Set when it does not attach because the column is full: Another tile
+     * would go past the edge of the output. Window Maker's Dock has no more
+     * slots then, either.
+     */
+    bool                      full;
     /** Position of the slot, in layout coordinates. */
     int                       x;
     /** Position of the slot, in layout coordinates. */
@@ -141,7 +169,10 @@ void wlmaker_tile_drag_drop(
     double x,
     double y);
 
-/** Cancels the drag: The tile stays where it was. */
+/**
+ * Cancels the drag: The tile stays where it was. Esc does it, as for Window
+ * Maker's icons, unless already dropped.
+ */
 void wlmaker_tile_drag_cancel(wlmaker_tile_drag_t *tile_drag_ptr);
 
 /** The dock-app's tile is going away: Forgets it, if dragged. */
@@ -154,12 +185,20 @@ void wlmaker_tile_drag_forget_tile(
  * column, as Window Maker's wDockSnapIcon: When right over the column; or,
  * for the column it comes from, until it is 3 tiles away from it.
  *
+ * In the Dock and the Clip (@ref wlmaker_dock_column_t::mixed), launchers
+ * and dock-apps share one order, as on Window Maker's Dock: The tile goes
+ * to the slot it is over, before or after any other, up to right after the
+ * last one. In a drawer, launchers come first, then dock-apps.
+ *
  * @param column_ptr
  * @param kind
  * @param own_column          Whether the tile comes from this column.
+ * @param own_position        Its position there (see
+ *                            @ref wlmaker_tile_drag_target_t::position), if
+ *                            from this column.
  * @param x
  * @param y
- * @param target_ptr          Only `index`, `slot`, `x` and `y` are set.
+ * @param target_ptr          All but `column` are set.
  *
  * @return Whether it attaches.
  */
@@ -167,6 +206,7 @@ bool wlmaker_tile_drag_snap(
     const wlmaker_dock_column_t *column_ptr,
     wlmaker_tile_drag_kind_t kind,
     bool own_column,
+    size_t own_position,
     int x,
     int y,
     wlmaker_tile_drag_target_t *target_ptr);

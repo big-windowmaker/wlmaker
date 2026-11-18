@@ -178,6 +178,25 @@ struct _wlmaker_toplevel_icon_t {
     int                       xwl_x;
     /** See @ref wlmaker_toplevel_icon_t::xwl_x. */
     int                       xwl_y;
+    /**
+     * A button pressed on the X11 dock-app is held: The tile keeps the
+     * pointer (an implicit grab, as the X server's) until all are released.
+     * Xwayland releases the buttons that are down when its pointer focus
+     * moves to another surface, eg. to the menu that the press opened, and
+     * the menu (GTK) closes on that early release.
+     */
+    bool                      xwl_pressed;
+    /**
+     * The buttons were released, but the tile keeps the pointer until it
+     * moves: Xwayland handles a release after the crossing events of a
+     * focus change that comes with it, and GTK takes a menu's enter events
+     * for a press-drag-release: The release would then close the menu.
+     */
+    bool                      xwl_release_pending;
+    /** Listener for `motion` of the cursor, while a release is pending. */
+    struct wl_listener        xwl_cursor_motion_listener;
+    /** Listener for `motion_absolute`, while a release is pending. */
+    struct wl_listener        xwl_cursor_motion_absolute_listener;
     /** Size of the X11 icon window's surface, as last centered on the tile. */
     int                       xwl_width;
     /** See @ref wlmaker_toplevel_icon_t::xwl_width. */
@@ -196,6 +215,14 @@ struct _wlmaker_toplevel_icon_t {
     struct wlr_scene_tree     **xwl_shape_trees_ptr;
     /** Number of copies, at `xwl_shape_trees_ptr`. */
     size_t                    xwl_shape_trees;
+    /**
+     * Pending: Apply the shape again, to the content's new scene node. The
+     * shaped node goes when the tile moves (eg. placed on the Dock after the
+     * dock-app's first commits): Waiting for the next commit leaves the
+     * whole window shown (black around the shape) for as long as the
+     * dock-app does not draw, eg. wmusic without a player.
+     */
+    struct wl_event_source    *xwl_shape_idle_ptr;
 };
 
 static wlmaker_icon_manager_t *icon_manager_from_resource(
@@ -288,6 +315,17 @@ static void _wlmaker_toplevel_icon_xwl_forget_shape_trees(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr);
 static bool _wlmaker_toplevel_icon_content_has_pointer(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr);
+static bool _wlmaker_toplevel_icon_xwl_button(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr,
+    const wlmtk_button_event_t *button_event_ptr);
+static void _wlmaker_toplevel_icon_xwl_end_press(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr);
+static void _wlmaker_toplevel_icon_handle_xwl_cursor_motion(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_toplevel_icon_handle_xwl_cursor_motion_absolute(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 
 /* == Data ================================================================= */
 
@@ -626,6 +664,7 @@ void wlmaker_toplevel_icon_destroy(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr)
 {
     bs_log(BS_INFO, "Destroying toplevel icon %p", toplevel_icon_ptr);
+    _wlmaker_toplevel_icon_xwl_end_press(toplevel_icon_ptr);
     // The menu's items refer to the icon.
     if (NULL != toplevel_icon_ptr->server_ptr) {
         wlmaker_context_menu_cancel(
@@ -656,6 +695,10 @@ void wlmaker_toplevel_icon_destroy(
         toplevel_icon_ptr->xwl_link.prev = NULL;
     }
     _wlmaker_toplevel_icon_xwl_forget_shape_trees(toplevel_icon_ptr);
+    if (NULL != toplevel_icon_ptr->xwl_shape_idle_ptr) {
+        wl_event_source_remove(toplevel_icon_ptr->xwl_shape_idle_ptr);
+        toplevel_icon_ptr->xwl_shape_idle_ptr = NULL;
+    }
     if (NULL != toplevel_icon_ptr->xwl_shape_ptr) {
         free(toplevel_icon_ptr->xwl_shape_ptr);
         toplevel_icon_ptr->xwl_shape_ptr = NULL;
@@ -861,14 +904,12 @@ static void _wlmaker_toplevel_icon_move(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr, uint32_t direction)
 {
     wlmaker_server_t *server_ptr = toplevel_icon_ptr->icon_manager_ptr->server_ptr;
-    wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(
-        server_ptr, &toplevel_icon_ptr->super_tile);
-    if (NULL == d_ptr) return;
-    wlmaker_dockapps_move(
-        d_ptr,
+    // In the Dock and the Clip: Past a launcher, or another dock-app.
+    wlmaker_clip_move_dockapp_by(
+        server_ptr,
         &toplevel_icon_ptr->super_tile,
-        wlmaker_dockapps_delta_towards(
-            d_ptr, &toplevel_icon_ptr->super_tile, direction));
+        wlmaker_clip_dockapp_delta_towards(
+            server_ptr, &toplevel_icon_ptr->super_tile, direction));
 }
 
 /** Menu callback: Moves the icon up. */
@@ -942,10 +983,11 @@ void _wlmaker_toplevel_icon_open_menu(
         const char *text_ptr;
         wlmaker_context_menu_callback_t callback;
     } moves[] = {
-        { WLR_EDGE_TOP, "Move Up", _wlmaker_toplevel_icon_menu_up },
-        { WLR_EDGE_BOTTOM, "Move Down", _wlmaker_toplevel_icon_menu_down },
-        { WLR_EDGE_LEFT, "Move Left", _wlmaker_toplevel_icon_menu_left },
-        { WLR_EDGE_RIGHT, "Move Right", _wlmaker_toplevel_icon_menu_right },
+        { WLR_EDGE_TOP, N_("Move Up"), _wlmaker_toplevel_icon_menu_up },
+        { WLR_EDGE_BOTTOM, N_("Move Down"), _wlmaker_toplevel_icon_menu_down },
+        { WLR_EDGE_LEFT, N_("Move Left"), _wlmaker_toplevel_icon_menu_left },
+        { WLR_EDGE_RIGHT, N_("Move Right"),
+          _wlmaker_toplevel_icon_menu_right },
     };
 
     wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(server_ptr, tile_ptr);
@@ -984,8 +1026,8 @@ void _wlmaker_toplevel_icon_open_menu(
     rv = rv && wlmaker_dock_menu_add_icon_items(server_ptr, cm_ptr, &icon);
     for (size_t i = 0; rv && NULL != d_ptr &&
              i < sizeof(moves) / sizeof(moves[0]); ++i) {
-        if (0 == wlmaker_dockapps_delta_towards(
-                d_ptr, tile_ptr, moves[i].direction)) continue;
+        if (0 == wlmaker_clip_dockapp_delta_towards(
+                server_ptr, tile_ptr, moves[i].direction)) continue;
         rv = wlmaker_context_menu_add_item(
             cm_ptr, wlmaker_i18n(moves[i].text_ptr), moves[i].callback,
             toplevel_icon_ptr);
@@ -1168,8 +1210,8 @@ bool _wlmaker_toplevel_icon_element_pointer_button(
          NULL != toplevel_icon_ptr->wlr_xwayland_surface_ptr) &&
         BTN_RIGHT == button_event_ptr->button &&
         _wlmaker_toplevel_icon_content_has_pointer(toplevel_icon_ptr)) {
-        return toplevel_icon_ptr->orig_element_vmt.pointer_button(
-            element_ptr, button_event_ptr);
+        return _wlmaker_toplevel_icon_xwl_button(
+            toplevel_icon_ptr, button_event_ptr);
     }
     if (NULL != server_ptr->dockapps_ptr &&
         BTN_RIGHT == button_event_ptr->button) {
@@ -1202,8 +1244,116 @@ bool _wlmaker_toplevel_icon_element_pointer_button(
         return true;
     }
 
-    return toplevel_icon_ptr->orig_element_vmt.pointer_button(
+    return _wlmaker_toplevel_icon_xwl_button(toplevel_icon_ptr, button_event_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Passes a button event on to the tile's content. For an X11 dock-app, a
+ * press on it is an implicit grab, as on X11: Until all buttons are up, the
+ * pointer stays with the X11 surface, also beyond the tile (eg. over the
+ * menu the press opened, which the X11 client grabbed: Xwayland gives it
+ * the events). See @ref wlmaker_toplevel_icon_t::xwl_pressed.
+ *
+ * @param toplevel_icon_ptr
+ * @param button_event_ptr
+ *
+ * @return Whether the event was consumed.
+ */
+bool _wlmaker_toplevel_icon_xwl_button(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    wlmtk_element_t *element_ptr = wlmtk_tile_element(
+        &toplevel_icon_ptr->super_tile);
+    bool rv = toplevel_icon_ptr->orig_element_vmt.pointer_button(
         element_ptr, button_event_ptr);
+    if (NULL == toplevel_icon_ptr->wlr_xwayland_surface_ptr ||
+        NULL == element_ptr->parent_container_ptr) return rv;
+
+    struct wlr_seat *seat_ptr = toplevel_icon_ptr->server_ptr->wlr_seat_ptr;
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        !toplevel_icon_ptr->xwl_pressed &&
+        0 < seat_ptr->pointer_state.button_count &&
+        _wlmaker_toplevel_icon_content_has_pointer(toplevel_icon_ptr)) {
+        if (!toplevel_icon_ptr->xwl_release_pending) {
+            wlmtk_container_pointer_grab(
+                element_ptr->parent_container_ptr, element_ptr);
+        }
+        toplevel_icon_ptr->xwl_pressed = true;
+    } else if (WLMTK_BUTTON_UP == button_event_ptr->type &&
+               toplevel_icon_ptr->xwl_pressed &&
+               0 == seat_ptr->pointer_state.button_count) {
+        toplevel_icon_ptr->xwl_pressed = false;
+        if (!toplevel_icon_ptr->xwl_release_pending) {
+            toplevel_icon_ptr->xwl_release_pending = true;
+            struct wlr_cursor *c = wlmim_wlr_cursor(
+                toplevel_icon_ptr->server_ptr->input_manager_ptr);
+            wlmtk_util_connect_listener_signal(
+                &c->events.motion,
+                &toplevel_icon_ptr->xwl_cursor_motion_listener,
+                _wlmaker_toplevel_icon_handle_xwl_cursor_motion);
+            wlmtk_util_connect_listener_signal(
+                &c->events.motion_absolute,
+                &toplevel_icon_ptr->xwl_cursor_motion_absolute_listener,
+                _wlmaker_toplevel_icon_handle_xwl_cursor_motion_absolute);
+        }
+    }
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Ends the implicit grab of a press on the X11 dock-app, if any. */
+void _wlmaker_toplevel_icon_xwl_end_press(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    toplevel_icon_ptr->xwl_pressed = false;
+    if (!toplevel_icon_ptr->xwl_release_pending) return;
+    toplevel_icon_ptr->xwl_release_pending = false;
+    wlmtk_util_disconnect_listener(
+        &toplevel_icon_ptr->xwl_cursor_motion_listener);
+    wlmtk_util_disconnect_listener(
+        &toplevel_icon_ptr->xwl_cursor_motion_absolute_listener);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * The pointer moves after the release of a press on the X11 dock-app (the
+ * cursor's handler, connected first, has passed the motion on already): The
+ * tile lets the pointer go. Xwayland got the release before.
+ */
+static void _wlmaker_toplevel_icon_xwl_release_on_motion(
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr)
+{
+    if (toplevel_icon_ptr->xwl_pressed) return;
+    _wlmaker_toplevel_icon_xwl_end_press(toplevel_icon_ptr);
+    wlmtk_element_t *element_ptr = wlmtk_tile_element(
+        &toplevel_icon_ptr->super_tile);
+    if (NULL != element_ptr->parent_container_ptr) {
+        wlmtk_container_pointer_grab_release(
+            element_ptr->parent_container_ptr, element_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles `motion` of the cursor: See above. */
+void _wlmaker_toplevel_icon_handle_xwl_cursor_motion(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    _wlmaker_toplevel_icon_xwl_release_on_motion(BS_CONTAINER_OF(
+        listener_ptr, wlmaker_toplevel_icon_t, xwl_cursor_motion_listener));
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles `motion_absolute` of the cursor: See above. */
+void _wlmaker_toplevel_icon_handle_xwl_cursor_motion_absolute(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    _wlmaker_toplevel_icon_xwl_release_on_motion(BS_CONTAINER_OF(
+        listener_ptr, wlmaker_toplevel_icon_t,
+        xwl_cursor_motion_absolute_listener));
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1220,6 +1370,16 @@ bool _wlmaker_toplevel_icon_element_pointer_accepts_motion(
         element_ptr, wlmaker_toplevel_icon_t,
         super_tile.super_container.super_element);
     wlmaker_server_t *server_ptr = toplevel_icon_ptr->icon_manager_ptr->server_ptr;
+    if (toplevel_icon_ptr->xwl_pressed ||
+        toplevel_icon_ptr->xwl_release_pending) {
+        // The X11 surface keeps the pointer focus, wherever the pointer is:
+        // Its position relative to the surface (the X11 window is there).
+        struct wlr_cursor *c = wlmim_wlr_cursor(server_ptr->input_manager_ptr);
+        wlr_seat_pointer_notify_motion(
+            server_ptr->wlr_seat_ptr, motion_event_ptr->time_msec,
+            c->x - toplevel_icon_ptr->xwl_x, c->y - toplevel_icon_ptr->xwl_y);
+        return true;
+    }
 #if defined(WLMAKER_HAVE_XWAYLAND)
     // An X11 dock-app: The X server gives the pointer to the topmost X window
     // at its position. Another dock-app's icon window, left where its tile
@@ -1279,6 +1439,7 @@ void _wlmaker_toplevel_icon_element_pointer_grab_cancel(
         super_tile.super_container.super_element);
     wlmaker_server_t *server_ptr = toplevel_icon_ptr->icon_manager_ptr->server_ptr;
     toplevel_icon_ptr->dragging = false;
+    _wlmaker_toplevel_icon_xwl_end_press(toplevel_icon_ptr);
     if (NULL != toplevel_icon_ptr->tile_drag_ptr &&
         toplevel_icon_ptr->tile_drag_ptr == server_ptr->tile_drag_ptr) {
         wlmaker_tile_drag_cancel(toplevel_icon_ptr->tile_drag_ptr);
@@ -1653,7 +1814,20 @@ void wlmaker_icon_manager_set_xwayland_shape(
 }
 
 /* ------------------------------------------------------------------------- */
-/** The shaped scene node goes (and the copies with it, as its children). */
+/** Applies the shape to the content's (new) scene node, from the idle loop. */
+static void _wlmaker_toplevel_icon_xwl_shape_idle(void *data_ptr)
+{
+    wlmaker_toplevel_icon_t *toplevel_icon_ptr = data_ptr;
+    toplevel_icon_ptr->xwl_shape_idle_ptr = NULL;
+    _wlmaker_toplevel_icon_xwl_apply_shape(toplevel_icon_ptr, false);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * The shaped scene node goes (and the copies with it, as its children):
+ * The content gets a new one (the tile moved). Its shape again, once this
+ * round of the event loop is done, without waiting for a commit.
+ */
 static void _wlmaker_toplevel_icon_handle_shaped_node_destroy(
     struct wl_listener *listener_ptr,
     __UNUSED__ void *data_ptr)
@@ -1669,6 +1843,14 @@ static void _wlmaker_toplevel_icon_handle_shaped_node_destroy(
     }
     toplevel_icon_ptr->xwl_shape_trees = 0;
     toplevel_icon_ptr->xwl_shaped_node_ptr = NULL;
+    if (0 < toplevel_icon_ptr->xwl_shape_rects &&
+        NULL == toplevel_icon_ptr->xwl_shape_idle_ptr &&
+        NULL != toplevel_icon_ptr->icon_manager_ptr) {
+        toplevel_icon_ptr->xwl_shape_idle_ptr = wl_event_loop_add_idle(
+            wl_display_get_event_loop(
+                toplevel_icon_ptr->icon_manager_ptr->wl_display_ptr),
+            _wlmaker_toplevel_icon_xwl_shape_idle, toplevel_icon_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */

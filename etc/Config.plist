@@ -114,6 +114,12 @@
         "XF86MonBrightnessDown" = (ShellExecute, "brightnessctl set 5%-");
         "XF86MonBrightnessUp" = (ShellExecute, "brightnessctl set +5%");
 
+        // Accessibility zoom of the whole screen. Without the modifiers, the
+        // wheel scrolls in the applications as usual.
+        "Ctrl+Alt+WheelUp" = ZoomIn;
+        "Ctrl+Alt+WheelDown" = ZoomOut;
+        "Ctrl+Alt+0" = ZoomReset;
+
         // TODO(kaeser@gubbe.ch): xkbcommon emits XF86Switch_VT_n for Fn only with
         // Ctrl+Alt presset. Means: Here, it should not need the modifiers to be
         // listed. Should determine how to handle that w/o modifiers.
@@ -129,6 +135,21 @@
         "Ctrl+Alt+XF86Switch_VT_10" = SwitchToVT10;
         "Ctrl+Alt+XF86Switch_VT_11" = SwitchToVT11;
         "Ctrl+Alt+XF86Switch_VT_12" = SwitchToVT12;
+    };
+    // Accessibility zoom (actions ZoomIn, ZoomOut, ZoomReset). All optional.
+    Zoom = {
+        // Maximum magnification.
+        MaxLevel = 8.0;
+        // Magnification per wheel notch (or ZoomIn key press).
+        Step = 1.25;
+        // Milliseconds to glide to a new level. 0 for no animation.
+        AnimationTime = 120;
+        // How the view follows the pointer: Proportional (the pointer's
+        // place on the screen maps to the same place of the magnified view),
+        // Push (moves when the pointer reaches an edge), or Centered.
+        Tracking = Proportional;
+        // Smooth (filtered) magnified pixels, or sharp blocks.
+        Smooth = True;
     };
     HotCorner = {
         // Delay for the pointer occupying a corner before triggering 'Enter'.

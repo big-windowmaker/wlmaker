@@ -60,6 +60,16 @@ struct _wlmaker_dockapps_t {
     char                      *state_fname_ptr;
     /** Key of the order in the state file. */
     char                      *order_key_ptr;
+    /**
+     * For each of @ref wlmaker_dockapps_t::names_ptr: The number of the
+     * dock's launchers before it (dock-apps and launchers share the
+     * column), or @ref WLMAKER_DOCKAPPS_AFTER_ALL.
+     */
+    size_t                    *after_ptr;
+    /** Called when the placement changed. May be NULL. */
+    void                      (*changed)(void *ud_ptr);
+    /** Argument to @ref wlmaker_dockapps_t::changed. */
+    void                      *changed_ud_ptr;
 };
 
 static bool _wlmaker_dockapps_set_names_from_array(
@@ -79,10 +89,23 @@ static bspl_dict_t *_wlmaker_dockapps_load_file(const char *fname_ptr);
 static bool _wlmaker_dockapps_store_key(
     const char *fname_ptr,
     const char *key_ptr,
-    bspl_array_t *array_ptr);
+    bspl_object_t *object_ptr);
+static void _wlmaker_dockapps_load_after(
+    wlmaker_dockapps_t *dockapps_ptr,
+    bspl_dict_t *dict_ptr);
+static size_t _wlmaker_dockapps_after_of(
+    wlmaker_dockapps_t *dockapps_ptr,
+    const char *name_ptr);
+static void _wlmaker_dockapps_changed(wlmaker_dockapps_t *dockapps_ptr);
+static void _wlmaker_dockapps_store(wlmaker_dockapps_t *dockapps_ptr);
 
 /** Key of the array holding the order, in the state file. */
 static const char *_wlmaker_dockapps_order_key = "Order";
+/**
+ * Key of the dict holding, for each placement's key, a dict of the number
+ * of launchers before each dock-app (by name).
+ */
+static const char *_wlmaker_dockapps_after_key = "AfterLaunchers";
 /** Key of the array of dock-apps removed by the user. */
 static const char *_wlmaker_dockapps_removed_key = "Removed";
 
@@ -132,6 +155,10 @@ wlmaker_dockapps_t *wlmaker_dockapps_create_with_key(
             if (NULL != a) {
                 loaded = _wlmaker_dockapps_set_names_from_array(
                     dockapps_ptr, a);
+                if (loaded) {
+                    _wlmaker_dockapps_load_after(
+                        dockapps_ptr, bspl_dict_from_object(o));
+                }
             } else {
                 bs_log(BS_INFO, "No '%s' array in dock-apps state \"%s\"",
                        dockapps_ptr->order_key_ptr, state_fname_ptr);
@@ -214,6 +241,7 @@ bool wlmaker_dockapps_add(
     wlmtk_element_set_position(wlmtk_tile_element(tile_ptr), 0, 0);
     wlmtk_dock_add_tile(dockapps_ptr->dock_ptr, tile_ptr);
     wlmtk_dock_move_tile(dockapps_ptr->dock_ptr, tile_ptr, base + index);
+    _wlmaker_dockapps_changed(dockapps_ptr);
     return true;
 }
 
@@ -230,6 +258,7 @@ void wlmaker_dockapps_remove(
     bs_dllist_remove(&dockapps_ptr->placed, &dockapp_ptr->dlnode);
     if (NULL != dockapp_ptr->name_ptr) free(dockapp_ptr->name_ptr);
     free(dockapp_ptr);
+    _wlmaker_dockapps_changed(dockapps_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -270,6 +299,7 @@ void wlmaker_dockapps_move(
         bs_log(BS_WARNING, "Failed to store dock-apps order in \"%s\"",
                dockapps_ptr->state_fname_ptr);
     }
+    _wlmaker_dockapps_changed(dockapps_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -429,6 +459,7 @@ bool wlmaker_dockapps_insert(
         bs_log(BS_WARNING, "Failed to store dock-apps order in \"%s\"",
                dockapps_ptr->state_fname_ptr);
     }
+    _wlmaker_dockapps_changed(dockapps_ptr);
     return true;
 }
 
@@ -454,6 +485,7 @@ void wlmaker_dockapps_detach(
             free(dockapps_ptr->names_ptr[i]);
             continue;
         }
+        dockapps_ptr->after_ptr[j] = dockapps_ptr->after_ptr[i];
         dockapps_ptr->names_ptr[j++] = dockapps_ptr->names_ptr[i];
     }
     dockapps_ptr->names_len = j;
@@ -474,6 +506,127 @@ void wlmaker_dockapps_move_to(
     int current = wlmaker_dockapps_index(dockapps_ptr, tile_ptr);
     if (0 > current) return;
     wlmaker_dockapps_move(dockapps_ptr, tile_ptr, (int)index - current);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_dockapps_set_changed_callback(
+    wlmaker_dockapps_t *dockapps_ptr,
+    void (*changed)(void *ud_ptr),
+    void *ud_ptr)
+{
+    dockapps_ptr->changed = changed;
+    dockapps_ptr->changed_ud_ptr = ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+size_t wlmaker_dockapps_after_launchers(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr)
+{
+    wlmaker_dockapp_t *d_ptr = _wlmaker_dockapps_find(
+        dockapps_ptr, tile_ptr, NULL);
+    if (NULL == d_ptr) return WLMAKER_DOCKAPPS_AFTER_ALL;
+    return _wlmaker_dockapps_after_of(dockapps_ptr, d_ptr->name_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_dockapps_set_after_launchers(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t launchers)
+{
+    wlmaker_dockapp_t *d_ptr = _wlmaker_dockapps_find(
+        dockapps_ptr, tile_ptr, NULL);
+    if (NULL == d_ptr || NULL == d_ptr->name_ptr) return;
+    // Listed: Its name is in the order.
+    _wlmaker_dockapps_update_names(dockapps_ptr);
+    size_t rank = _wlmaker_dockapps_rank(dockapps_ptr, d_ptr->name_ptr);
+    if (rank >= dockapps_ptr->names_len) return;
+    if (dockapps_ptr->after_ptr[rank] == launchers) return;
+    dockapps_ptr->after_ptr[rank] = launchers;
+    _wlmaker_dockapps_store(dockapps_ptr);
+    _wlmaker_dockapps_changed(dockapps_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_dockapps_launcher_inserted(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t index)
+{
+    bool changed = false;
+    for (size_t i = 0; i < dockapps_ptr->names_len; ++i) {
+        size_t *a_ptr = &dockapps_ptr->after_ptr[i];
+        if (WLMAKER_DOCKAPPS_AFTER_ALL == *a_ptr || *a_ptr <= index) continue;
+        ++*a_ptr;
+        changed = true;
+    }
+    if (!changed) return;
+    _wlmaker_dockapps_store(dockapps_ptr);
+    _wlmaker_dockapps_changed(dockapps_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_dockapps_launcher_removed(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t index)
+{
+    bool changed = false;
+    for (size_t i = 0; i < dockapps_ptr->names_len; ++i) {
+        size_t *a_ptr = &dockapps_ptr->after_ptr[i];
+        if (WLMAKER_DOCKAPPS_AFTER_ALL == *a_ptr || *a_ptr <= index) continue;
+        --*a_ptr;
+        changed = true;
+    }
+    if (!changed) return;
+    _wlmaker_dockapps_store(dockapps_ptr);
+    _wlmaker_dockapps_changed(dockapps_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_dockapps_freeze_after(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t launchers)
+{
+    _wlmaker_dockapps_update_names(dockapps_ptr);
+    bool changed = false;
+    size_t after = 0;
+    for (bs_dllist_node_t *dlnode_ptr = dockapps_ptr->placed.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = dlnode_ptr->next_ptr) {
+        wlmaker_dockapp_t *d_ptr = BS_CONTAINER_OF(
+            dlnode_ptr, wlmaker_dockapp_t, dlnode);
+        // As in wlmaker_dockapps_positions().
+        size_t rank = _wlmaker_dockapps_rank(dockapps_ptr, d_ptr->name_ptr);
+        size_t a = _wlmaker_dockapps_after_of(dockapps_ptr, d_ptr->name_ptr);
+        after = BS_MAX(after, BS_MIN(a, launchers));
+        if (rank >= dockapps_ptr->names_len ||
+            dockapps_ptr->after_ptr[rank] == after) continue;
+        dockapps_ptr->after_ptr[rank] = after;
+        changed = true;
+    }
+    if (changed) _wlmaker_dockapps_store(dockapps_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+uint64_t wlmaker_dockapps_positions(
+    wlmaker_dockapps_t *dockapps_ptr,
+    size_t launchers)
+{
+    uint64_t positions = 0;
+    size_t after = 0, j = 0;
+    for (bs_dllist_node_t *dlnode_ptr = dockapps_ptr->placed.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = dlnode_ptr->next_ptr, ++j) {
+        wlmaker_dockapp_t *d_ptr = BS_CONTAINER_OF(
+            dlnode_ptr, wlmaker_dockapp_t, dlnode);
+        // Not before the launchers of the one before; not past the last.
+        size_t a = _wlmaker_dockapps_after_of(dockapps_ptr, d_ptr->name_ptr);
+        a = BS_MIN(a, launchers);
+        after = BS_MAX(after, a);
+        size_t p = after + j;
+        if (64 > p) positions |= UINT64_C(1) << p;
+    }
+    return positions;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -508,7 +661,8 @@ bool wlmaker_dockapps_set_removed(
     if (NULL != dict_ptr) bspl_dict_unref(dict_ptr);
     if (rv && listed != removed) {
         rv = _wlmaker_dockapps_store_key(
-            fname_ptr, _wlmaker_dockapps_removed_key, array_ptr);
+            fname_ptr, _wlmaker_dockapps_removed_key,
+            bspl_object_from_array(array_ptr));
     }
     if (NULL != array_ptr) bspl_array_unref(array_ptr);
     return rv;
@@ -556,6 +710,61 @@ char *wlmaker_dockapps_client_name(struct wl_client *wl_client_ptr)
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Reads the number of launchers before each listed dock-app from the state
+ * file's dict: `AfterLaunchers = { <key> = { <name> = <number>; }; }`.
+ */
+void _wlmaker_dockapps_load_after(
+    wlmaker_dockapps_t *dockapps_ptr,
+    bspl_dict_t *dict_ptr)
+{
+    bspl_dict_t *d = bspl_dict_get_dict(
+        bspl_dict_get_dict(dict_ptr, _wlmaker_dockapps_after_key),
+        dockapps_ptr->order_key_ptr);
+    for (size_t i = 0; NULL != d && i < dockapps_ptr->names_len; ++i) {
+        const char *v = bspl_dict_get_string_value(
+            d, dockapps_ptr->names_ptr[i]);
+        uint64_t value;
+        if (NULL != v && bs_strconvert_uint64(v, &value, 10) &&
+            value < WLMAKER_DOCKAPPS_AFTER_ALL) {
+            dockapps_ptr->after_ptr[i] = value;
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The launchers before the listed dock-app `name_ptr`. */
+size_t _wlmaker_dockapps_after_of(
+    wlmaker_dockapps_t *dockapps_ptr,
+    const char *name_ptr)
+{
+    size_t rank = _wlmaker_dockapps_rank(dockapps_ptr, name_ptr);
+    if (rank >= dockapps_ptr->names_len) return WLMAKER_DOCKAPPS_AFTER_ALL;
+    return dockapps_ptr->after_ptr[rank];
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tells the owner of the dock (eg. the Clip) that the placement changed. */
+void _wlmaker_dockapps_changed(wlmaker_dockapps_t *dockapps_ptr)
+{
+    if (NULL != dockapps_ptr->changed) {
+        dockapps_ptr->changed(dockapps_ptr->changed_ud_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Stores the order, if there is a state file. Logs failures. */
+void _wlmaker_dockapps_store(wlmaker_dockapps_t *dockapps_ptr)
+{
+    if (NULL == dockapps_ptr->state_fname_ptr ||
+        0 == dockapps_ptr->names_len) return;
+    if (!_wlmaker_dockapps_save(dockapps_ptr)) {
+        bs_log(BS_WARNING, "Failed to store dock-apps order in \"%s\"",
+               dockapps_ptr->state_fname_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 /** Sets @ref wlmaker_dockapps_t::names_ptr from an array of strings. */
 bool _wlmaker_dockapps_set_names_from_array(
     wlmaker_dockapps_t *dockapps_ptr,
@@ -566,6 +775,8 @@ bool _wlmaker_dockapps_set_names_from_array(
     if (0 == n) return true;
     dockapps_ptr->names_ptr = logged_calloc(n, sizeof(char*));
     if (NULL == dockapps_ptr->names_ptr) return false;
+    dockapps_ptr->after_ptr = logged_calloc(n, sizeof(size_t));
+    if (NULL == dockapps_ptr->after_ptr) return false;
     for (size_t i = 0; i < n; ++i) {
         const char *s = bspl_array_string_value_at(array_ptr, i);
         if (NULL == s) {
@@ -574,6 +785,8 @@ bool _wlmaker_dockapps_set_names_from_array(
         }
         char *d = logged_strdup(s);
         if (NULL == d) return false;
+        dockapps_ptr->after_ptr[dockapps_ptr->names_len] =
+            WLMAKER_DOCKAPPS_AFTER_ALL;
         dockapps_ptr->names_ptr[dockapps_ptr->names_len++] = d;
     }
     return true;
@@ -588,6 +801,8 @@ void _wlmaker_dockapps_clear_names(wlmaker_dockapps_t *dockapps_ptr)
     }
     if (NULL != dockapps_ptr->names_ptr) free(dockapps_ptr->names_ptr);
     dockapps_ptr->names_ptr = NULL;
+    if (NULL != dockapps_ptr->after_ptr) free(dockapps_ptr->after_ptr);
+    dockapps_ptr->after_ptr = NULL;
     dockapps_ptr->names_len = 0;
 }
 
@@ -639,6 +854,11 @@ void _wlmaker_dockapps_update_names(wlmaker_dockapps_t *dockapps_ptr)
     if (0 == max_len) return;
     char **names_ptr = logged_calloc(max_len, sizeof(char*));
     if (NULL == names_ptr) return;
+    size_t *after_ptr = logged_calloc(max_len, sizeof(size_t));
+    if (NULL == after_ptr) {
+        free(names_ptr);
+        return;
+    }
     size_t len = 0;
 
     for (bs_dllist_node_t *dlnode_ptr = dockapps_ptr->placed.head_ptr;
@@ -652,6 +872,8 @@ void _wlmaker_dockapps_update_names(wlmaker_dockapps_t *dockapps_ptr)
             listed |= (0 == strcmp(names_ptr[i], d_ptr->name_ptr));
         }
         if (listed) continue;
+        after_ptr[len] = _wlmaker_dockapps_after_of(
+            dockapps_ptr, d_ptr->name_ptr);
         names_ptr[len] = logged_strdup(d_ptr->name_ptr);
         if (NULL != names_ptr[len]) ++len;
     }
@@ -661,43 +883,15 @@ void _wlmaker_dockapps_update_names(wlmaker_dockapps_t *dockapps_ptr)
             listed |= (0 == strcmp(names_ptr[i], dockapps_ptr->names_ptr[j]));
         }
         if (listed) continue;
+        after_ptr[len] = dockapps_ptr->after_ptr[j];
         names_ptr[len] = logged_strdup(dockapps_ptr->names_ptr[j]);
         if (NULL != names_ptr[len]) ++len;
     }
 
     _wlmaker_dockapps_clear_names(dockapps_ptr);
     dockapps_ptr->names_ptr = names_ptr;
+    dockapps_ptr->after_ptr = after_ptr;
     dockapps_ptr->names_len = len;
-}
-
-/* ------------------------------------------------------------------------- */
-/** Stores the order into @ref wlmaker_dockapps_t::state_fname_ptr. */
-bool _wlmaker_dockapps_save(wlmaker_dockapps_t *dockapps_ptr)
-{
-    bspl_array_t *array_ptr = bspl_array_create();
-    bool rv = NULL != array_ptr;
-    for (size_t i = 0; rv && i < dockapps_ptr->names_len; ++i) {
-        bspl_string_t *s = bspl_string_create(dockapps_ptr->names_ptr[i]);
-        rv = NULL != s &&
-            bspl_array_push_back(array_ptr, bspl_object_from_string(s));
-        if (NULL != s) bspl_string_unref(s);
-    }
-    rv = rv && _wlmaker_dockapps_store_key(
-        dockapps_ptr->state_fname_ptr, dockapps_ptr->order_key_ptr,
-        array_ptr);
-    if (NULL != array_ptr) bspl_array_unref(array_ptr);
-    return rv;
-}
-
-/* ------------------------------------------------------------------------- */
-/** @return The dict in the dock-apps state file, or NULL. */
-bspl_dict_t *_wlmaker_dockapps_load_file(const char *fname_ptr)
-{
-    if (!bs_file_realpath_is(fname_ptr, S_IFREG)) return NULL;
-    bspl_object_t *o = bspl_create_object_from_plist_file(fname_ptr);
-    bspl_dict_t *dict_ptr = bspl_dict_from_object(o);
-    if (NULL == dict_ptr && NULL != o) bspl_object_unref(o);
-    return dict_ptr;
 }
 
 /** Arguments for @ref _wlmaker_dockapps_copy_entry. */
@@ -720,11 +914,81 @@ static bool _wlmaker_dockapps_copy_entry(
 }
 
 /* ------------------------------------------------------------------------- */
-/** Stores `array_ptr` as `key_ptr` of the state file, keeping other keys. */
+/** Stores the order into @ref wlmaker_dockapps_t::state_fname_ptr. */
+bool _wlmaker_dockapps_save(wlmaker_dockapps_t *dockapps_ptr)
+{
+    bspl_array_t *array_ptr = bspl_array_create();
+    bool rv = NULL != array_ptr;
+    for (size_t i = 0; rv && i < dockapps_ptr->names_len; ++i) {
+        bspl_string_t *s = bspl_string_create(dockapps_ptr->names_ptr[i]);
+        rv = NULL != s &&
+            bspl_array_push_back(array_ptr, bspl_object_from_string(s));
+        if (NULL != s) bspl_string_unref(s);
+    }
+    rv = rv && _wlmaker_dockapps_store_key(
+        dockapps_ptr->state_fname_ptr, dockapps_ptr->order_key_ptr,
+        bspl_object_from_array(array_ptr));
+    if (NULL != array_ptr) bspl_array_unref(array_ptr);
+
+    // The launchers before each dock-app: In the dict of all placements,
+    // keeping those of the others.
+    bspl_dict_t *file_ptr = rv ? _wlmaker_dockapps_load_file(
+        dockapps_ptr->state_fname_ptr) : NULL;
+    bspl_dict_t *all_ptr = bspl_dict_create();
+    bspl_dict_t *mine_ptr = bspl_dict_create();
+    rv = rv && NULL != all_ptr && NULL != mine_ptr;
+    _wlmaker_dockapps_copy_arg_t arg = {
+        .dest_dict_ptr = all_ptr,
+        .skip_key_ptr = dockapps_ptr->order_key_ptr };
+    bspl_dict_t *old_all_ptr = bspl_dict_get_dict(
+        file_ptr, _wlmaker_dockapps_after_key);
+    if (rv && NULL != old_all_ptr) {
+        rv = bspl_dict_foreach(old_all_ptr, _wlmaker_dockapps_copy_entry, &arg);
+    }
+    size_t set = 0;
+    for (size_t i = 0; rv && i < dockapps_ptr->names_len; ++i) {
+        if (WLMAKER_DOCKAPPS_AFTER_ALL == dockapps_ptr->after_ptr[i]) continue;
+        char *v_ptr = bs_strdupf("%zu", dockapps_ptr->after_ptr[i]);
+        bspl_string_t *v = NULL != v_ptr ? bspl_string_create(v_ptr) : NULL;
+        if (NULL != v_ptr) free(v_ptr);
+        rv = NULL != v && bspl_dict_add(mine_ptr, dockapps_ptr->names_ptr[i],
+                                        bspl_object_from_string(v));
+        if (NULL != v) bspl_string_unref(v);
+        ++set;
+    }
+    if (rv && 0 < set) {
+        rv = bspl_dict_add(all_ptr, dockapps_ptr->order_key_ptr,
+                           bspl_object_from_dict(mine_ptr));
+    }
+    // Nothing stored before, nothing to store: The file stays as it was.
+    if (rv && (0 < set || NULL != old_all_ptr)) {
+        rv = _wlmaker_dockapps_store_key(
+            dockapps_ptr->state_fname_ptr, _wlmaker_dockapps_after_key,
+            bspl_object_from_dict(all_ptr));
+    }
+    if (NULL != mine_ptr) bspl_dict_unref(mine_ptr);
+    if (NULL != all_ptr) bspl_dict_unref(all_ptr);
+    if (NULL != file_ptr) bspl_dict_unref(file_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The dict in the dock-apps state file, or NULL. */
+bspl_dict_t *_wlmaker_dockapps_load_file(const char *fname_ptr)
+{
+    if (!bs_file_realpath_is(fname_ptr, S_IFREG)) return NULL;
+    bspl_object_t *o = bspl_create_object_from_plist_file(fname_ptr);
+    bspl_dict_t *dict_ptr = bspl_dict_from_object(o);
+    if (NULL == dict_ptr && NULL != o) bspl_object_unref(o);
+    return dict_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Stores `object_ptr` as `key_ptr` of the state file, keeping other keys. */
 bool _wlmaker_dockapps_store_key(
     const char *fname_ptr,
     const char *key_ptr,
-    bspl_array_t *array_ptr)
+    bspl_object_t *object_ptr)
 {
     bool rv = false;
     bspl_dict_t *old_ptr = _wlmaker_dockapps_load_file(fname_ptr);
@@ -736,8 +1000,7 @@ bool _wlmaker_dockapps_store_key(
         !bspl_dict_foreach(old_ptr, _wlmaker_dockapps_copy_entry, &arg)) {
         goto done;
     }
-    if (!bspl_dict_add(dict_ptr, key_ptr,
-                       bspl_object_from_array(array_ptr))) goto done;
+    if (!bspl_dict_add(dict_ptr, key_ptr, object_ptr)) goto done;
 
     bs_dynbuf_t dynbuf = {};
     if (!bs_dynbuf_init(&dynbuf, 4096, SIZE_MAX)) goto done;
@@ -756,12 +1019,14 @@ done:
 static void test_order(bs_test_t *test_ptr);
 static void test_drag_delta(bs_test_t *test_ptr);
 static void test_two_docks(bs_test_t *test_ptr);
+static void test_after_launchers(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t _wlmaker_dockapps_test_cases[] = {
     { true, "order", test_order },
     { true, "drag_delta", test_drag_delta },
     { true, "two_docks", test_two_docks },
+    { true, "after_launchers", test_after_launchers },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -969,6 +1234,104 @@ void test_two_docks(bs_test_t *test_ptr)
     }
     for (int i = 0; i < 3; ++i) wlmtk_tile_fini(&t[i]);
     wlmtk_dock_destroy(clip_ptr);
+    wlmtk_dock_destroy(dock_ptr);
+}
+
+/** Counts calls of the changed callback. */
+static void _test_changed(void *ud_ptr) { ++*(int*)ud_ptr; }
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tests dock-apps among the launchers: Their positions, kept when launchers
+ * are added or removed, and stored with the order.
+ */
+void test_after_launchers(bs_test_t *test_ptr)
+{
+    wlmtk_dock_positioning_t pos = {
+        .edge = WLR_EDGE_LEFT, .anchor = WLR_EDGE_TOP };
+    struct wlmtk_dock_style style = {};
+    wlmtk_dock_t *dock_ptr = wlmtk_dock_create(&pos, &style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dock_ptr);
+    wlmtk_tile_t t[3];
+    for (int i = 0; i < 3; ++i) {
+        BS_TEST_VERIFY_TRUE_OR_RETURN(
+            test_ptr, wlmtk_tile_init(&t[i], &_test_tile_style));
+    }
+    const char *fname_ptr = bs_test_temp_path(test_ptr, "Dockapps3.plist");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, fname_ptr);
+    unlink(fname_ptr);
+
+    wlmaker_dockapps_t *d = wlmaker_dockapps_create(dock_ptr, NULL, fname_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    int changed = 0;
+    wlmaker_dockapps_set_changed_callback(d, _test_changed, &changed);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_add(d, &t[0], "eyes"));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_add(d, &t[1], "zones"));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_add(d, &t[2], NULL));
+    BS_TEST_VERIFY_EQ(test_ptr, 3, changed);
+
+    // As before: After all 4 launchers. Positions 4, 5, 6.
+    BS_TEST_VERIFY_EQ(test_ptr, WLMAKER_DOCKAPPS_AFTER_ALL,
+                      wlmaker_dockapps_after_launchers(d, &t[0]));
+    BS_TEST_VERIFY_EQ(test_ptr, UINT64_C(0x70),
+                      wlmaker_dockapps_positions(d, 4));
+
+    // "eyes" right after the first launcher; "zones" after the second.
+    wlmaker_dockapps_set_after_launchers(d, &t[0], 1);
+    wlmaker_dockapps_set_after_launchers(d, &t[1], 2);
+    BS_TEST_VERIFY_EQ(test_ptr, 5, changed);
+    // L E L Z L L N: Positions 1, 3 and 6 (the nameless one after all).
+    BS_TEST_VERIFY_EQ(test_ptr, (1 << 1) | (1 << 3) | (1 << 6),
+                      wlmaker_dockapps_positions(d, 4));
+    // With only 1 launcher: Both after it, in their order.
+    BS_TEST_VERIFY_EQ(test_ptr, (1 << 1) | (1 << 2) | (1 << 3),
+                      wlmaker_dockapps_positions(d, 1));
+
+    // A launcher inserted at 1 (before "eyes"? no: "eyes" stays right
+    // before it), one removed at 0.
+    wlmaker_dockapps_launcher_inserted(d, 1);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, wlmaker_dockapps_after_launchers(d, &t[0]));
+    BS_TEST_VERIFY_EQ(test_ptr, 3, wlmaker_dockapps_after_launchers(d, &t[1]));
+    wlmaker_dockapps_launcher_removed(d, 0);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmaker_dockapps_after_launchers(d, &t[0]));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, wlmaker_dockapps_after_launchers(d, &t[1]));
+
+    // Moving "zones" before "eyes": It is not before the launchers of the
+    // one before it, as placed.
+    wlmaker_dockapps_move_to(d, &t[1], 0);
+    BS_TEST_VERIFY_EQ(test_ptr, (1 << 2) | (1 << 3) | (1 << 6),
+                      wlmaker_dockapps_positions(d, 4));
+    // Freezing stores them as placed.
+    wlmaker_dockapps_freeze_after(d, 4);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, wlmaker_dockapps_after_launchers(d, &t[1]));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, wlmaker_dockapps_after_launchers(d, &t[0]));
+
+    // Stored: A new placement reads them back.
+    wlmaker_dockapps_set_after_launchers(d, &t[1], 0);
+    wlmaker_dockapps_remove(d, &t[0]);
+    wlmaker_dockapps_remove(d, &t[1]);
+    wlmaker_dockapps_remove(d, &t[2]);
+    wlmaker_dockapps_destroy(d);
+    d = wlmaker_dockapps_create(dock_ptr, NULL, fname_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_add(d, &t[0], "eyes"));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_add(d, &t[1], "zones"));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmaker_dockapps_index(d, &t[1]));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmaker_dockapps_after_launchers(d, &t[1]));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, wlmaker_dockapps_after_launchers(d, &t[0]));
+    BS_TEST_VERIFY_EQ(test_ptr, (1 << 0) | (1 << 3),
+                      wlmaker_dockapps_positions(d, 4));
+    wlmaker_dockapps_remove(d, &t[0]);
+    wlmaker_dockapps_remove(d, &t[1]);
+    wlmaker_dockapps_destroy(d);
+
+    unlink(fname_ptr);
+    char *old_ptr = bs_strdupf("%s.old", fname_ptr);
+    if (NULL != old_ptr) {
+        unlink(old_ptr);
+        free(old_ptr);
+    }
+    for (int i = 0; i < 3; ++i) wlmtk_tile_fini(&t[i]);
     wlmtk_dock_destroy(dock_ptr);
 }
 

@@ -41,6 +41,7 @@ void wlmaker_zones_command(__UNUSED__ wlmaker_zones_t *zones_ptr,
 #include <cairo.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <libintl.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -73,6 +74,14 @@ void wlmaker_zones_command(__UNUSED__ wlmaker_zones_t *zones_ptr,
 #include "wz-layout.h"
 #include "wz-theme.h"
 #include "wz-tile.h"
+
+/**
+ * Translates a text of wmake-zones (names of its built-in layouts and their
+ * zones) through wmake-zones' own catalog, as its X11 overlay does.
+ */
+#define WZ_I18N(text) dgettext(WMAKE_ZONES_I18N_DOMAIN, (text))
+/** The gettext domain of wmake-zones. */
+#define WMAKE_ZONES_I18N_DOMAIN "wmake-zones"
 
 /* == Declarations ========================================================= */
 
@@ -886,7 +895,9 @@ static void _draw_zone(wlmaker_zones_t *zones_ptr, cairo_t *cr,
         cairo_move_to(cr, tx, ty);
         cairo_show_text(cr, num);
     }
+    // Names of the built-in layouts' zones are in wmake-zones' catalog.
     const char *name_ptr = zones_ptr->names[i];
+    if (NULL != name_ptr && '\0' != *name_ptr) name_ptr = WZ_I18N(name_ptr);
     if (NULL != name_ptr && r.h > s + 40) {
         cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
                                CAIRO_FONT_WEIGHT_BOLD);
@@ -1107,10 +1118,11 @@ static void _strip_build(wlmaker_zones_t *zones_ptr,
         zones_ptr->strip_tree[i] = strdup(ls[i]->tree);
         const char *lab = NULL != ls[i]->label ? ls[i]->label :
             wz_builtin_label(ls[i]->id);
-        // Built-in names are translated; the user's are shown as written.
+        // Built-in names are translated (wmake-zones' catalog); the user's
+        // are shown as written.
         zones_ptr->strip_label[i] = strdup(
             NULL != ls[i]->label ? ls[i]->label :
-            NULL != lab ? wlmaker_i18n(lab) : ls[i]->id);
+            NULL != lab ? WZ_I18N(lab) : ls[i]->id);
         wz_rect c = { x + pad + i * cell_w, y + title_h + pad, cell_w, cell_h };
         zones_ptr->strip_cell[i] = c;
         zones_ptr->strip_thumb[i] = (wz_rect){
@@ -2947,6 +2959,8 @@ wlmaker_zones_t *wlmaker_zones_create(wlmaker_server_t *server_ptr)
     if (NULL == zones_ptr) return NULL;
     zones_ptr->server_ptr = server_ptr;
     zones_ptr->listen_fd = -1;
+    // wmake-zones installs its catalog in the same prefix; we draw UTF-8.
+    bind_textdomain_codeset(WMAKE_ZONES_I18N_DOMAIN, "UTF-8");
     zones_ptr->hl_a = zones_ptr->hl_b = -1;
     zones_ptr->strip_hover = zones_ptr->strip_mini = zones_ptr->strip_sel = -1;
     zones_ptr->cfg_path_ptr = wz_config_path();

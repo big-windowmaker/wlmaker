@@ -20,6 +20,7 @@
 
 #include "dock_position.h"
 
+#include <stdlib.h>
 #include <string.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/util/edges.h>
@@ -143,6 +144,18 @@ bspl_dict_t *wlmaker_dock_place_encode(wlmaker_dock_place_t place)
         dict_ptr = NULL;
     }
     return dict_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+char *wlmaker_dock_layout_fname(const char *display_ptr)
+{
+    const char *dir_ptr = getenv("XDG_RUNTIME_DIR");
+    if (NULL == dir_ptr || '\0' == *dir_ptr) return NULL;
+    if (NULL == display_ptr || '\0' == *display_ptr) display_ptr = "wayland-0";
+    // An absolute WAYLAND_DISPLAY: Its name.
+    const char *slash_ptr = strrchr(display_ptr, '/');
+    if (NULL != slash_ptr) display_ptr = slash_ptr + 1;
+    return bs_strdupf("%s/wlmaker-docks-%s.plist", dir_ptr, display_ptr);
 }
 
 /* == Unit tests =========================================================== */

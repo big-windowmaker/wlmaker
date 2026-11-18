@@ -49,6 +49,7 @@
 #include "input/manager.h"
 #include "server.h"
 #include "tl_menu.h"
+#include "toplevel_tracker.h"
 #include "toolkit/toolkit.h"
 
 /* == Declarations ========================================================= */
@@ -76,6 +77,13 @@ struct _wlmaker_xwl_surface_t {
     int                       dockapp_shape_checks;
     /** Listener for commits of the icon window: Its shape, once set. */
     struct wl_listener        dockapp_commit_listener;
+
+    /**
+     * The window's handle for the foreign toplevel protocols: X11 windows
+     * are listed too (taskbars, the application icons, the Dock's
+     * launchers), with WM_CLASS as app ID.
+     */
+    struct wlmaker_toplevel_tracker_handle *tracker_handle_ptr;
 
     /** Listener for the `destroy` signal of `wlr_xwayland_surface`. */
     struct wl_listener        destroy_listener;
@@ -165,6 +173,27 @@ struct _wlmaker_xwl_surface_t {
      * ends the grab. Not the release of the click that opened the menu.
      */
     bool                      overlay_outside_press;
+    /**
+     * The menu was shown while a button is held (the press that opened it):
+     * Its grab waits for the release. Moving the pointer focus to the menu
+     * now would make Xwayland release the button (it does so on entering a
+     * surface with buttons down), and GTK closes the menu on that release.
+     */
+    bool                      overlay_grab_pending;
+    /**
+     * The keyboard focus before the menu took it (its keys: Esc, arrows,
+     * Enter, as on X11, where GTK grabs the keyboard). Given back when the
+     * menu goes, unless something else took the focus meanwhile.
+     */
+    struct wlr_surface        *overlay_kb_prev_ptr;
+    /** Whether the menu took the keyboard focus. */
+    bool                      overlay_kb;
+    /** Listener for `destroy` of @ref overlay_kb_prev_ptr. */
+    struct wl_listener        overlay_kb_prev_destroy_listener;
+    /** Listener for the cursor's `motion`, while the grab is pending. */
+    struct wl_listener        overlay_cursor_motion_listener;
+    /** Listener for the cursor's `motion_absolute`, idem. */
+    struct wl_listener        overlay_cursor_motion_absolute_listener;
 };
 
 static void _xwl_surface_handle_destroy(
@@ -178,6 +207,7 @@ static void _xwl_surface_handle_request_minimize(
     void *data_ptr);
 static void _xwl_surface_map_window(wlmaker_xwl_surface_t *xwl_surface_ptr);
 static bool _xwl_surface_overlay_associate(wlmaker_xwl_surface_t *xs_ptr);
+static bool _xwl_surface_parent_is_dockapp(struct wlr_xwayland_surface *xws_ptr);
 static void _xwl_surface_dockapp_shape(wlmaker_xwl_surface_t *xs_ptr);
 static void _xwl_surface_handle_dockapp_commit(
     struct wl_listener *listener_ptr,
@@ -186,6 +216,19 @@ static void _xwl_surface_overlay_update(wlmaker_xwl_surface_t *xs_ptr);
 static void _xwl_surface_overlay_unmap(wlmaker_xwl_surface_t *xs_ptr);
 static void _xwl_surface_overlay_grab(wlmaker_xwl_surface_t *xs_ptr);
 static void _xwl_surface_overlay_ungrab(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_overlay_stop_pending(wlmaker_xwl_surface_t *xs_ptr);
+static void _xwl_surface_overlay_keyboard(
+    wlmaker_xwl_surface_t *xs_ptr,
+    bool take);
+static void _xwl_surface_overlay_handle_kb_prev_destroy(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _xwl_surface_overlay_handle_cursor_motion(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _xwl_surface_overlay_handle_cursor_motion_absolute(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
 static uint32_t _xwl_surface_overlay_request_size(
     wlmtk_panel_t *panel_ptr, int width, int height);
 static bool _xwl_surface_overlay_pointer_button(
@@ -262,6 +305,8 @@ static void _wlmaker_xwl_surface_handle_window_request_maximized(
 
 static void _xwl_surface_apply_decorations(
     wlmaker_xwl_surface_t *xwl_surface_ptr);
+static bool _xwl_surface_covers_an_output(wlmaker_xwl_surface_t *xs_ptr,
+                                          struct wlr_box *output_box_ptr);
 static void _xwl_surface_adjust_absolute_pos(
     wlmaker_xwl_surface_t *surface_ptr,
     int *x_ptr,
@@ -518,6 +563,11 @@ void wlmaker_xwl_surface_destroy(wlmaker_xwl_surface_t *xwl_surface_ptr)
     }
 
     wlmtk_base_fini(&xwl_surface_ptr->base);
+    _xwl_surface_overlay_stop_pending(xwl_surface_ptr);
+    if (NULL != xwl_surface_ptr->overlay_kb_prev_ptr) {
+        wlmtk_util_disconnect_listener(
+            &xwl_surface_ptr->overlay_kb_prev_destroy_listener);
+    }
     if (xwl_surface_ptr->overlay) {
         wlmtk_panel_fini(&xwl_surface_ptr->overlay_panel);
         xwl_surface_ptr->overlay = false;
@@ -1093,6 +1143,15 @@ void _xwl_surface_handle_associate(
         wlmtk_window_set_client(xwl_surface_ptr->window_ptr, &client);
         wlmtk_window_set_title(xwl_surface_ptr->window_ptr,
                                 xwl_surface_ptr->title_ptr);
+        xwl_surface_ptr->tracker_handle_ptr =
+            wlmaker_toplevel_tracker_handle_create(
+                xwl_surface_ptr->server_ptr->toplevel_tracker_ptr,
+                xwl_surface_ptr->window_ptr);
+        if (NULL != xwl_surface_ptr->tracker_handle_ptr) {
+            wlmaker_toplevel_tracker_handle_set_title(
+                xwl_surface_ptr->tracker_handle_ptr,
+                xwl_surface_ptr->title_ptr);
+        }
         _xwl_surface_apply_identity(xwl_surface_ptr);
 
         xwl_surface_ptr->tl_menu_ptr = wlmaker_tl_menu_create(
@@ -1189,6 +1248,11 @@ void _xwl_surface_handle_dissociate(
             wlmaker_tl_menu_destroy(xwl_surface_ptr->tl_menu_ptr);
             xwl_surface_ptr->tl_menu_ptr = NULL;
         }
+        if (NULL != xwl_surface_ptr->tracker_handle_ptr) {
+            wlmaker_toplevel_tracker_handle_destroy(
+                xwl_surface_ptr->tracker_handle_ptr);
+            xwl_surface_ptr->tracker_handle_ptr = NULL;
+        }
         wlmtk_window_destroy(xwl_surface_ptr->window_ptr);
         xwl_surface_ptr->window_ptr = NULL;
     }
@@ -1223,7 +1287,12 @@ void _xwl_surface_apply_identity(wlmaker_xwl_surface_t *xs_ptr)
     if (NULL == xs_ptr->window_ptr) return;
     struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
     wlmtk_window_set_app_id(xs_ptr->window_ptr, s->class, s->instance);
+    if (NULL != xs_ptr->tracker_handle_ptr) {
+        wlmaker_toplevel_tracker_handle_set_app_id(
+            xs_ptr->tracker_handle_ptr, s->class);
+    }
     _xwl_surface_update_window_properties(xs_ptr);
+    _xwl_surface_apply_decorations(xs_ptr);
     wlmtk_window_set_dialog(
         xs_ptr->window_ptr,
         s->modal || NULL != s->parent ||
@@ -1290,6 +1359,10 @@ void _xwl_surface_handle_set_title(
     if (NULL != xs_ptr->window_ptr) {
         wlmtk_window_set_title(xs_ptr->window_ptr, xs_ptr->title_ptr);
     }
+    if (NULL != xs_ptr->tracker_handle_ptr) {
+        wlmaker_toplevel_tracker_handle_set_title(
+            xs_ptr->tracker_handle_ptr, xs_ptr->title_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1313,6 +1386,12 @@ void _xwl_surface_handle_set_parent(
     }
 
     if (xwl_surface_ptr->parent_surface_ptr == parent_xwl_surface_ptr) return;
+    // A dock-app's menu stays an overlay (@ref _xwl_surface_overlay_associate).
+    if (xwl_surface_ptr->overlay) return;
+    if (xwl_surface_ptr->wlr_xwayland_surface_ptr->override_redirect &&
+        _xwl_surface_parent_is_dockapp(xwl_surface_ptr->wlr_xwayland_surface_ptr)) {
+        return;
+    }
 
     if (NULL != xwl_surface_ptr->parent_surface_ptr) {
         wlmtk_base_pop_element(
@@ -1372,6 +1451,29 @@ void _xwl_surface_handle_set_geometry(
 
     if (xwl_surface_ptr->overlay) {
         _xwl_surface_overlay_update(xwl_surface_ptr);
+        return;
+    }
+
+    // A window's content sits at the origin of its frame: The X position is
+    // where the window is on screen (X knows it since it learns the window's
+    // position), not an offset within the frame. While a window is dragged,
+    // X reports each position late: A stale one (from an earlier configure)
+    // would move the content out of the frame by the window's whole screen
+    // position, and every next move drifted further (Steam, with GPU
+    // rendering, showed an empty frame and its content elsewhere). X learns
+    // the real position again instead.
+    if (NULL != xwl_surface_ptr->window_ptr) {
+        // A game going to the screen's size (borderless fullscreen) loses
+        // the frame the attribute gave it, and back.
+        _xwl_surface_apply_decorations(xwl_surface_ptr);
+        wlmtk_element_set_position(
+            wlmtk_base_element(&xwl_surface_ptr->base), 0, 0);
+        struct wlr_xwayland_surface *s = xwl_surface_ptr->wlr_xwayland_surface_ptr;
+        int x, y;
+        if (_xwl_surface_content_position(xwl_surface_ptr, &x, &y) &&
+            (x != s->x || y != s->y)) {
+            wlr_xwayland_surface_configure(s, x, y, s->width, s->height);
+        }
         return;
     }
 
@@ -1442,6 +1544,17 @@ void _xwl_surface_map_window(wlmaker_xwl_surface_t *xwl_surface_ptr)
             hint.x = xws_ptr->x;
             hint.y = xws_ptr->y;
         }
+    }
+    // A game in borderless fullscreen (no decorations, the size of an
+    // output, no fullscreen state) covers that output: Its origin, not the
+    // usable area beside the Dock and the Clip.
+    struct wlr_box output_box;
+    if (xws_ptr->decorations != WLR_XWAYLAND_SURFACE_DECORATIONS_ALL &&
+        _xwl_surface_covers_an_output(xwl_surface_ptr, &output_box)) {
+        hint.has_position = true;
+        hint.exact = true;
+        hint.x = output_box.x;
+        hint.y = output_box.y;
     }
     // An override-redirect window places itself, wherever it is.
     if (xws_ptr->override_redirect) {
@@ -1636,7 +1749,29 @@ void _wlmaker_xwl_surface_handle_window_request_maximized(
 
 /* ------------------------------------------------------------------------- */
 /**
- * Puts a parent-less override-redirect surface into its overlay panel.
+ * Whether the X11 surface's parent is an X11 dock-app: its icon window (shown
+ * in a tile of the docks) or its withdrawn leader. Neither is a window here.
+ *
+ * @param xws_ptr
+ *
+ * @return true if the parent is a dock-app.
+ */
+static bool _xwl_surface_parent_is_dockapp(struct wlr_xwayland_surface *xws_ptr)
+{
+    if (NULL == xws_ptr->parent) return false;
+    wlmaker_xwl_surface_t *parent_ptr = xws_ptr->parent->data;
+    return NULL != parent_ptr &&
+        (NULL != parent_ptr->dockapp_icon_ptr || parent_ptr->dockapp_leader);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Puts a parent-less override-redirect surface into its overlay panel. Also
+ * one whose parent is a dock-app: GTK makes the menu of a dock-app (eg. the
+ * device menu of wmpulsemixer) transient for the window that got the click,
+ * the dock-app's icon window. That one is drawn in a tile, not a window, so
+ * as its child the menu was never shown. On X11 it is on top, where it
+ * placed itself; here too.
  *
  * @param xs_ptr
  *
@@ -1645,7 +1780,16 @@ void _wlmaker_xwl_surface_handle_window_request_maximized(
 bool _xwl_surface_overlay_associate(wlmaker_xwl_surface_t *xs_ptr)
 {
     struct wlr_xwayland_surface *xws_ptr = xs_ptr->wlr_xwayland_surface_ptr;
-    if (!xws_ptr->override_redirect || NULL != xws_ptr->parent) return false;
+    if (!xws_ptr->override_redirect) return false;
+    if (NULL != xws_ptr->parent && !_xwl_surface_parent_is_dockapp(xws_ptr)) {
+        return false;
+    }
+    if (NULL != xs_ptr->parent_surface_ptr) {
+        // Pushed into its parent before (set_parent came first).
+        wlmtk_base_pop_element(&xs_ptr->parent_surface_ptr->base,
+                               wlmtk_base_element(&xs_ptr->base));
+        xs_ptr->parent_surface_ptr = NULL;
+    }
 
     if (!xs_ptr->overlay) {
         static const wlmtk_panel_vmt_t vmt = {
@@ -1674,9 +1818,10 @@ bool _xwl_surface_overlay_associate(wlmaker_xwl_surface_t *xs_ptr)
     wlmtk_element_set_position(e_ptr, 0, 0);
     wlmtk_element_set_visible(e_ptr, true);
     wlmtk_container_add_element(&xs_ptr->overlay_panel.super_container, e_ptr);
-    bs_log(BS_INFO, "XWL surface %p: Override-redirect, without parent, at "
-           "%d, %d: Shown on top, as an overlay.", xs_ptr, xws_ptr->x,
-           xws_ptr->y);
+    bs_log(BS_INFO, "XWL surface %p: Override-redirect, without parent%s, at "
+           "%d, %d: Shown on top, as an overlay.", xs_ptr,
+           NULL != xws_ptr->parent ? " (but a dock-app's)" : "",
+           xws_ptr->x, xws_ptr->y);
     return true;
 }
 
@@ -1755,15 +1900,162 @@ void _xwl_surface_overlay_grab(wlmaker_xwl_surface_t *xs_ptr)
             xws_ptr, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_COMBO)) return;
     wlmtk_element_t *e_ptr = wlmtk_panel_element(&xs_ptr->overlay_panel);
     if (NULL == e_ptr->parent_container_ptr) return;
+    _xwl_surface_overlay_keyboard(xs_ptr, true);
+
+    // Opened by a press that is still held (eg. a right click a bit longer
+    // than a tap): The X11 client got it, and holds its own grab. On X11 the
+    // release goes to the menu without any crossing; here the pointer focus
+    // stays where the press was (the dock-app's tile keeps it, as an
+    // implicit grab) until the pointer moves after the release. Then the
+    // menu holds the pointer.
+    struct wlr_seat *seat_ptr = xs_ptr->server_ptr->wlr_seat_ptr;
+    if (0 < seat_ptr->pointer_state.button_count) {
+        if (!xs_ptr->overlay_grab_pending) {
+            xs_ptr->overlay_grab_pending = true;
+            struct wlr_cursor *c = wlmim_wlr_cursor(
+                xs_ptr->server_ptr->input_manager_ptr);
+            wlmtk_util_connect_listener_signal(
+                &c->events.motion,
+                &xs_ptr->overlay_cursor_motion_listener,
+                _xwl_surface_overlay_handle_cursor_motion);
+            wlmtk_util_connect_listener_signal(
+                &c->events.motion_absolute,
+                &xs_ptr->overlay_cursor_motion_absolute_listener,
+                _xwl_surface_overlay_handle_cursor_motion_absolute);
+        }
+        return;
+    }
+    _xwl_surface_overlay_stop_pending(xs_ptr);
     wlmtk_container_pointer_grab(e_ptr->parent_container_ptr, e_ptr);
     xs_ptr->overlay_grab = true;
     xs_ptr->overlay_outside_press = false;
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Gives the keyboard to the menu, or back. The X11 client grabbed it (GTK
+ * does, for its menus); Xwayland sees keys only with the keyboard focus on
+ * one of its surfaces.
+ *
+ * @param xs_ptr
+ * @param take
+ */
+void _xwl_surface_overlay_keyboard(wlmaker_xwl_surface_t *xs_ptr, bool take)
+{
+    struct wlr_seat *seat_ptr = xs_ptr->server_ptr->wlr_seat_ptr;
+    struct wlr_surface *menu_ptr = xs_ptr->wlr_xwayland_surface_ptr->surface;
+    if (take) {
+        if (xs_ptr->overlay_kb || NULL == menu_ptr) return;
+        struct wlr_surface *prev_ptr = seat_ptr->keyboard_state.focused_surface;
+        if (NULL != prev_ptr && prev_ptr != menu_ptr) {
+            xs_ptr->overlay_kb_prev_ptr = prev_ptr;
+            wlmtk_util_connect_listener_signal(
+                &prev_ptr->events.destroy,
+                &xs_ptr->overlay_kb_prev_destroy_listener,
+                _xwl_surface_overlay_handle_kb_prev_destroy);
+        }
+        struct wlr_keyboard *kb_ptr = wlr_seat_get_keyboard(seat_ptr);
+        wlr_seat_keyboard_notify_enter(
+            seat_ptr, menu_ptr,
+            NULL != kb_ptr ? kb_ptr->keycodes : NULL,
+            NULL != kb_ptr ? kb_ptr->num_keycodes : 0,
+            NULL != kb_ptr ? &kb_ptr->modifiers : NULL);
+        xs_ptr->overlay_kb = true;
+        return;
+    }
+
+    if (!xs_ptr->overlay_kb) return;
+    xs_ptr->overlay_kb = false;
+    struct wlr_surface *prev_ptr = xs_ptr->overlay_kb_prev_ptr;
+    if (NULL != prev_ptr) {
+        wlmtk_util_disconnect_listener(
+            &xs_ptr->overlay_kb_prev_destroy_listener);
+        xs_ptr->overlay_kb_prev_ptr = NULL;
+    }
+    // Something else took the focus meanwhile (eg. a window that the menu's
+    // item opened): It keeps it.
+    struct wlr_surface *focused_ptr = seat_ptr->keyboard_state.focused_surface;
+    if (NULL != focused_ptr && focused_ptr != menu_ptr) return;
+    if (NULL != prev_ptr) {
+        struct wlr_keyboard *kb_ptr = wlr_seat_get_keyboard(seat_ptr);
+        wlr_seat_keyboard_notify_enter(
+            seat_ptr, prev_ptr,
+            NULL != kb_ptr ? kb_ptr->keycodes : NULL,
+            NULL != kb_ptr ? kb_ptr->num_keycodes : 0,
+            NULL != kb_ptr ? &kb_ptr->modifiers : NULL);
+    } else {
+        wlr_seat_keyboard_clear_focus(seat_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** The surface that had the keyboard before the menu is gone. */
+void _xwl_surface_overlay_handle_kb_prev_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmaker_xwl_surface_t *xs_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, overlay_kb_prev_destroy_listener);
+    wlmtk_util_disconnect_listener(&xs_ptr->overlay_kb_prev_destroy_listener);
+    xs_ptr->overlay_kb_prev_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** No longer waits for the release of the press that opened the menu. */
+void _xwl_surface_overlay_stop_pending(wlmaker_xwl_surface_t *xs_ptr)
+{
+    if (!xs_ptr->overlay_grab_pending) return;
+    xs_ptr->overlay_grab_pending = false;
+    wlmtk_util_disconnect_listener(&xs_ptr->overlay_cursor_motion_listener);
+    wlmtk_util_disconnect_listener(
+        &xs_ptr->overlay_cursor_motion_absolute_listener);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * The pointer moves while the menu's grab is pending: Once all buttons are
+ * up, the menu holds the pointer (Xwayland got the release before; wlmaker
+ * handled this motion already, its handler is connected first).
+ */
+static void _xwl_surface_overlay_pending_motion(wlmaker_xwl_surface_t *xs_ptr)
+{
+    if (0 < xs_ptr->server_ptr->wlr_seat_ptr->pointer_state.button_count) {
+        return;
+    }
+    if (NULL == wlmtk_panel_get_layer(&xs_ptr->overlay_panel)) {
+        _xwl_surface_overlay_stop_pending(xs_ptr);
+        return;
+    }
+    _xwl_surface_overlay_grab(xs_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles `motion` of the cursor: See above. */
+void _xwl_surface_overlay_handle_cursor_motion(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    _xwl_surface_overlay_pending_motion(BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t, overlay_cursor_motion_listener));
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handles `motion_absolute` of the cursor: See above. */
+void _xwl_surface_overlay_handle_cursor_motion_absolute(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    _xwl_surface_overlay_pending_motion(BS_CONTAINER_OF(
+        listener_ptr, wlmaker_xwl_surface_t,
+        overlay_cursor_motion_absolute_listener));
+}
+
+/* ------------------------------------------------------------------------- */
 /** Ends the pointer grab of a menu. */
 void _xwl_surface_overlay_ungrab(wlmaker_xwl_surface_t *xs_ptr)
 {
+    _xwl_surface_overlay_stop_pending(xs_ptr);
+    _xwl_surface_overlay_keyboard(xs_ptr, false);
     if (!xs_ptr->overlay_grab) return;
     xs_ptr->overlay_grab = false;
     wlmtk_element_t *e_ptr = wlmtk_panel_element(&xs_ptr->overlay_panel);
@@ -1854,6 +2146,47 @@ uint32_t _xwl_surface_overlay_request_size(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Whether the X window covers a whole output: A game in "borderless
+ * fullscreen" (Wine/Proton, SDL) asks for no decorations and the screen's
+ * size, without the fullscreen state. It is not framed by the attribute
+ * `ServerDecoration`, which would push it down by a title bar.
+ */
+static bool _xwl_surface_covers_an_output(wlmaker_xwl_surface_t *xs_ptr,
+                                          struct wlr_box *output_box_ptr)
+{
+    struct wlr_xwayland_surface *s = xs_ptr->wlr_xwayland_surface_ptr;
+    if (NULL == xs_ptr->server_ptr ||
+        NULL == xs_ptr->server_ptr->wlr_output_layout_ptr) return false;
+    struct wlr_output_layout_output *lo_ptr;
+    wl_list_for_each(lo_ptr,
+                     &xs_ptr->server_ptr->wlr_output_layout_ptr->outputs,
+                     link) {
+        struct wlr_box box;
+        wlr_output_layout_get_box(xs_ptr->server_ptr->wlr_output_layout_ptr,
+                                  lo_ptr->output, &box);
+        if (0 < box.width && 0 < box.height &&
+            s->width >= box.width && s->height >= box.height) {
+            if (NULL != output_box_ptr) {
+                // The output the window asks to be on, if it covers that one.
+                struct wlr_output *o_ptr = wlr_output_layout_output_at(
+                    xs_ptr->server_ptr->wlr_output_layout_ptr,
+                    s->x + s->width / 2, s->y + s->height / 2);
+                struct wlr_box at;
+                if (NULL != o_ptr) {
+                    wlr_output_layout_get_box(
+                        xs_ptr->server_ptr->wlr_output_layout_ptr, o_ptr, &at);
+                    if (s->width >= at.width && s->height >= at.height) box = at;
+                }
+                *output_box_ptr = box;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Sets whether this window should be server-side-decorated.
  *
  * @param xwl_surface_ptr
@@ -1868,9 +2201,38 @@ void _xwl_surface_apply_decorations(wlmaker_xwl_surface_t *xwl_surface_ptr)
     // TODO(kaeser@gubbe.ch): Adapt whether NO_BORDER or NO_TITLE was set.
     // Override-redirect windows (menus, tooltips of programs without a parent
     // window, eg. the menu of a dock-app) are never decorated, as on X11.
-    if (!xwl_surface_ptr->wlr_xwayland_surface_ptr->override_redirect &&
-        xwl_surface_ptr->wlr_xwayland_surface_ptr->decorations ==
-        WLR_XWAYLAND_SURFACE_DECORATIONS_ALL &&
+    // The window attribute `ServerDecoration` overrides _MOTIF_WM_HINTS
+    // (Steam turns the decorations off and draws its own title bar).
+    struct wlr_xwayland_surface *s = xwl_surface_ptr->wlr_xwayland_surface_ptr;
+    int override = wlmaker_window_attributes_server_decoration(
+        NULL != xwl_surface_ptr->server_ptr ?
+        xwl_surface_ptr->server_ptr->config_dict_ptr : NULL,
+        s->class, s->instance);
+    // Forced only on the main windows and dialogs: Not on the program's
+    // menus, notifications, splash screens, tool windows, docks or desktops
+    // (so that it can be set for all programs, "*").
+    static const xwl_atom_identifier_t not_forced_types[] = {
+        NET_WM_WINDOW_TYPE_UTILITY, NET_WM_WINDOW_TYPE_TOOLBAR,
+        NET_WM_WINDOW_TYPE_SPLASH, NET_WM_WINDOW_TYPE_MENU,
+        NET_WM_WINDOW_TYPE_DROPDOWN_MENU, NET_WM_WINDOW_TYPE_POPUP_MENU,
+        NET_WM_WINDOW_TYPE_NOTIFICATION, XWL_MAX_ATOM_ID};
+    if (1 == override &&
+        (xwl_is_window_type(xwl_surface_ptr->xwl_ptr, s, not_forced_types) ||
+         wlr_xwayland_surface_has_window_type(
+             s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DOCK) ||
+         wlr_xwayland_surface_has_window_type(
+             s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DESKTOP) ||
+         wlr_xwayland_surface_has_window_type(
+             s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DND) ||
+         wlr_xwayland_surface_has_window_type(
+             s, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_COMBO) ||
+         _xwl_surface_covers_an_output(xwl_surface_ptr, NULL))) {
+        override = -1;
+    }
+    if (!s->override_redirect &&
+        (1 == override ||
+         (-1 == override &&
+          s->decorations == WLR_XWAYLAND_SURFACE_DECORATIONS_ALL)) &&
         !xwl_is_window_type(
             xwl_surface_ptr->xwl_ptr,
             xwl_surface_ptr->wlr_xwayland_surface_ptr,

@@ -43,6 +43,7 @@
 #include "backend/backend.h"
 #include "clip.h"
 #include "config.h"
+#include "i18n.h"
 #include "root_menu.h"
 #include "server.h"
 #include "workspace_manager.h"
@@ -192,6 +193,7 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
     wlmaker_task_list_t       *task_list_ptr = NULL;
     int                       rv = EXIT_SUCCESS;
 
+    wlmaker_i18n_init();
     if (!wlm_util_backtrace_setup(argv[0]) ||
         !wlm_util_wlr_log_init(WLR_DEBUG) ||
         // Ideally: xdgStateHome. But: libxdg-basedir is using FreeDesktop
