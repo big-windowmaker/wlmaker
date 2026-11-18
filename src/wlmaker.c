@@ -146,6 +146,8 @@ static const bs_arg_t wlmaker_args[] = {
 
 /** Event source for SIGHUP, which reloads the configuration. */
 static struct wl_event_source *wlmaker_sighup_event_source_ptr = NULL;
+/** Event sources for SIGTERM and SIGINT: End wlmaker as the Quit action. */
+static struct wl_event_source *wlmaker_quit_event_source_ptrs[2] = {};
 
 /** An autostarted program, still running: Stopped when wlmaker exits. */
 typedef struct {
@@ -284,6 +286,8 @@ static void _wlmaker_atfork_child(void)
     sigemptyset(&signal_set);
     sigaddset(&signal_set, SIGHUP);
     sigaddset(&signal_set, SIGCHLD);
+    sigaddset(&signal_set, SIGTERM);
+    sigaddset(&signal_set, SIGINT);
     sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
 
     if (wlmaker_nofile_rlimit_raised) {
@@ -296,6 +300,20 @@ static void _wlmaker_atfork_child(void)
             close(fd);
         }
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles SIGTERM and SIGINT: Ends wlmaker as the Quit action does, so the
+ * session ends cleanly when asked to (eg. by a logout confirmation, or
+ * `kill`), instead of the process dying from the default action.
+ */
+static int _wlmaker_handle_quit_signal(int signal_number, void *data_ptr)
+{
+    wlmaker_server_t *server_ptr = data_ptr;
+    bs_log(BS_INFO, "Received signal %d, quitting.", signal_number);
+    wl_display_terminate(server_ptr->wl_display_ptr);
+    return 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -313,6 +331,8 @@ static void wlmaker_block_monitored_signals(void)
     sigemptyset(&signal_set);
     sigaddset(&signal_set, SIGHUP);
     sigaddset(&signal_set, SIGCHLD);
+    sigaddset(&signal_set, SIGTERM);
+    sigaddset(&signal_set, SIGINT);
     pthread_sigmask(SIG_BLOCK, &signal_set, NULL);
 }
 
@@ -435,6 +455,18 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
         bs_log(BS_WARNING, "Failed wl_event_loop_add_signal(SIGHUP): "
                "Reloading by signal is not available.");
     }
+    const int quit_signals[2] = { SIGTERM, SIGINT };
+    for (size_t i = 0; i < 2; ++i) {
+        wlmaker_quit_event_source_ptrs[i] = wl_event_loop_add_signal(
+            wl_display_get_event_loop(server_ptr->wl_display_ptr),
+            quit_signals[i],
+            _wlmaker_handle_quit_signal,
+            server_ptr);
+        if (NULL == wlmaker_quit_event_source_ptrs[i]) {
+            bs_log(BS_WARNING, "Failed wl_event_loop_add_signal(%d)",
+                   quit_signals[i]);
+        }
+    }
 
     if (!wlm_workspace_manager_apply_state(
             server_ptr->workspace_manager_ptr,
@@ -489,6 +521,12 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
     }
     if (NULL != task_list_ptr) wlmaker_task_list_destroy(task_list_ptr);
     if (NULL != clip_ptr) wlmaker_clip_destroy(clip_ptr);
+    for (size_t i = 0; i < 2; ++i) {
+        if (NULL != wlmaker_quit_event_source_ptrs[i]) {
+            wl_event_source_remove(wlmaker_quit_event_source_ptrs[i]);
+            wlmaker_quit_event_source_ptrs[i] = NULL;
+        }
+    }
     if (NULL != wlmaker_sighup_event_source_ptr) {
         wl_event_source_remove(wlmaker_sighup_event_source_ptr);
         wlmaker_sighup_event_source_ptr = NULL;
