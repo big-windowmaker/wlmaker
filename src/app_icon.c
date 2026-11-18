@@ -226,7 +226,9 @@ static void _build_wmclass_index(void)
                 continue;
             }
             char path[PATH_MAX + 288];
-            snprintf(path, sizeof(path), "%s/%s", apps, de->d_name);
+            if ((size_t)snprintf(path, sizeof(path), "%s/%s", apps, de->d_name) >= sizeof(path)) {
+                continue;  // Does not fit: not a file we could open.
+            }
             char *wmclass_ptr = _desktop_value(path, "StartupWMClass");
             if (NULL == wmclass_ptr) continue;
             char *icon_ptr = _desktop_value(path, "Icon");
@@ -265,8 +267,10 @@ char *_desktop_icon(const char *name_ptr)
     for (size_t c = 0; c < 2; ++c) {
         for (size_t i = 0; i < n; ++i) {
             char path[PATH_MAX + 256];
-            snprintf(path, sizeof(path), "%s/applications/%s.desktop",
-                     dirs[i], candidates[c]);
+            if ((size_t)snprintf(path, sizeof(path), "%s/applications/%s.desktop",
+                     dirs[i], candidates[c]) >= sizeof(path)) {
+                continue;  // Does not fit: not a file we could open.
+            }
             char *icon_ptr = _desktop_value(path, "Icon");
             if (NULL != icon_ptr) return icon_ptr;
         }
@@ -312,10 +316,15 @@ static char *_user_icon_theme(void)
     const char *ch_ptr = getenv("XDG_CONFIG_HOME");
     const char *home_ptr = getenv("HOME");
     if (NULL != ch_ptr && '/' == *ch_ptr) {
-        snprintf(path, sizeof(path), "%s/gtk-3.0/settings.ini", ch_ptr);
+        if ((size_t)snprintf(path, sizeof(path), "%s/gtk-3.0/settings.ini",
+                             ch_ptr) >= sizeof(path)) {
+            return NULL;  // Does not fit: not a file we could open.
+        }
     } else if (NULL != home_ptr) {
-        snprintf(path, sizeof(path), "%s/.config/gtk-3.0/settings.ini",
-                 home_ptr);
+        if ((size_t)snprintf(path, sizeof(path), "%s/.config/gtk-3.0/settings.ini",
+                 home_ptr) >= sizeof(path)) {
+            return NULL;  // Does not fit: not a file we could open.
+        }
     } else {
         return NULL;
     }
@@ -363,8 +372,10 @@ char *_find_icon_file(const char *icon_ptr, int size)
     if (0 < nthemes) {
         for (size_t i = 0; i < ndirs && nthemes < 5; ++i) {
             char path[PATH_MAX + 256];
-            snprintf(path, sizeof(path), "%s/icons/%s/index.theme",
-                     dirs[i], themes[0]);
+            if ((size_t)snprintf(path, sizeof(path), "%s/icons/%s/index.theme",
+                     dirs[i], themes[0]) >= sizeof(path)) {
+                continue;  // Does not fit: not a file we could open.
+            }
             FILE *f = fopen(path, "r");
             if (NULL == f) continue;
             char line[512];
@@ -403,8 +414,10 @@ char *_find_icon_file(const char *icon_ptr, int size)
             for (size_t i = 0; i < ndirs; ++i) {
                 for (size_t e = 0; e < 2; ++e) {
                     char path[PATH_MAX + 512];
-                    snprintf(path, sizeof(path), "%s/icons/%s/%s/apps/%s.%s",
-                             dirs[i], themes[t], sizes[s], icon_ptr, exts[e]);
+                    if ((size_t)snprintf(path, sizeof(path), "%s/icons/%s/%s/apps/%s.%s",
+                             dirs[i], themes[t], sizes[s], icon_ptr, exts[e]) >= sizeof(path)) {
+                        continue;  // Does not fit: not a file we could open.
+                    }
                     if (_is_file(path)) return logged_strdup(path);
                 }
             }
@@ -413,8 +426,10 @@ char *_find_icon_file(const char *icon_ptr, int size)
     for (size_t i = 0; i < ndirs; ++i) {
         for (size_t e = 0; e < 2; ++e) {
             char path[PATH_MAX + 512];
-            snprintf(path, sizeof(path), "%s/pixmaps/%s.%s",
-                     dirs[i], icon_ptr, exts[e]);
+            if ((size_t)snprintf(path, sizeof(path), "%s/pixmaps/%s.%s",
+                     dirs[i], icon_ptr, exts[e]) >= sizeof(path)) {
+                continue;  // Does not fit: not a file we could open.
+            }
             if (_is_file(path)) return logged_strdup(path);
         }
     }

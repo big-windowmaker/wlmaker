@@ -654,6 +654,7 @@ static void _set_volume_percent(mixer_t *mixer_ptr, unsigned percent)
 static bool _on_meter(mixer_t *mixer_ptr, double x, double y,
                       double *icon_x_ptr)
 {
+    *icon_x_ptr = 0;
     if (0 == mixer_ptr->width || 0 == mixer_ptr->height) return false;
     double ix = x * ICON_SIZE / mixer_ptr->width;
     double iy = y * ICON_SIZE / mixer_ptr->height;

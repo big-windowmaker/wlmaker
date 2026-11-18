@@ -153,7 +153,7 @@ typedef struct {
     /** Transmit rate, in bytes per second. */
     unsigned long long tx_per_sec;
     /** The label. */
-    char label[48];
+    char label[80];  // Two arrows (3 bytes each), two rates, newline.
 } netgraph_state_t;
 
 /* == Label ================================================================ */
@@ -214,7 +214,7 @@ static size_t _scale_index_ceil(const unsigned long long val)
 static const char *_label_fn(void *app_state)
 {
     netgraph_state_t *state = app_state;
-    char a[16], b[16];
+    char a[32], b[32];  // Up to 20 digits, a unit and a suffix.
     if (state->label_rates) {
         _format_rate(a, sizeof(a), state->rx_per_sec, state->bits);
         _format_rate(b, sizeof(b), state->tx_per_sec, state->bits);
