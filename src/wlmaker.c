@@ -23,6 +23,7 @@
 #define _POSIX_C_SOURCE 200112L
 
 #include <basedir.h>
+#include <fcntl.h>
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <pthread.h>
@@ -32,6 +33,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <unistd.h>
 #include <wayland-server-core.h>
 /// Use non-stable features of wlroots.
 #define WLR_USE_UNSTABLE
@@ -146,6 +149,11 @@ static struct wl_event_source *wlmaker_sighup_event_source_ptr = NULL;
 /** References auto-started subprocesses. */
 static bs_ptr_stack_t         wlmaker_subprocess_stack;
 
+/** The RLIMIT_NOFILE wlmaker started with. Restored in forked processes. */
+static struct rlimit          wlmaker_nofile_rlimit;
+/** Whether @ref wlmaker_nofile_rlimit was raised, and needs restoring. */
+static bool                   wlmaker_nofile_rlimit_raised = false;
+
 /* ------------------------------------------------------------------------- */
 /** Launches a sub-process, and keeps it on the subprocess stack. */
 bool start_subprocess(const char *cmdline_ptr)
@@ -176,13 +184,72 @@ static int _wlmaker_handle_sighup(__UNUSED__ int signal_number, void *data_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
-/** Unblocks SIGHUP in forked processes: Only wlmaker monitors it. */
+/**
+ * Raises the soft limit of open file descriptors to the hard limit.
+ *
+ * Each client holds file descriptors in the compositor: Its socket, shared
+ * memory pools, DMA-BUF planes, sync fences, keymaps. A session with a few
+ * monitors, XWayland windows and a browser exhausts the usual soft limit of
+ * 1024. Then file descriptors received from clients are dropped (the client
+ * is disconnected: "invalid arguments for wl_shm.create_pool"), fences
+ * cannot be duplicated, and a lazy XWayland that terminated does not start
+ * again: wlroots fails to watch the X11 sockets, without telling.
+ *
+ * The soft limit stays at 1024 for compatibility with select(), which cannot
+ * handle higher file descriptors. wlmaker does not use select(), so it can
+ * use the hard limit. Forked processes get the original limit back when
+ * they can, see @ref _wlmaker_atfork_child.
+ */
+static void _wlmaker_raise_nofile_rlimit(void)
+{
+    if (0 != getrlimit(RLIMIT_NOFILE, &wlmaker_nofile_rlimit)) {
+        bs_log(BS_WARNING | BS_ERRNO, "Failed getrlimit(RLIMIT_NOFILE)");
+        return;
+    }
+    if (wlmaker_nofile_rlimit.rlim_cur >= wlmaker_nofile_rlimit.rlim_max) {
+        return;
+    }
+    struct rlimit raised = wlmaker_nofile_rlimit;
+    raised.rlim_cur = raised.rlim_max;
+    if (0 != setrlimit(RLIMIT_NOFILE, &raised)) {
+        bs_log(BS_WARNING | BS_ERRNO, "Failed setrlimit(RLIMIT_NOFILE, %ju)",
+               (uintmax_t)raised.rlim_cur);
+        return;
+    }
+    wlmaker_nofile_rlimit_raised = true;
+    bs_log(BS_INFO, "Raised limit of open files from %ju to %ju.",
+           (uintmax_t)wlmaker_nofile_rlimit.rlim_cur,
+           (uintmax_t)raised.rlim_cur);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * In forked processes: Unblocks SIGHUP (only wlmaker monitors it), and
+ * restores the limit of open files that wlmaker started with.
+ *
+ * The limit is restored only if the child can still open files under it.
+ * A child inherits all of wlmaker's file descriptors until it calls exec();
+ * when they reach the original limit, a lower limit would make every open()
+ * fail with EMFILE before the exec: XWayland, forked by wlroots, opens
+ * /dev/null first and would not start. That child keeps the raised limit.
+ */
 static void _wlmaker_atfork_child(void)
 {
     sigset_t signal_set;
     sigemptyset(&signal_set);
     sigaddset(&signal_set, SIGHUP);
     sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
+
+    if (wlmaker_nofile_rlimit_raised) {
+        // The lowest free descriptor (async-signal-safe calls only).
+        int fd = open("/dev/null", O_RDONLY);
+        if (0 <= fd) {
+            if ((rlim_t)fd < wlmaker_nofile_rlimit.rlim_cur) {
+                setrlimit(RLIMIT_NOFILE, &wlmaker_nofile_rlimit);
+            }
+            close(fd);
+        }
+    }
 }
 
 /* == Main program ========================================================= */
@@ -225,6 +292,9 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
     bs_log(BS_INFO, "Starting wlmaker %s (%s)",
            wlm_util_version,
            wlm_util_version_full);
+    _wlmaker_raise_nofile_rlimit();
+    // Before any fork(): XWayland (when not lazy) starts with the server.
+    pthread_atfork(NULL, NULL, _wlmaker_atfork_child);
 
     wlm_util_files_t *files_ptr = wlm_util_files_create("wlmaker");
     if (NULL == files_ptr) {
@@ -301,7 +371,6 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
         bs_log(BS_WARNING, "Failed wl_event_loop_add_signal(SIGHUP): "
                "Reloading by signal is not available.");
     }
-    pthread_atfork(NULL, NULL, _wlmaker_atfork_child);
 
     if (!wlm_workspace_manager_apply_state(
             server_ptr->workspace_manager_ptr,

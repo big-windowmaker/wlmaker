@@ -1,0 +1,19 @@
+wlmaker: Raises the limit of open files, restored for launched programs.
+
+Each client holds file descriptors in the compositor: its socket, shared
+memory pools, DMA-BUF planes, sync fences, keymaps. With a few monitors,
+XWayland windows and a browser, the usual soft limit of 1024 runs out.
+Then file descriptors sent by clients are dropped and the client is
+disconnected ("invalid arguments for wl_shm.create_pool"), fences cannot
+be duplicated ("eglDupNativeFenceFDANDROID failed"), and a lazy XWayland
+that terminated never starts again: wlroots fails to watch the X11
+sockets, silently, and every X11 client hangs connecting.
+
+Raises the soft limit to the hard limit at startup (as sway and labwc
+do), and restores the original limit in forked processes, which may use
+select() - unless the child inherited descriptors up to that limit: then
+it could not open any file before its exec() (XWayland, forked by
+wlroots, opens /dev/null first), so it keeps the raised one. The atfork
+handler is now registered before any fork().
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
