@@ -55,6 +55,7 @@
 #include "toolkit/toolkit.h"
 #include "util/backtrace.h"
 #include "util/files.h"
+#include "util/subprocess_monitor.h"
 #include "util/version.h"
 #include "util/wlr_log.h"
 
@@ -146,8 +147,16 @@ static const bs_arg_t wlmaker_args[] = {
 /** Event source for SIGHUP, which reloads the configuration. */
 static struct wl_event_source *wlmaker_sighup_event_source_ptr = NULL;
 
-/** References auto-started subprocesses. */
-static bs_ptr_stack_t         wlmaker_subprocess_stack;
+/** An autostarted program, still running: Stopped when wlmaker exits. */
+typedef struct {
+    /** Node in @ref wlmaker_autostarted. */
+    bs_dllist_node_t          dlnode;
+    /** Handle at the subprocess monitor. */
+    struct wlm_util_subprocess *handle_ptr;
+} wlmaker_autostarted_t;
+
+/** The autostarted programs still running. */
+static bs_dllist_t            wlmaker_autostarted;
 
 /** The RLIMIT_NOFILE wlmaker started with. Restored in forked processes. */
 static struct rlimit          wlmaker_nofile_rlimit;
@@ -155,8 +164,30 @@ static struct rlimit          wlmaker_nofile_rlimit;
 static bool                   wlmaker_nofile_rlimit_raised = false;
 
 /* ------------------------------------------------------------------------- */
-/** Launches a sub-process, and keeps it on the subprocess stack. */
-bool start_subprocess(const char *cmdline_ptr)
+/** An autostarted program terminated: No longer to be stopped on exit. */
+static void _wlmaker_autostarted_terminated(
+    void *userdata_ptr,
+    __UNUSED__ struct wlm_util_subprocess *subprocess_handle_ptr,
+    __UNUSED__ int state,
+    __UNUSED__ int code)
+{
+    wlmaker_autostarted_t *autostarted_ptr = userdata_ptr;
+    bs_dllist_remove(&wlmaker_autostarted, &autostarted_ptr->dlnode);
+    free(autostarted_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Launches an autostarted program, entrusted to the subprocess monitor: It
+ * reads the program's output and reaps it when it terminates. Before, the
+ * program was only kept on a stack until wlmaker exited: One that ended
+ * early stayed a zombie, with its three pipes open, for the whole session;
+ * and one writing more than a pipe holds (64 KiB) to stdout or stderr
+ * blocked, as nothing read them.
+ */
+static bool start_subprocess(
+    wlm_util_subprocess_monitor_t *monitor_ptr,
+    const char *cmdline_ptr)
 {
     bs_subprocess_t *sp_ptr = bs_subprocess_create_cmdline(cmdline_ptr);
     if (NULL == sp_ptr) {
@@ -167,10 +198,23 @@ bool start_subprocess(const char *cmdline_ptr)
     if (!bs_subprocess_start(sp_ptr)) {
         bs_log(BS_ERROR, "Failed bs_subprocess_start for \"%s\"",
                cmdline_ptr);
+        bs_subprocess_destroy(sp_ptr);
         return false;
     }
-    // Push to stack. Ignore errors: We'll keep it running untracked.
-    bs_ptr_stack_push(&wlmaker_subprocess_stack, sp_ptr);
+    wlmaker_autostarted_t *autostarted_ptr = logged_calloc(
+        1, sizeof(wlmaker_autostarted_t));
+    if (NULL != autostarted_ptr) {
+        autostarted_ptr->handle_ptr = wlm_util_subprocess_monitor_entrust(
+            monitor_ptr, sp_ptr, _wlmaker_autostarted_terminated,
+            autostarted_ptr, NULL);
+    }
+    if (NULL == autostarted_ptr || NULL == autostarted_ptr->handle_ptr) {
+        // Keep it running untracked.
+        bs_log(BS_WARNING, "Failed to monitor \"%s\"", cmdline_ptr);
+        free(autostarted_ptr);
+        return true;
+    }
+    bs_dllist_push_back(&wlmaker_autostarted, &autostarted_ptr->dlnode);
     return true;
 }
 
@@ -289,7 +333,6 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
         !bs_log_init(xdgCacheHome(NULL), "wlmaker")) {
         return EXIT_FAILURE;
     }
-    BS_ASSERT(bs_ptr_stack_init(&wlmaker_subprocess_stack));
 
     if (!bs_arg_parse(wlmaker_args, BS_ARG_MODE_EXTRA_ARGS, &argc, argv)) {
         fprintf(stderr, "Failed to parse commandline arguments.\n");
@@ -418,7 +461,9 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
             for (size_t i = 0; i < bspl_array_size(autostarted_ptr); ++i) {
                 const char *cmd_ptr = bspl_array_string_value_at(
                     autostarted_ptr, i);
-                if (!start_subprocess(cmd_ptr)) return EXIT_FAILURE;
+                if (!start_subprocess(server_ptr->monitor_ptr, cmd_ptr)) {
+                    return EXIT_FAILURE;
+                }
             }
         }
 
@@ -451,13 +496,16 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
     wlmaker_action_unbind_keys(server_ptr->action_handle_ptr);
     server_ptr->action_handle_ptr = NULL;
     bspl_array_unref(server_ptr->root_menu_array_ptr);
-    wlmaker_server_destroy(server_ptr);
-
-    bs_subprocess_t *sp_ptr;
-    while (NULL != (sp_ptr = bs_ptr_stack_pop(&wlmaker_subprocess_stack))) {
-        bs_subprocess_destroy(sp_ptr);
+    // Autostarted programs still running end with wlmaker, as before.
+    bs_dllist_node_t *dlnode_ptr;
+    while (NULL != (dlnode_ptr = bs_dllist_pop_front(&wlmaker_autostarted))) {
+        wlmaker_autostarted_t *autostarted_ptr = BS_CONTAINER_OF(
+            dlnode_ptr, wlmaker_autostarted_t, dlnode);
+        pid_t pid = wlm_util_subprocess_pid(autostarted_ptr->handle_ptr);
+        if (0 < pid) kill(pid, SIGKILL);
+        free(autostarted_ptr);
     }
-    bs_ptr_stack_fini(&wlmaker_subprocess_stack);
+    wlmaker_server_destroy(server_ptr);
 
     if (NULL != wlmaker_arg_config_file_ptr) free(wlmaker_arg_config_file_ptr);
     bspl_decoded_destroy(wlmaker_config_style_desc, &style);
