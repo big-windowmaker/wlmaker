@@ -20,6 +20,8 @@
  */
 
 #include <libbase/libbase.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdlib.h>
 
 #include "action.h"
@@ -65,6 +67,14 @@
 /** Main program, runs the unit tests. */
 int main(int argc, const char **argv)
 {
+    // As wlmaker's main(): The subprocess monitor reads SIGCHLD through a
+    // signalfd; blocked before any thread starts (GLib's, eg. gdbus), no
+    // other thread takes and drops it (generated_menu then hung).
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGCHLD);
+    pthread_sigmask(SIG_BLOCK, &signal_set, NULL);
+
     if (!wlm_util_backtrace_setup(argv[0])) return EXIT_FAILURE;
 
     const bs_test_param_t params = { .test_data_dir_ptr = TEST_DATA_DIR };

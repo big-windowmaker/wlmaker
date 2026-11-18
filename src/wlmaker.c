@@ -224,7 +224,8 @@ static void _wlmaker_raise_nofile_rlimit(void)
 
 /* ------------------------------------------------------------------------- */
 /**
- * In forked processes: Unblocks SIGHUP (only wlmaker monitors it), and
+ * In forked processes: Unblocks SIGHUP and SIGCHLD (only wlmaker monitors
+ * them, see @ref wlmaker_block_monitored_signals), and
  * restores the limit of open files that wlmaker started with.
  *
  * The limit is restored only if the child can still open files under it.
@@ -238,6 +239,7 @@ static void _wlmaker_atfork_child(void)
     sigset_t signal_set;
     sigemptyset(&signal_set);
     sigaddset(&signal_set, SIGHUP);
+    sigaddset(&signal_set, SIGCHLD);
     sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
 
     if (wlmaker_nofile_rlimit_raised) {
@@ -252,6 +254,24 @@ static void _wlmaker_atfork_child(void)
     }
 }
 
+/* ------------------------------------------------------------------------- */
+/** Blocks the signals wlmaker monitors, in all threads. */
+static void wlmaker_block_monitored_signals(void)
+{
+    // The Wayland event loop reads SIGCHLD (subprocess monitor) and SIGHUP
+    // (reload) through a signalfd, which only sees signals blocked in every
+    // thread. wl_event_loop_add_signal() blocks them in the calling thread
+    // only: Threads started before (eg. GLib's gdbus and pool threads) would
+    // take them, dropping SIGCHLD (a terminated subprocess is never noticed:
+    // a generated menu stays empty) or ending the process on SIGHUP. Blocked
+    // here, before any thread starts, every thread inherits the mask.
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGHUP);
+    sigaddset(&signal_set, SIGCHLD);
+    pthread_sigmask(SIG_BLOCK, &signal_set, NULL);
+}
+
 /* == Main program ========================================================= */
 /** The main program. */
 int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
@@ -260,6 +280,7 @@ int main(__UNUSED__ int argc, __UNUSED__ const char **argv)
     wlmaker_task_list_t       *task_list_ptr = NULL;
     int                       rv = EXIT_SUCCESS;
 
+    wlmaker_block_monitored_signals();
     wlmaker_i18n_init();
     if (!wlm_util_backtrace_setup(argv[0]) ||
         !wlm_util_wlr_log_init(WLR_DEBUG) ||
