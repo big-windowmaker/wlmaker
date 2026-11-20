@@ -160,6 +160,16 @@ bool wlmaker_clip_add_move_items(
 void wlmaker_clip_launchers_changed(wlmaker_server_t *server_ptr);
 
 /**
+ * The output the Clip is on: The Dock and the Clip's launchers (`wlmdock`)
+ * belong there, too.
+ *
+ * @param server_ptr
+ *
+ * @return The output, or NULL if there is none.
+ */
+struct wlr_output *wlmaker_clip_output(wlmaker_server_t *server_ptr);
+
+/**
  * The Dock's surface (`wlmdock`) moved or changed: Places the dock-apps
  * attached to the Dock after its launchers.
  *

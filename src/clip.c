@@ -797,6 +797,21 @@ void wlmaker_clip_move_dock(
 }
 
 /* ------------------------------------------------------------------------- */
+struct wlr_output *wlmaker_clip_output(wlmaker_server_t *server_ptr)
+{
+    struct wlr_output *wlr_output_ptr = NULL;
+    if (NULL != server_ptr->clip_ptr) {
+        wlr_output_ptr = wlmbe_output_description_first_fnmatch(
+            &server_ptr->clip_ptr->output_description,
+            server_ptr->wlr_output_layout_ptr);
+    }
+    if (NULL == wlr_output_ptr) {
+        wlr_output_ptr = wlmbe_primary_output(server_ptr->wlr_output_layout_ptr);
+    }
+    return wlr_output_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_clip_launchers_changed(wlmaker_server_t *server_ptr)
 {
     if (NULL != server_ptr->clip_ptr) {

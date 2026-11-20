@@ -1450,9 +1450,28 @@ uint32_t _wlmaker_layer_panel_request_size(
 {
     wlmaker_layer_panel_t *layer_panel_ptr = BS_CONTAINER_OF(
         panel_ptr, wlmaker_layer_panel_t, super_panel);
+    struct wlr_layer_surface_v1 *ls_ptr =
+        layer_panel_ptr->wlr_layer_surface_v1_ptr;
 
-    return wlr_layer_surface_v1_configure(
-        layer_panel_ptr->wlr_layer_surface_v1_ptr, width, height);
+    // Only a new size gets a configure. The desktop's layout, at each output
+    // frame, requests the size of every panel: Re-sending the same size
+    // makes the client commit, which needs another frame, and so on. That
+    // was an endless configure/commit loop for the Dock and the Clip's
+    // launchers (wlmdock), even when nothing changed. The size last sent is
+    // that of the newest unacknowledged configure, or the acknowledged one.
+    // wlroots forgets both when the surface unmaps: It gets a configure again.
+    if (!wl_list_empty(&ls_ptr->configure_list)) {
+        struct wlr_layer_surface_v1_configure *c_ptr = wl_container_of(
+            ls_ptr->configure_list.prev, c_ptr, link);
+        if (c_ptr->width == (uint32_t)width &&
+            c_ptr->height == (uint32_t)height) return c_ptr->serial;
+    } else if (ls_ptr->configured &&
+               ls_ptr->pending.actual_width == (uint32_t)width &&
+               ls_ptr->pending.actual_height == (uint32_t)height) {
+        return ls_ptr->pending.configure_serial;
+    }
+
+    return wlr_layer_surface_v1_configure(ls_ptr, width, height);
 }
 
 /* ------------------------------------------------------------------------- */
