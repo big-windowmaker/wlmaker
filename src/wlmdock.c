@@ -29,6 +29,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -344,6 +346,27 @@ const bspl_desc_t _wlmdock_plist_desc[] = {
     BSPL_DESC_SENTINEL(),
 };
 
+/* ------------------------------------------------------------------------- */
+/**
+ * Renames `<dir>/<name>.log` to `<dir>/<name>.log.old`, unless another
+ * running wlmdock has it locked. Starting over for a new theme keeps the
+ * process (and its lock): Its log becomes the old one, too.
+ */
+static void _wlmdock_keep_previous_log(const char *dir_ptr, const char *name_ptr)
+{
+    if (NULL == dir_ptr) return;
+    char path[PATH_MAX], old_path[PATH_MAX];
+    if ((int)sizeof(path) <= snprintf(
+            path, sizeof(path), "%s/%s.log", dir_ptr, name_ptr) ||
+        (int)sizeof(old_path) <= snprintf(
+            old_path, sizeof(old_path), "%s.old", path)) return;
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (0 > fd) return;
+    struct flock file_lock = { .l_type = F_WRLCK, .l_whence = SEEK_SET };
+    if (0 == fcntl(fd, F_SETLK, &file_lock)) rename(path, old_path);
+    close(fd);
+}
+
 /* == Main program ========================================================= */
 /** The dock's main program. */
 int main(int argc, const char **argv)
@@ -359,10 +382,19 @@ int main(int argc, const char **argv)
         _wlmdock_argv[i] = strdup(argv[i]);
     }
     wlmaker_i18n_init();
+    // The Dock and the Clip's launchers each have their log; the previous
+    // one is kept as *.log.old. (Both wrote wlmdock.log: the second one
+    // started fell back to wlmdock.<pid>.log, and a restart truncated the
+    // log of the wlmdock that had gone away.)
+    const char *log_name_ptr = "wlmdock";
+    for (int i = 1; i < argc; ++i) {
+        if (0 == strcmp(argv[i], "--clip")) log_name_ptr = "wlmdock-clip";
+    }
+    _wlmdock_keep_previous_log(xdgCacheHome(NULL), log_name_ptr);
     if (!wlm_util_backtrace_setup(argv[0]) ||
         // Ideally: xdgStateHome. But: libxdg-basedir is using FreeDesktop
         // specification v0.7, and XDG_STATE_HOME was added with v0.8 only.
-        !bs_log_init(xdgCacheHome(NULL), "wlmdock")) {
+        !bs_log_init(xdgCacheHome(NULL), log_name_ptr)) {
         return EXIT_FAILURE;
     }
 

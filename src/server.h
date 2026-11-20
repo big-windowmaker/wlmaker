@@ -103,6 +103,8 @@ struct _wlmaker_server_t {
 
     /** Wayland display. */
     struct wl_display         *wl_display_ptr;
+    /** Logs the protocol errors sent to clients. */
+    struct wl_protocol_logger *protocol_logger_ptr;
     /** Name of the socket for clients to connect. */
     const char                *wl_socket_name_ptr;
 

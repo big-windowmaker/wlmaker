@@ -23,11 +23,14 @@
 
 #include "dnd.h"
 
+#include <inttypes.h>
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <linux/input-event-codes.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
+#include <wayland-server-core.h>
 #define WLR_USE_UNSTABLE
 #include <wlr/backend.h>
 #include <wlr/types/wlr_viewporter.h>
@@ -96,6 +99,10 @@ static void _wlmaker_server_handle_xdg_activation_request_activate(
 static void _wlmaker_server_handle_xdg_activation_new_token(
     struct wl_listener *listener_ptr,
     void *data_ptr);
+static void _wlmaker_server_log_protocol_error(
+    void *ud_ptr,
+    enum wl_protocol_logger_type direction,
+    const struct wl_protocol_logger_message *message_ptr);
 
 /** Listener for `new_token` of `wlr_xdg_activation_v1` (one server). */
 static struct wl_listener _xdg_activation_new_token_listener;
@@ -137,6 +144,11 @@ wlmaker_server_t *wlmaker_server_create(
         wlmaker_server_destroy(server_ptr);
         return NULL;
     }
+    // A protocol error disconnects the client, and libwayland only logs
+    // "error in client communication": Log the error itself. (2026-11-20:
+    // the Dock and the Clip's launchers went away like that, cause unknown.)
+    server_ptr->protocol_logger_ptr = wl_display_add_protocol_logger(
+        server_ptr->wl_display_ptr, _wlmaker_server_log_protocol_error, NULL);
     server_ptr->wl_socket_name_ptr = wl_display_add_socket_auto(
         server_ptr->wl_display_ptr);
     if (NULL == server_ptr->wl_socket_name_ptr) {
@@ -688,6 +700,10 @@ void wlmaker_server_destroy(wlmaker_server_t *server_ptr)
         server_ptr->xdg_shell_ptr = NULL;
     }
 
+    if (NULL != server_ptr->protocol_logger_ptr) {
+        wl_protocol_logger_destroy(server_ptr->protocol_logger_ptr);
+        server_ptr->protocol_logger_ptr = NULL;
+    }
     if (NULL != server_ptr->wl_display_ptr) {
         wl_display_destroy_clients(server_ptr->wl_display_ptr);
         server_ptr->wl_display_ptr = NULL;
@@ -1201,6 +1217,33 @@ void _wlmaker_server_handle_xdg_activation_new_token(
     if (NULL != token_ptr->seat && NULL != token_ptr->surface) {
         token_ptr->data = &_xdg_activation_from_input;
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Logs the `wl_display.error` events: The protocol errors sent to clients. */
+void _wlmaker_server_log_protocol_error(
+    __UNUSED__ void *ud_ptr,
+    enum wl_protocol_logger_type direction,
+    const struct wl_protocol_logger_message *message_ptr)
+{
+    if (WL_PROTOCOL_LOGGER_EVENT != direction ||
+        0 != strcmp(message_ptr->message->name, "error") ||
+        0 != strcmp(wl_resource_get_class(message_ptr->resource),
+                    "wl_display") ||
+        3 > message_ptr->arguments_count) return;
+    pid_t pid = 0;
+    wl_client_get_credentials(
+        wl_resource_get_client(message_ptr->resource), &pid, NULL, NULL);
+    // The object argument of an event is the resource's object.
+    struct wl_resource *object_ptr =
+        (struct wl_resource *)message_ptr->arguments[0].o;
+    const char *text_ptr = message_ptr->arguments[2].s;
+    bs_log(BS_WARNING, "Protocol error %"PRIu32" for client (pid %"PRIdMAX
+           ") on %s#%"PRIu32": %s",
+           message_ptr->arguments[1].u, (intmax_t)pid,
+           NULL != object_ptr ? wl_resource_get_class(object_ptr) : "?",
+           NULL != object_ptr ? wl_resource_get_id(object_ptr) : 0,
+           NULL != text_ptr ? text_ptr : "");
 }
 
 /* == End of server.c ====================================================== */
