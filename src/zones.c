@@ -759,11 +759,18 @@ static bool _wlmaker_zones_buffer_pointer_button(
     return true;
 }
 
-/** Overlay: Spans the whole output. */
+/**
+ * Overlay: Spans the whole output. The drawing and the pointer go by the
+ * output's box: With exclusive zone 0 the layout put the overlay in the
+ * usable area instead, ie. right of the Clip, and everything drawn was off
+ * by the Clip's width from where it is hit (the panel of layouts, the zones,
+ * the picker). -1: Not moved by other panels.
+ */
 static const wlmtk_panel_positioning_t _wlmaker_zones_positioning = {
     .desired_width = 0,
     .desired_height = 0,
-    .anchor = WLR_EDGE_BOTTOM | WLR_EDGE_TOP | WLR_EDGE_LEFT | WLR_EDGE_RIGHT
+    .anchor = WLR_EDGE_BOTTOM | WLR_EDGE_TOP | WLR_EDGE_LEFT | WLR_EDGE_RIGHT,
+    .exclusive_zone = -1
 };
 
 /** Panel's request_size: Remembers the size and redraws. */
