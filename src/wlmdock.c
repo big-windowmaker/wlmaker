@@ -38,6 +38,7 @@
 #include <sys/prctl.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <wayland-client-core.h>
@@ -363,7 +364,14 @@ static void _wlmdock_keep_previous_log(const char *dir_ptr, const char *name_ptr
     int fd = open(path, O_WRONLY | O_CLOEXEC);
     if (0 > fd) return;
     struct flock file_lock = { .l_type = F_WRLCK, .l_whence = SEEK_SET };
-    if (0 == fcntl(fd, F_SETLK, &file_lock)) rename(path, old_path);
+    struct stat locked, current;
+    // The lock holds the file, not the name: Another wlmdock starting at
+    // the same time may have renamed it, and logs to a new one by now.
+    if (0 == fcntl(fd, F_SETLK, &file_lock) &&
+        0 == fstat(fd, &locked) && 0 == stat(path, &current) &&
+        locked.st_dev == current.st_dev && locked.st_ino == current.st_ino) {
+        rename(path, old_path);
+    }
     close(fd);
 }
 
