@@ -323,7 +323,9 @@ bool _wlmtool_menu_add_desktop_file(
                arg_ptr->desktop_parser_ptr,
                resolved_path_ptr,
                &de, error_line);
-        return false;
+        // A broken file is left out; the others still make the menu.
+        desktop_parser_entry_release(&de);
+        return true;
     }
 
     if (DESKTOP_ENTRY_TYPE_APPLICATION != de.type ||
@@ -337,7 +339,7 @@ bool _wlmtool_menu_add_desktop_file(
     if (NULL == c) {
         bs_log(BS_WARNING, "Failed to lookup category for %s",
                resolved_path_ptr);
-        goto error;
+        goto skip;
     }
 
     struct wlmtool_menu *cat_menu_ptr = wlmtool_menu_get_or_create_submenu(
@@ -347,7 +349,7 @@ bool _wlmtool_menu_add_desktop_file(
     if (NULL == de.try_exec_ptr && NULL == de.exec_ptr) {
         bs_log(BS_WARNING, "Missing 'Exec' and 'TryExec' in desktop file %s",
                resolved_path_ptr);
-        goto error;
+        goto skip;
     }
     if (de.terminal) {
         cmd_ptr = bs_strdupf(
@@ -363,7 +365,7 @@ bool _wlmtool_menu_add_desktop_file(
     if (NULL == de.name_ptr) {
         bs_log(BS_WARNING, "Missing 'Name' in desktop file %s",
                resolved_path_ptr);
-        goto error;
+        goto skip;
     }
 
     const char *a[] = { de.name_ptr, "ShellExecute", cmd_ptr, NULL };
@@ -372,9 +374,12 @@ bool _wlmtool_menu_add_desktop_file(
     if (!wlmtool_menu_add_item(cat_menu_ptr, item_ptr)) {
         bs_log(BS_WARNING, "Duplicate? Failed to add entry for %s",
                resolved_path_ptr);
-        goto error;
+        wlmtool_item_destroy(item_ptr);
+        goto skip;
     }
 
+skip:
+    // Also a file with missing or duplicate entries: Left out, not an error.
     free(cmd_ptr);
     desktop_parser_entry_release(&de);
     return true;
