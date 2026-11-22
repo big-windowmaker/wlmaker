@@ -511,11 +511,9 @@ void wlmaker_action_execute(wlmaker_server_t *server_ptr,
         break;
 
     case WLMAKER_ACTION_ROOT_MENU:
-        if (NULL != server_ptr->root_menu_ptr &&
-            NULL == wlmtk_window_get_workspace(
-                wlmaker_root_menu_window(server_ptr->root_menu_ptr))) {
-            wlmaker_root_menu_open(server_ptr->root_menu_ptr,
-                                   WLMTK_MENU_MODE_NORMAL);
+        if (NULL != server_ptr->root_menu_ptr) {
+            wlmaker_root_menu_summon(server_ptr->root_menu_ptr,
+                                     WLMTK_MENU_MODE_NORMAL, 0);
         }
         break;
 

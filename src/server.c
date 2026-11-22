@@ -933,12 +933,10 @@ void _wlmaker_server_unclaimed_button_event_handler(
     if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
         NULL != server_ptr->root_menu_ptr &&
         0 == strcasecmp("ApplicationsMenu", wlmaker_server_root_button_action(
-                            server_ptr, button_event_ptr->button)) &&
-        // TODO(kaeser@gubbe.ch): Clean up.
-        !wlmtk_menu_is_open(
-            wlmaker_root_menu_menu(server_ptr->root_menu_ptr))) {
-        wlmaker_root_menu_open_by_button(server_ptr->root_menu_ptr,
-                                         button_event_ptr->button);
+                            server_ptr, button_event_ptr->button))) {
+        wlmaker_root_menu_summon(server_ptr->root_menu_ptr,
+                                 WLMTK_MENU_MODE_RIGHTCLICK,
+                                 button_event_ptr->button);
     }
 }
 

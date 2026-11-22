@@ -493,6 +493,46 @@ void wlmaker_root_menu_open_by_button(wlmaker_root_menu_t *root_menu_ptr,
     wlmtk_menu_set_open_button(root_menu_ptr->menu_ptr, button);
 }
 
+/* ------------------------------------------------------------------------- */
+void wlmaker_root_menu_summon(wlmaker_root_menu_t *root_menu_ptr,
+                              enum wlmtk_menu_mode mode,
+                              uint32_t button)
+{
+    wlmaker_server_t *server_ptr = root_menu_ptr->server_ptr;
+    if (wlmtk_menu_is_open(root_menu_ptr->menu_ptr)) {
+        wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+            root_menu_ptr->window_ptr);
+        bool seen = false, pinned = root_menu_ptr->pinned;
+        if (NULL != workspace_ptr &&
+            workspace_ptr == wlmtk_desktop_get_current_workspace(
+                server_ptr->desktop_ptr) &&
+            wlmtk_workspace_get_windows_dllist(workspace_ptr)->head_ptr ==
+            wlmtk_dlnode_from_window(root_menu_ptr->window_ptr)) {
+            struct wlr_box b = wlmtk_window_get_bounding_box(
+                root_menu_ptr->window_ptr);
+            seen = wlr_output_layout_contains_point(
+                server_ptr->wlr_output_layout_ptr, NULL,
+                b.x + b.width / 2, b.y + b.height / 2);
+        }
+        // Closing also unpins it, and unmaps its window from any workspace.
+        wlmtk_menu_set_open(root_menu_ptr->menu_ptr, false);
+        // The key closes a menu that is seen, as Window Maker's does; the
+        // button opens it at the pointer, as on a menu opened by the button.
+        if (seen && !pinned && WLMTK_MENU_MODE_NORMAL == mode) return;
+    }
+    // Also when only the window was left on a workspace.
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+        root_menu_ptr->window_ptr);
+    if (NULL != workspace_ptr) {
+        wlmtk_workspace_unmap_window(workspace_ptr, root_menu_ptr->window_ptr);
+    }
+    if (WLMTK_MENU_MODE_RIGHTCLICK == mode) {
+        wlmaker_root_menu_open_by_button(root_menu_ptr, button);
+    } else {
+        wlmaker_root_menu_open(root_menu_ptr, mode);
+    }
+}
+
 /* == Local (static) methods =============================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -1423,11 +1463,13 @@ wlmtk_menu_item_t *_wlmaker_root_menu_create_disabled_item(
 
 static void test_default_menu(bs_test_t *test_ptr);
 static void test_generated_menu(bs_test_t *test_ptr);
+static void test_summon(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t wlmaker_root_menu_test_cases[] = {
     { true, "default_menu", test_default_menu },
     { true, "generated_menu", test_generated_menu },
+    { true, "summon", test_summon },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -1547,6 +1589,130 @@ void test_generated_menu(bs_test_t *test_ptr)
     wlr_scene_node_destroy(&server.wlr_scene_ptr->tree.node);
     wlmtk_window_style_ref_release(wsr);
     wlmtk_menu_style_ref_release(msr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests @ref wlmaker_root_menu_summon: Always gives a menu that is seen. */
+void test_summon(bs_test_t *test_ptr)
+{
+    wlmaker_server_t server = {
+        .wl_display_ptr = wl_display_create(),
+        .wlr_scene_ptr = wlr_scene_create()
+    };
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.wl_display_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.wlr_scene_ptr);
+    server.wlr_output_layout_ptr = wlr_output_layout_create(
+        server.wl_display_ptr);
+    struct wlr_output output = { .width = 1024, .height = 768, .scale = 1 };
+    wlmtk_test_wlr_output_init(&output);
+    wlr_output_layout_add_auto(server.wlr_output_layout_ptr, &output);
+    struct wlmtk_desktop_style ds = {};
+    server.desktop_ptr = wlmtk_desktop_create(
+        server.wlr_scene_ptr, &ds, server.wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.desktop_ptr);
+    struct wlmtk_tile_style tile_style = {};
+    wlmtk_workspace_t *ws1_ptr = wlmtk_workspace_create(
+        server.wlr_output_layout_ptr, "1", &tile_style);
+    wlmtk_workspace_t *ws2_ptr = wlmtk_workspace_create(
+        server.wlr_output_layout_ptr, "2", &tile_style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws1_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws2_ptr);
+    wlmtk_desktop_add_workspace(server.desktop_ptr, ws1_ptr);
+    wlmtk_desktop_add_workspace(server.desktop_ptr, ws2_ptr);
+    server.wlr_seat_ptr = wlr_seat_create(server.wl_display_ptr, "seat0");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.wlr_seat_ptr);
+    // The cursor (at 0, 0) gets a layout of its own, without the output: A
+    // test output cannot hold a cursor.
+    struct wlr_output_layout *cursor_layout_ptr = wlr_output_layout_create(
+        server.wl_display_ptr);
+    struct wlmim_cursor_style cs = { .name_ptr = "default", .size = 24 };
+    server.input_manager_ptr = wlmim_input_manager_create(
+        server.wl_display_ptr, NULL, cursor_layout_ptr,
+        server.wlr_seat_ptr, NULL, &cs, NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.input_manager_ptr);
+
+    wlmtk_window_style_ref_t *wsr = wlmtk_window_style_to_ref(
+        wlmtk_window_style_create());
+    wlmtk_menu_style_ref_t *msr = wlmtk_menu_style_to_ref(
+        wlmtk_menu_style_create());
+    wlmaker_root_menu_t *rm_ptr = wlmaker_root_menu_create(
+        &server, NULL, wsr, msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, rm_ptr);
+    wlmtk_menu_t *m_ptr = wlmaker_root_menu_menu(rm_ptr);
+    wlmtk_window_t *w_ptr = wlmaker_root_menu_window(rm_ptr);
+
+    // Opens; again, closes (Window Maker).
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, ws1_ptr, wlmtk_window_get_workspace(w_ptr));
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlmtk_window_get_workspace(w_ptr));
+
+    // Left open on another workspace: Opens on the current one.
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    wlmtk_desktop_switch_to_next_workspace(server.desktop_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, ws2_ptr, wlmtk_desktop_get_current_workspace(
+                          server.desktop_ptr));
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, ws2_ptr, wlmtk_window_get_workspace(w_ptr));
+
+    // Behind a window: Comes to the top, open.
+    wlmtk_window_t *other_ptr = wlmtk_test_window_create(NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, other_ptr);
+    wlmtk_workspace_map_window(ws2_ptr, other_ptr);
+    bs_dllist_t *wl_ptr = wlmtk_workspace_get_windows_dllist(ws2_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, wlmtk_dlnode_from_window(other_ptr),
+                      wl_ptr->head_ptr);
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, wlmtk_dlnode_from_window(w_ptr),
+                      wl_ptr->head_ptr);
+
+    // The button, on a menu that is seen: Opens it at the pointer.
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_RIGHTCLICK, BTN_RIGHT);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, WLMTK_MENU_MODE_RIGHTCLICK,
+                      wlmtk_menu_get_mode(m_ptr));
+    wlmtk_menu_set_open(m_ptr, false);
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+
+    // Pinned and seen: The key opens it at the pointer, unpinned.
+    rm_ptr->pinned = true;
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_FALSE(test_ptr, rm_ptr->pinned);
+    // Pinned on another workspace: Comes here.
+    rm_ptr->pinned = true;
+    wlmtk_desktop_switch_to_previous_workspace(server.desktop_ptr);
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, ws1_ptr, wlmtk_window_get_workspace(w_ptr));
+
+    // Off every output (eg. its monitor went away): Opens again, on it.
+    wlmtk_workspace_set_window_position(ws1_ptr, w_ptr, 5000, 5000);
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_element(w_ptr)->x < 1024);
+
+    wlmtk_menu_set_open(m_ptr, false);
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlmtk_window_get_workspace(w_ptr));
+    wlmtk_workspace_unmap_window(ws2_ptr, other_ptr);
+    wlmtk_window_destroy(other_ptr);
+    wlmaker_root_menu_destroy(rm_ptr);
+    wlmtk_window_style_ref_release(wsr);
+    wlmtk_menu_style_ref_release(msr);
+    wlmim_input_manager_destroy(server.input_manager_ptr);
+    wlr_output_layout_destroy(cursor_layout_ptr);
+    wlr_seat_destroy(server.wlr_seat_ptr);
+    wlmtk_desktop_remove_workspace(server.desktop_ptr, ws2_ptr);
+    wlmtk_workspace_destroy(ws2_ptr);
+    wlmtk_desktop_remove_workspace(server.desktop_ptr, ws1_ptr);
+    wlmtk_workspace_destroy(ws1_ptr);
+    wlmtk_desktop_destroy(server.desktop_ptr);
+    wl_display_destroy(server.wl_display_ptr);
+    wlr_scene_node_destroy(&server.wlr_scene_ptr->tree.node);
 }
 
 /* == End of root_menu.c =================================================== */
