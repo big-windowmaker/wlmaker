@@ -602,7 +602,11 @@ bool _wlmaker_tile_drag_try_column(
             tile_drag_ptr->over_taken = true;
             return false;
         default:
-            return false;
+            // Down the Clip's column, past its icons: At its end.
+            if (!wlmaker_clip_grid_column_end(g_ptr, &cell, own_icon)) {
+                return false;
+            }
+            break;
         }
         *target_ptr = (wlmaker_tile_drag_target_t){
             .column = id, .grid = true, .cell = cell };

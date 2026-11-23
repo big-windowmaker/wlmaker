@@ -229,6 +229,27 @@ wlmaker_clip_grid_snap_t wlmaker_clip_grid_snap(
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmaker_clip_grid_column_end(
+    const wlmaker_clip_grid_t *grid_ptr,
+    wlmaker_clip_cell_t *cell_ptr,
+    size_t own)
+{
+    if (0 != cell_ptr->lane || 0 >= cell_ptr->slot ||
+        !wlmaker_clip_grid_contains(grid_ptr, cell_ptr)) return false;
+    // The last icon of the column; the Clip's own tile is slot 0.
+    int last = 0;
+    for (size_t i = 0; i < grid_ptr->n; ++i) {
+        if (i == own || 0 != grid_ptr->cells_ptr[i].lane) continue;
+        last = BS_MAX(last, grid_ptr->cells_ptr[i].slot);
+    }
+    if (cell_ptr->slot <= last) return false;
+    wlmaker_clip_cell_t c = { .lane = 0, .slot = last + 1 };
+    if (!wlmaker_clip_grid_contains(grid_ptr, &c)) return false;
+    *cell_ptr = c;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 bool wlmaker_clip_grid_free_cell(
     const wlmaker_clip_grid_t *grid_ptr,
     wlmaker_clip_cell_t *cell_ptr)
@@ -410,6 +431,7 @@ static void test_geometry(bs_test_t *test_ptr);
 static void test_snap(bs_test_t *test_ptr);
 static void test_resolve(bs_test_t *test_ptr);
 static void test_free_cell(bs_test_t *test_ptr);
+static void test_column_end(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t _wlmaker_clip_grid_test_cases[] = {
@@ -418,8 +440,37 @@ static const bs_test_case_t _wlmaker_clip_grid_test_cases[] = {
     { true, "snap", test_snap },
     { true, "resolve", test_resolve },
     { true, "free_cell", test_free_cell },
+    { true, "column_end", test_column_end },
     BS_TEST_CASE_SENTINEL()
 };
+
+/* ------------------------------------------------------------------------- */
+/** A drop down the Clip's column, past its icons, goes to its end. */
+void test_column_end(bs_test_t *test_ptr)
+{
+    // The Clip, launchers at (0,1) and (0,2), a dock-app beside at (1,0).
+    wlmaker_clip_cell_t cells[] = { { 0, 1 }, { 0, 2 }, { 1, 0 } };
+    wlmaker_clip_grid_t g = { .n = 3, .cells_ptr = cells,
+                              .lanes = 4, .slots = 10 };
+    wlmaker_clip_cell_t c = { 0, 8 };
+    BS_TEST_VERIFY_EQ(test_ptr, WLMAKER_CLIP_GRID_OUTSIDE,
+                      wlmaker_clip_grid_snap(&g, &c, SIZE_MAX));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_clip_grid_column_end(&g, &c, SIZE_MAX));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, c.lane);
+    BS_TEST_VERIFY_EQ(test_ptr, 3, c.slot);
+    // The icon moved: Its own cell does not count.
+    c = (wlmaker_clip_cell_t){ 0, 8 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_clip_grid_column_end(&g, &c, 1));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, c.slot);
+    // Not in the column, or off the output: Not taken.
+    c = (wlmaker_clip_cell_t){ 2, 8 };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_clip_grid_column_end(&g, &c, SIZE_MAX));
+    c = (wlmaker_clip_cell_t){ 0, 12 };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_clip_grid_column_end(&g, &c, SIZE_MAX));
+    // Between icons of the column: The grid's own rules.
+    c = (wlmaker_clip_cell_t){ 0, 1 };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_clip_grid_column_end(&g, &c, SIZE_MAX));
+}
 
 const bs_test_set_t wlmaker_clip_grid_test_set = BS_TEST_SET(
     true, "clip_grid", _wlmaker_clip_grid_test_cases);

@@ -177,6 +177,22 @@ wlmaker_clip_grid_snap_t wlmaker_clip_grid_snap(
     size_t own);
 
 /**
+ * A drop in the Clip's own column (lane 0), past its last icon there and
+ * without a neighbour: The cell right after that icon, as the column took it
+ * before the grid. Window Maker would leave the dock-app floating there;
+ * wlmaker has no floating dock-apps, and a drop off the docks removes it.
+ *
+ * @param grid_ptr
+ * @param cell_ptr            The cell of the drop; set to the column's end.
+ * @param own                 The icon being moved (SIZE_MAX: none).
+ * @return true if `*cell_ptr` was such a drop, and is set.
+ */
+bool wlmaker_clip_grid_column_end(
+    const wlmaker_clip_grid_t *grid_ptr,
+    wlmaker_clip_cell_t *cell_ptr,
+    size_t own);
+
+/**
  * Finds a free cell for an icon newly attached to the Clip, without one: The
  * first free slot of the Clip's column, from the Clip on (the column is the
  * room kept off the windows), then the next lanes.
