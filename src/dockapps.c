@@ -66,6 +66,15 @@ struct _wlmaker_dockapps_t {
      * column), or @ref WLMAKER_DOCKAPPS_AFTER_ALL.
      */
     size_t                    *after_ptr;
+    /**
+     * Cell of each dock-app on the Clip's grid, by name: Strings "lane,slot".
+     * Only for the placement whose cells are stored (the Clip's).
+     */
+    bspl_dict_t               *cells_dict_ptr;
+    /** Where the tiles go, instead of @ref wlmaker_dockapps_t::dock_ptr. */
+    wlmaker_dockapps_host_t   host;
+    /** Whether @ref wlmaker_dockapps_t::host is set. */
+    bool                      has_host;
     /** Called when the placement changed. May be NULL. */
     void                      (*changed)(void *ud_ptr);
     /** Argument to @ref wlmaker_dockapps_t::changed. */
@@ -97,7 +106,30 @@ static size_t _wlmaker_dockapps_after_of(
     wlmaker_dockapps_t *dockapps_ptr,
     const char *name_ptr);
 static void _wlmaker_dockapps_changed(wlmaker_dockapps_t *dockapps_ptr);
+static void _wlmaker_dockapps_attach_tile(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t position);
+static void _wlmaker_dockapps_detach_tile(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr);
+static bool _wlmaker_dockapps_store_cells(wlmaker_dockapps_t *dockapps_ptr);
 static void _wlmaker_dockapps_store(wlmaker_dockapps_t *dockapps_ptr);
+
+/** Arguments for @ref _wlmaker_dockapps_cells_copy_entry. */
+typedef struct {
+    /** Dict to copy into. */
+    bspl_dict_t               *dest_dict_ptr;
+    /** Cells being set: Their old values are not copied. */
+    const wlmaker_dockapps_cell_update_t *updates_ptr;
+    /** Number of updates. */
+    size_t                    n;
+} _wlmaker_dockapps_cells_copy_arg_t;
+
+static bool _wlmaker_dockapps_cells_copy_entry(
+    const char *key_ptr,
+    bspl_object_t *object_ptr,
+    void *userdata_ptr);
 
 /** Key of the array holding the order, in the state file. */
 static const char *_wlmaker_dockapps_order_key = "Order";
@@ -106,6 +138,11 @@ static const char *_wlmaker_dockapps_order_key = "Order";
  * of launchers before each dock-app (by name).
  */
 static const char *_wlmaker_dockapps_after_key = "AfterLaunchers";
+/**
+ * Key of the dict holding, for each placement's key, a dict of the cell of
+ * each dock-app on the Clip's grid (by name).
+ */
+static const char *_wlmaker_dockapps_cells_key = "Cells";
 /** Key of the array of dock-apps removed by the user. */
 static const char *_wlmaker_dockapps_removed_key = "Removed";
 
@@ -159,6 +196,13 @@ wlmaker_dockapps_t *wlmaker_dockapps_create_with_key(
                     _wlmaker_dockapps_load_after(
                         dockapps_ptr, bspl_dict_from_object(o));
                 }
+                bspl_dict_t *c = bspl_dict_get_dict(
+                    bspl_dict_get_dict(bspl_dict_from_object(o),
+                                       _wlmaker_dockapps_cells_key),
+                    dockapps_ptr->order_key_ptr);
+                if (NULL != c) {
+                    dockapps_ptr->cells_dict_ptr = bspl_dict_ref(c);
+                }
             } else {
                 bs_log(BS_INFO, "No '%s' array in dock-apps state \"%s\"",
                        dockapps_ptr->order_key_ptr, state_fname_ptr);
@@ -187,6 +231,10 @@ void wlmaker_dockapps_destroy(wlmaker_dockapps_t *dockapps_ptr)
         free(dockapp_ptr);
     }
     _wlmaker_dockapps_clear_names(dockapps_ptr);
+    if (NULL != dockapps_ptr->cells_dict_ptr) {
+        bspl_dict_unref(dockapps_ptr->cells_dict_ptr);
+        dockapps_ptr->cells_dict_ptr = NULL;
+    }
     if (NULL != dockapps_ptr->state_fname_ptr) {
         free(dockapps_ptr->state_fname_ptr);
         dockapps_ptr->state_fname_ptr = NULL;
@@ -236,11 +284,7 @@ bool wlmaker_dockapps_add(
             &dockapps_ptr->placed, dlnode_ptr, &dockapp_ptr->dlnode);
     }
 
-    // The dock's box sets the position along it only: Across, the tile
-    // would keep its position from another dock (eg. a vertical one).
-    wlmtk_element_set_position(wlmtk_tile_element(tile_ptr), 0, 0);
-    wlmtk_dock_add_tile(dockapps_ptr->dock_ptr, tile_ptr);
-    wlmtk_dock_move_tile(dockapps_ptr->dock_ptr, tile_ptr, base + index);
+    _wlmaker_dockapps_attach_tile(dockapps_ptr, tile_ptr, base + index);
     _wlmaker_dockapps_changed(dockapps_ptr);
     return true;
 }
@@ -254,7 +298,7 @@ void wlmaker_dockapps_remove(
         dockapps_ptr, tile_ptr, NULL);
     if (NULL == dockapp_ptr) return;
 
-    wlmtk_dock_remove_tile(dockapps_ptr->dock_ptr, tile_ptr);
+    _wlmaker_dockapps_detach_tile(dockapps_ptr, tile_ptr);
     bs_dllist_remove(&dockapps_ptr->placed, &dockapp_ptr->dlnode);
     if (NULL != dockapp_ptr->name_ptr) free(dockapp_ptr->name_ptr);
     free(dockapp_ptr);
@@ -288,8 +332,11 @@ void wlmaker_dockapps_move(
             &dockapps_ptr->placed, dlnode_ptr, &dockapp_ptr->dlnode);
     }
 
-    size_t base = wlmtk_dock_tiles(dockapps_ptr->dock_ptr) - n;
-    wlmtk_dock_move_tile(dockapps_ptr->dock_ptr, tile_ptr, base + new_index);
+    if (!dockapps_ptr->has_host) {
+        size_t base = wlmtk_dock_tiles(dockapps_ptr->dock_ptr) - n;
+        wlmtk_dock_move_tile(dockapps_ptr->dock_ptr, tile_ptr,
+                             base + new_index);
+    }
 
     _wlmaker_dockapps_update_names(dockapps_ptr);
     // Without any named dock-app, there is no order worth storing.
@@ -447,11 +494,7 @@ bool wlmaker_dockapps_insert(
         bs_dllist_insert_node_before(
             &dockapps_ptr->placed, dlnode_ptr, &dockapp_ptr->dlnode);
     }
-    // The dock's box sets the position along it only: Across, the tile
-    // would keep its position from another dock (eg. a vertical one).
-    wlmtk_element_set_position(wlmtk_tile_element(tile_ptr), 0, 0);
-    wlmtk_dock_add_tile(dockapps_ptr->dock_ptr, tile_ptr);
-    wlmtk_dock_move_tile(dockapps_ptr->dock_ptr, tile_ptr, base + index);
+    _wlmaker_dockapps_attach_tile(dockapps_ptr, tile_ptr, base + index);
 
     _wlmaker_dockapps_update_names(dockapps_ptr);
     if (NULL != dockapps_ptr->state_fname_ptr && NULL != name_ptr &&
@@ -489,6 +532,12 @@ void wlmaker_dockapps_detach(
         dockapps_ptr->names_ptr[j++] = dockapps_ptr->names_ptr[i];
     }
     dockapps_ptr->names_len = j;
+    // And its cell: Attached again, it gets a new one.
+    if (NULL != dockapps_ptr->cells_dict_ptr &&
+        NULL != bspl_dict_get(dockapps_ptr->cells_dict_ptr, name_ptr)) {
+        wlmaker_dockapps_cell_update_t u = { .name_ptr = name_ptr };
+        wlmaker_dockapps_set_cells(dockapps_ptr, &u, 1);
+    }
     free(name_ptr);
     if (NULL != dockapps_ptr->state_fname_ptr &&
         !_wlmaker_dockapps_save(dockapps_ptr)) {
@@ -506,6 +555,86 @@ void wlmaker_dockapps_move_to(
     int current = wlmaker_dockapps_index(dockapps_ptr, tile_ptr);
     if (0 > current) return;
     wlmaker_dockapps_move(dockapps_ptr, tile_ptr, (int)index - current);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_dockapps_set_host(
+    wlmaker_dockapps_t *dockapps_ptr,
+    const wlmaker_dockapps_host_t *host_ptr)
+{
+    dockapps_ptr->has_host = NULL != host_ptr;
+    if (NULL != host_ptr) dockapps_ptr->host = *host_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dockapps_cell(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    wlmaker_clip_cell_t *cell_ptr)
+{
+    const char *name_ptr = wlmaker_dockapps_name(dockapps_ptr, tile_ptr);
+    if (NULL == name_ptr || NULL == dockapps_ptr->cells_dict_ptr) return false;
+    return wlmaker_clip_cell_parse(
+        bspl_dict_get_string_value(dockapps_ptr->cells_dict_ptr, name_ptr),
+        cell_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dockapps_set_cells(
+    wlmaker_dockapps_t *dockapps_ptr,
+    const wlmaker_dockapps_cell_update_t *updates_ptr,
+    size_t n)
+{
+    bspl_dict_t *dict_ptr = bspl_dict_create();
+    if (NULL == dict_ptr) return false;
+    bool rv = true, changed = false;
+    // Keep the others' cells (also of those not running now).
+    if (NULL != dockapps_ptr->cells_dict_ptr) {
+        _wlmaker_dockapps_cells_copy_arg_t arg = {
+            .dest_dict_ptr = dict_ptr, .updates_ptr = updates_ptr, .n = n };
+        rv = bspl_dict_foreach(dockapps_ptr->cells_dict_ptr,
+                               _wlmaker_dockapps_cells_copy_entry, &arg);
+    }
+    for (size_t i = 0; rv && i < n; ++i) {
+        const wlmaker_dockapps_cell_update_t *u_ptr = &updates_ptr[i];
+        if (NULL == u_ptr->name_ptr) continue;
+        const char *old_ptr = NULL == dockapps_ptr->cells_dict_ptr ? NULL :
+            bspl_dict_get_string_value(dockapps_ptr->cells_dict_ptr,
+                                       u_ptr->name_ptr);
+        if (!u_ptr->has_cell) {
+            changed |= NULL != old_ptr;
+            continue;
+        }
+        char buf[32];
+        wlmaker_clip_cell_format(&u_ptr->cell, buf, sizeof(buf));
+        changed |= NULL == old_ptr || 0 != strcmp(old_ptr, buf);
+        bspl_string_t *s = bspl_string_create(buf);
+        // A name given twice: The first counts.
+        rv = NULL != s &&
+            (NULL != bspl_dict_get(dict_ptr, u_ptr->name_ptr) ||
+             bspl_dict_add(dict_ptr, u_ptr->name_ptr,
+                           bspl_object_from_string(s)));
+        if (NULL != s) bspl_string_unref(s);
+    }
+    if (!rv) {
+        bspl_dict_unref(dict_ptr);
+        return false;
+    }
+    if (!changed) {
+        bspl_dict_unref(dict_ptr);
+        return true;
+    }
+    if (NULL != dockapps_ptr->cells_dict_ptr) {
+        bspl_dict_unref(dockapps_ptr->cells_dict_ptr);
+    }
+    dockapps_ptr->cells_dict_ptr = dict_ptr;
+    if (NULL != dockapps_ptr->state_fname_ptr &&
+        !_wlmaker_dockapps_store_cells(dockapps_ptr)) {
+        bs_log(BS_WARNING, "Failed to store the dock-apps' cells in \"%s\"",
+               dockapps_ptr->state_fname_ptr);
+        return false;
+    }
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1014,12 +1143,92 @@ done:
     return rv;
 }
 
+/* ------------------------------------------------------------------------- */
+/** Copies a cell entry, unless it is one being set. */
+bool _wlmaker_dockapps_cells_copy_entry(
+    const char *key_ptr,
+    bspl_object_t *object_ptr,
+    void *userdata_ptr)
+{
+    _wlmaker_dockapps_cells_copy_arg_t *arg_ptr = userdata_ptr;
+    for (size_t i = 0; i < arg_ptr->n; ++i) {
+        if (NULL != arg_ptr->updates_ptr[i].name_ptr &&
+            0 == strcmp(arg_ptr->updates_ptr[i].name_ptr, key_ptr)) return true;
+    }
+    return bspl_dict_add(arg_ptr->dest_dict_ptr, key_ptr, object_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Stores the cells as `Cells = { <key> = { <name> = "lane,slot"; }; }` in
+ * the state file, keeping the other placements' cells.
+ */
+bool _wlmaker_dockapps_store_cells(wlmaker_dockapps_t *dockapps_ptr)
+{
+    bspl_dict_t *file_ptr = _wlmaker_dockapps_load_file(
+        dockapps_ptr->state_fname_ptr);
+    bspl_dict_t *all_ptr = bspl_dict_create();
+    bool rv = NULL != all_ptr;
+    _wlmaker_dockapps_copy_arg_t arg = {
+        .dest_dict_ptr = all_ptr,
+        .skip_key_ptr = dockapps_ptr->order_key_ptr };
+    bspl_dict_t *old_all_ptr = bspl_dict_get_dict(
+        file_ptr, _wlmaker_dockapps_cells_key);
+    if (rv && NULL != old_all_ptr) {
+        rv = bspl_dict_foreach(old_all_ptr, _wlmaker_dockapps_copy_entry, &arg);
+    }
+    rv = rv && (NULL == dockapps_ptr->cells_dict_ptr ||
+                bspl_dict_add(all_ptr, dockapps_ptr->order_key_ptr,
+                              bspl_object_from_dict(
+                                  dockapps_ptr->cells_dict_ptr)));
+    rv = rv && _wlmaker_dockapps_store_key(
+        dockapps_ptr->state_fname_ptr, _wlmaker_dockapps_cells_key,
+        bspl_object_from_dict(all_ptr));
+    if (NULL != all_ptr) bspl_dict_unref(all_ptr);
+    if (NULL != file_ptr) bspl_dict_unref(file_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Puts the tile into the dock at `position`, or hands it to the host. The
+ * dock's box sets the position along it only: Across, the tile would keep
+ * its position from another dock (eg. a vertical one).
+ */
+void _wlmaker_dockapps_attach_tile(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t position)
+{
+    wlmtk_element_set_position(wlmtk_tile_element(tile_ptr), 0, 0);
+    if (dockapps_ptr->has_host) {
+        dockapps_ptr->host.attach(dockapps_ptr->host.ud_ptr, tile_ptr);
+        return;
+    }
+    wlmtk_dock_add_tile(dockapps_ptr->dock_ptr, tile_ptr);
+    wlmtk_dock_move_tile(dockapps_ptr->dock_ptr, tile_ptr, position);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Takes the tile out of the dock, or has the host do it. */
+void _wlmaker_dockapps_detach_tile(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr)
+{
+    if (dockapps_ptr->has_host) {
+        dockapps_ptr->host.detach(dockapps_ptr->host.ud_ptr, tile_ptr);
+        return;
+    }
+    wlmtk_dock_remove_tile(dockapps_ptr->dock_ptr, tile_ptr);
+}
+
 /* == Unit tests =========================================================== */
 
 static void test_order(bs_test_t *test_ptr);
 static void test_drag_delta(bs_test_t *test_ptr);
 static void test_two_docks(bs_test_t *test_ptr);
 static void test_after_launchers(bs_test_t *test_ptr);
+static void test_cells(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t _wlmaker_dockapps_test_cases[] = {
@@ -1027,6 +1236,7 @@ static const bs_test_case_t _wlmaker_dockapps_test_cases[] = {
     { true, "drag_delta", test_drag_delta },
     { true, "two_docks", test_two_docks },
     { true, "after_launchers", test_after_launchers },
+    { true, "cells", test_cells },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -1333,6 +1543,100 @@ void test_after_launchers(bs_test_t *test_ptr)
     }
     for (int i = 0; i < 3; ++i) wlmtk_tile_fini(&t[i]);
     wlmtk_dock_destroy(dock_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Host callbacks for the test: Count, and keep the tiles out of docks. */
+static void _test_host_attach(void *ud_ptr, __UNUSED__ wlmtk_tile_t *t_ptr)
+{
+    ++((int*)ud_ptr)[0];
+}
+/** See @ref _test_host_attach. */
+static void _test_host_detach(void *ud_ptr, __UNUSED__ wlmtk_tile_t *t_ptr)
+{
+    ++((int*)ud_ptr)[1];
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Cells of the Clip's grid: Stored by name, read back, kept for dock-apps
+ * not running, forgotten when detached. With a host for the tiles.
+ */
+void test_cells(bs_test_t *test_ptr)
+{
+    wlmtk_dock_positioning_t pos = {
+        .edge = WLR_EDGE_LEFT, .anchor = WLR_EDGE_TOP };
+    struct wlmtk_dock_style style = {};
+    wlmtk_dock_t *dock_ptr = wlmtk_dock_create(&pos, &style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, dock_ptr);
+    wlmtk_tile_t t[2];
+    for (int i = 0; i < 2; ++i) {
+        BS_TEST_VERIFY_TRUE_OR_RETURN(
+            test_ptr, wlmtk_tile_init(&t[i], &_test_tile_style));
+    }
+    const char *fname_ptr = bs_test_temp_path(test_ptr, "Dockapps4.plist");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, fname_ptr);
+    unlink(fname_ptr);
+
+    wlmaker_dockapps_t *d = wlmaker_dockapps_create(dock_ptr, NULL, fname_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    int calls[2] = {};
+    wlmaker_dockapps_host_t host = {
+        _test_host_attach, _test_host_detach, calls };
+    wlmaker_dockapps_set_host(d, &host);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_add(d, &t[0], "eyes"));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_add(d, &t[1], "cube"));
+    // The host holds the tiles, not the dock.
+    BS_TEST_VERIFY_EQ(test_ptr, 2, calls[0]);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, wlmtk_dock_tiles(dock_ptr));
+
+    wlmaker_clip_cell_t c;
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_dockapps_cell(d, &t[0], &c));
+    wlmaker_dockapps_cell_update_t u[3] = {
+        { .name_ptr = "eyes", .has_cell = true, .cell = { 1, 0 } },
+        { .name_ptr = "cube", .has_cell = true, .cell = { 2, 0 } },
+        { .name_ptr = "gone", .has_cell = true, .cell = { 0, 4 } } };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_set_cells(d, u, 3));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_cell(d, &t[1], &c));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, c.lane);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, c.slot);
+
+    // Removed (the dock-app exited): Its cell stays. Detached: Forgotten.
+    wlmaker_dockapps_remove(d, &t[0]);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, calls[1]);
+    wlmaker_dockapps_detach(d, &t[1]);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, calls[1]);
+    wlmaker_dockapps_destroy(d);
+
+    // Read back: "eyes" (not running) and "gone" kept, "cube" forgotten.
+    d = wlmaker_dockapps_create(dock_ptr, NULL, fname_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    wlmaker_dockapps_set_host(d, &host);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_add(d, &t[0], "eyes"));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_add(d, &t[1], "cube"));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_dockapps_cell(d, &t[0], &c));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, c.lane);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_dockapps_cell(d, &t[1], &c));
+    bspl_object_t *o = bspl_create_object_from_plist_file(fname_ptr);
+    bspl_dict_t *cells_ptr = bspl_dict_get_dict(
+        bspl_dict_get_dict(bspl_dict_from_object(o), "Cells"), "Order");
+    BS_TEST_VERIFY_STREQ(test_ptr, "0,4",
+                         bspl_dict_get_string_value(cells_ptr, "gone"));
+    BS_TEST_VERIFY_EQ(test_ptr, NULL,
+                      bspl_dict_get_string_value(cells_ptr, "cube"));
+    if (NULL != o) bspl_object_unref(o);
+
+    wlmaker_dockapps_remove(d, &t[0]);
+    wlmaker_dockapps_remove(d, &t[1]);
+    wlmaker_dockapps_destroy(d);
+    for (int i = 0; i < 2; ++i) wlmtk_tile_fini(&t[i]);
+    wlmtk_dock_destroy(dock_ptr);
+    unlink(fname_ptr);
+    char *old_ptr = bs_strdupf("%s.old", fname_ptr);
+    if (NULL != old_ptr) {
+        unlink(old_ptr);
+        free(old_ptr);
+    }
 }
 
 /* == End of dockapps.c ==================================================== */

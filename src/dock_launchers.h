@@ -27,6 +27,7 @@
 #include <libbase/plist.h>
 
 #include "dock_position.h"
+#include "clip_grid.h"
 #include "server.h"
 #include "toolkit/toolkit.h"
 #include "util/files.h"
@@ -93,6 +94,43 @@ bool wlmaker_dock_launchers_move(
     size_t from_index,
     int to_column,
     size_t to_index);
+
+/**
+ * As @ref wlmaker_dock_launchers_move, putting the launcher at `cell_ptr` of
+ * the Clip's grid when moved to the Clip (NULL: it gets a free cell). Moved
+ * elsewhere, it loses its cell.
+ */
+bool wlmaker_dock_launchers_move_cell(
+    wlmaker_server_t *server_ptr,
+    int from_column,
+    size_t from_index,
+    int to_column,
+    size_t to_index,
+    const wlmaker_clip_cell_t *cell_ptr);
+
+/** @return Whether the launcher's entry has a cell (key `Cell`), and it. */
+bool wlmaker_dock_launcher_cell(
+    bspl_dict_t *dict_ptr,
+    wlmaker_clip_cell_t *cell_ptr);
+
+/**
+ * @return A copy of the launcher's entry with `cell_ptr` as its `Cell`, or
+ *     without one for NULL. To be unref-ed. NULL on error.
+ */
+bspl_dict_t *wlmaker_dock_launcher_with_cell(
+    bspl_dict_t *dict_ptr,
+    const wlmaker_clip_cell_t *cell_ptr);
+
+/**
+ * Sets the cells of the Clip's launchers, as shown: `cells_ptr[i]` for the
+ * `i`-th shown, if `set_ptr[i]` (or `set_ptr` is NULL). Others, and those
+ * not shown, keep theirs. Stores only on a change.
+ */
+bool wlmaker_dock_launchers_set_cells(
+    wlmaker_server_t *server_ptr,
+    const wlmaker_clip_cell_t *cells_ptr,
+    const bool *set_ptr,
+    size_t n);
 
 /**
  * Removes launcher `index` of column `column` from the state; or, with

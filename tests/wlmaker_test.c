@@ -27,6 +27,7 @@
 #include "action.h"
 #include "action_item.h"
 #include "clip.h"
+#include "clip_grid.h"
 #include "config.h"
 #include "context_menu.h"
 #include "corner.h"
@@ -84,6 +85,7 @@ int main(int argc, const char **argv)
         &wlmaker_clip_test_set,
         &wlmaker_app_icon_test_set,
         &wlmaker_appicons_test_set,
+        &wlmaker_clip_grid_test_set,
         &wlmaker_config_test_set,
         &wlmaker_context_menu_test_set,
         &wlmaker_corner_test_set,

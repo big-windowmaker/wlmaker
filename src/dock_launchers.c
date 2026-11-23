@@ -327,17 +327,114 @@ bool wlmaker_dock_launchers_move(
     int to_column,
     size_t to_index)
 {
+    return wlmaker_dock_launchers_move_cell(
+        server_ptr, from_column, from_index, to_column, to_index, NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launcher_cell(
+    bspl_dict_t *dict_ptr,
+    wlmaker_clip_cell_t *cell_ptr)
+{
+    return wlmaker_clip_cell_parse(
+        wlmaker_dock_launcher_value(dict_ptr, "Cell"), cell_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bspl_dict_t *wlmaker_dock_launcher_with_cell(
+    bspl_dict_t *dict_ptr,
+    const wlmaker_clip_cell_t *cell_ptr)
+{
+    if (NULL == cell_ptr) {
+        return wlmaker_drawer_dict_with(dict_ptr, "Cell", NULL);
+    }
+    char buf[32];
+    wlmaker_clip_cell_format(cell_ptr, buf, sizeof(buf));
+    bspl_string_t *s_ptr = bspl_string_create(buf);
+    if (NULL == s_ptr) return NULL;
+    bspl_dict_t *d = wlmaker_drawer_dict_with(
+        dict_ptr, "Cell", bspl_object_from_string(s_ptr));
+    bspl_string_unref(s_ptr);
+    return d;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launchers_set_cells(
+    wlmaker_server_t *server_ptr,
+    const wlmaker_clip_cell_t *cells_ptr,
+    const bool *set_ptr,
+    size_t n)
+{
+    bspl_array_t *a = _wlmaker_dock_launchers_load_stored(
+        server_ptr, WLMAKER_COLUMN_CLIP);
+    if (NULL == a) return false;
+    bspl_array_t *new_ptr = bspl_array_create();
+    bool rv = NULL != new_ptr, changed = false;
+    size_t shown = 0;
+    for (size_t i = 0; rv && i < bspl_array_size(a); ++i) {
+        bspl_object_t *o = bspl_array_at(a, i);
+        // Those not shown (eg. an icon missing for now) keep their cell.
+        if (!_wlmaker_dock_launchers_is_shown(server_ptr, o) || shown >= n) {
+            rv = bspl_array_push_back(new_ptr, o);
+            continue;
+        }
+        bool set = NULL == set_ptr || set_ptr[shown];
+        const wlmaker_clip_cell_t *c_ptr = &cells_ptr[shown++];
+        if (!set) {
+            rv = bspl_array_push_back(new_ptr, o);
+            continue;
+        }
+        wlmaker_clip_cell_t old;
+        bspl_dict_t *d = bspl_dict_from_object(o);
+        if (wlmaker_dock_launcher_cell(d, &old) &&
+            old.lane == c_ptr->lane && old.slot == c_ptr->slot) {
+            rv = bspl_array_push_back(new_ptr, o);
+            continue;
+        }
+        bspl_dict_t *with_ptr = wlmaker_dock_launcher_with_cell(d, c_ptr);
+        rv = NULL != with_ptr &&
+            bspl_array_push_back(new_ptr, bspl_object_from_dict(with_ptr));
+        if (NULL != with_ptr) bspl_dict_unref(with_ptr);
+        changed = true;
+    }
+    if (rv && changed) {
+        rv = wlmaker_dock_launchers_store(server_ptr, "Clip", new_ptr);
+    }
+    if (NULL != new_ptr) bspl_array_unref(new_ptr);
+    bspl_array_unref(a);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_dock_launchers_move_cell(
+    wlmaker_server_t *server_ptr,
+    int from_column,
+    size_t from_index,
+    int to_column,
+    size_t to_index,
+    const wlmaker_clip_cell_t *cell_ptr)
+{
     bspl_array_t *from_ptr = _wlmaker_dock_launchers_load_stored(
         server_ptr, from_column);
     bspl_array_t *to_ptr = from_column == to_column ? NULL :
         _wlmaker_dock_launchers_load_stored(server_ptr, to_column);
     bspl_array_t *new_from = NULL, *new_to = NULL, *dock_ptr = NULL;
+    bspl_dict_t *moved_dict_ptr = NULL;
     size_t from_stored = _wlmaker_dock_launchers_stored_index(
         server_ptr, from_ptr, from_index);
     bool rv = NULL != from_ptr && from_stored < bspl_array_size(from_ptr) &&
         (from_column == to_column || NULL != to_ptr);
     if (!rv) goto done;
     bspl_object_t *moved_ptr = bspl_array_at(from_ptr, from_stored);
+    // Its cell on the Clip's grid: The new one there, none elsewhere.
+    moved_dict_ptr = wlmaker_dock_launcher_with_cell(
+        bspl_dict_from_object(moved_ptr),
+        WLMAKER_COLUMN_CLIP == to_column ? cell_ptr : NULL);
+    if (NULL == moved_dict_ptr) {
+        rv = false;
+        goto done;
+    }
+    moved_ptr = bspl_object_from_dict(moved_dict_ptr);
 
     bspl_array_t *without_ptr = _wlmaker_dock_launchers_edited(
         from_ptr, from_stored, NULL);
@@ -387,6 +484,7 @@ bool wlmaker_dock_launchers_move(
     }
 
 done:
+    if (NULL != moved_dict_ptr) bspl_dict_unref(moved_dict_ptr);
     if (NULL != dock_ptr) bspl_array_unref(dock_ptr);
     if (NULL != new_to) bspl_array_unref(new_to);
     if (NULL != new_from) bspl_array_unref(new_from);

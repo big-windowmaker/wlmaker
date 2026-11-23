@@ -133,6 +133,13 @@ typedef struct {
     int                       x;
     /** Position of the slot, in layout coordinates. */
     int                       y;
+    /**
+     * Whether it is a cell of the Clip's grid (`cell`): Not a slot of a
+     * column's order.
+     */
+    bool                      grid;
+    /** The cell, see @ref wlmaker_tile_drag_target_t::grid. */
+    wlmaker_clip_cell_t       cell;
 } wlmaker_tile_drag_target_t;
 
 /**

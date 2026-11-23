@@ -223,6 +223,11 @@ struct _wlmtk_element_t {
 
     /** Whether the element is visible (drawn, when part of a scene graph). */
     bool                      visible;
+    /**
+     * Whether the element only holds a place in a @ref wlmtk_box_t, eg. an
+     * empty tile of a dock: No margin is drawn between two of these.
+     */
+    bool                      placeholder;
 
     /** Whether the pointer is currently within the element's bounds. */
     bool                      pointer_inside;

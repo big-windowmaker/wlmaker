@@ -33,6 +33,7 @@
 /** Forward definition: Clip handle. */
 typedef struct _wlmaker_clip_t wlmaker_clip_t;
 
+#include "clip_grid.h"
 #include "config.h"
 #include "dock_position.h"
 #include "dockapps.h"
@@ -90,6 +91,12 @@ typedef struct _wlmaker_dock_column_t {
      * first, then its dock-apps.
      */
     bool                      mixed;
+    /**
+     * Whether its icons are on a grid, each in a cell of its own (see
+     * @ref wlmaker_clip_grid): The Clip, as Window Maker's. Then the order
+     * and @ref wlmaker_dock_column_t::dockapp_positions don't place them.
+     */
+    bool                      grid;
     /** The output. */
     struct wlr_box            output;
 } wlmaker_dock_column_t;
@@ -380,6 +387,43 @@ void wlmaker_clip_set_dockapp_after(
     wlmaker_server_t *server_ptr,
     wlmtk_tile_t *tile_ptr,
     size_t launchers);
+
+/**
+ * The Clip's grid, as last arranged: The cells of its launchers (the first
+ * `*launchers_ptr` icons, as `wlmdock --clip` shows them) and of its
+ * dock-apps (in their placement's order).
+ * @return NULL without a Clip.
+ */
+const wlmaker_clip_grid_t *wlmaker_clip_grid(
+    wlmaker_server_t *server_ptr,
+    size_t *launchers_ptr);
+
+/**
+ * @return The icon of the Clip's grid whose tile is at `x`, `y` (layout
+ *     coordinates), with the position on the tile; SIZE_MAX if none.
+ */
+size_t wlmaker_clip_grid_icon_at_point(
+    wlmaker_server_t *server_ptr,
+    double x,
+    double y,
+    int *tile_x_ptr,
+    int *tile_y_ptr);
+
+/**
+ * Stores the cells of the Clip's icons that have none stored yet (a state
+ * from before the grid, or a new icon): Before icons are moved, so that the
+ * others stay where they are, as on Window Maker.
+ */
+void wlmaker_clip_freeze_grid(wlmaker_server_t *server_ptr);
+
+/**
+ * Attaches the dock-app of `tile_ptr` (on the Clip, the Dock or a drawer)
+ * to the Clip, at `cell_ptr`. Stores it.
+ */
+void wlmaker_clip_place_dockapp(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    const wlmaker_clip_cell_t *cell_ptr);
 
 /** Unit test set. */
 extern const bs_test_set_t wlmaker_clip_test_set;

@@ -59,6 +59,7 @@
 #undef WLR_USE_UNSTABLE
 
 #include "config.h"
+#include "clip_grid.h"
 #include "dock_position.h"
 
 #include "toolkit/toolkit.h"
@@ -165,6 +166,19 @@ typedef struct {
     size_t                    *gaps_ptr;
     /** Number of elements in @ref wlmdock_t::gaps_ptr. */
     size_t                    gaps_len;
+    /**
+     * The Clip's launchers: Their cells on the Clip's grid, as the
+     * compositor places them (see @ref wlmaker_dock_layout_fname). NULL
+     * if none are published (the launchers are then a column).
+     */
+    wlmdock_tilebox_cell_t    *cells_ptr;
+    /** Number of elements in @ref wlmdock_t::cells_ptr. */
+    size_t                    cells_len;
+    /**
+     * The slot the surface starts at: 1, right after the Clip; 0 with a
+     * launcher beside the Clip.
+     */
+    int                       origin;
 } wlmdock_t;
 
 /** Actions of the launcher's menu. */
@@ -219,6 +233,10 @@ static wlmdock_t *_wlmdock_create(
     wlmaker_config_style_t *style_ptr);
 static void _wlmdock_destroy(wlmdock_t *dock_ptr);
 static void _wlmdock_clear_gap_tiles(wlmdock_t *dock_ptr);
+static wlmdock_tilebox_cell_t *_wlmdock_load_cells(
+    wlmdock_t *dock_ptr,
+    size_t *len_ptr,
+    int *origin_ptr);
 static int handle_client_signal(int fd, uint32_t mask, void *data_ptr);
 /** The program's arguments, for starting over (SIGHUP). */
 static char **_wlmdock_argv;
@@ -580,6 +598,8 @@ wlmdock_t *_wlmdock_create(
 {
     wlmdock_t *dock_ptr = logged_calloc(1, sizeof(wlmdock_t));
     if (NULL == dock_ptr) return NULL;
+    // The Clip's launchers start right after the Clip.
+    dock_ptr->origin = 1;
     dock_ptr->style_ptr = style_ptr;
     dock_ptr->positioning = positioning;
     if (!wlmtk_container_init(&dock_ptr->root_container)) {
@@ -802,6 +822,10 @@ void _wlmdock_destroy(wlmdock_t *dock_ptr)
         dock_ptr->wlr_allocator_ptr = NULL;
     }
     if (NULL != dock_ptr->tilebox_ptr) _wlmdock_clear_gap_tiles(dock_ptr);
+    if (NULL != dock_ptr->cells_ptr) {
+        free(dock_ptr->cells_ptr);
+        dock_ptr->cells_ptr = NULL;
+    }
     if (NULL != dock_ptr->gaps_ptr) {
         free(dock_ptr->gaps_ptr);
         dock_ptr->gaps_ptr = NULL;
@@ -942,9 +966,10 @@ bool _wlmdock_load_positioning(
     positioning_ptr->margin = state.margin;
     positioning_ptr->overlay = dock_ptr->positioning.overlay;
     if (dock_ptr->clip && !state.has_margin) {
-        positioning_ptr->margin =
-            dock_ptr->style_ptr->tile.size +
-            dock_ptr->style_ptr->dock.margin.width;
+        // From the slot the grid's surface starts at: After the Clip.
+        positioning_ptr->margin = dock_ptr->origin *
+            (dock_ptr->style_ptr->tile.size +
+             dock_ptr->style_ptr->dock.margin.width);
     }
     return true;
 }
@@ -968,6 +993,7 @@ void _wlmdock_set_positioning(
     wlmdock_launcher_set_drawer_side(WLR_EDGE_LEFT != positioning_ptr->edge);
 
     dock_ptr->positioning = *positioning_ptr;
+    wlmdock_tilebox_set_edge(dock_ptr->tilebox_ptr, positioning_ptr->edge);
     wlmdock_tilebox_set_reverse(
         dock_ptr->tilebox_ptr,
         positioning_ptr->anchor == WLR_EDGE_BOTTOM ||
@@ -1409,6 +1435,57 @@ static size_t *_wlmdock_load_gaps(wlmdock_t *dock_ptr, size_t *len_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Loads the cells the compositor gives the Clip's launchers on its grid, and
+ * the slot the surface starts at (`Cells`, `Origin` of the "Clip" section).
+ *
+ * @return An array of `*len_ptr` elements, to free(); NULL if none are
+ *     published (the launchers are then a column, as before the grid).
+ */
+static wlmdock_tilebox_cell_t *_wlmdock_load_cells(
+    wlmdock_t *dock_ptr,
+    size_t *len_ptr,
+    int *origin_ptr)
+{
+    *len_ptr = 0;
+    *origin_ptr = 1;
+    char *fname_ptr = wlmaker_dock_layout_fname(getenv("WAYLAND_DISPLAY"));
+    if (NULL == fname_ptr) return NULL;
+    bspl_object_t *o = NULL;
+    if (bs_file_realpath_is(fname_ptr, S_IFREG)) {
+        o = bspl_create_object_from_plist_file(fname_ptr);
+    }
+    free(fname_ptr);
+    bspl_dict_t *section_ptr = bspl_dict_get_dict(
+        bspl_dict_from_object(o), dock_ptr->section_ptr);
+    bspl_array_t *a = bspl_dict_get_array(section_ptr, "Cells");
+    if (NULL == a) {
+        if (NULL != o) bspl_object_unref(o);
+        return NULL;
+    }
+    const char *origin_str_ptr = bspl_dict_get_string_value(
+        section_ptr, "Origin");
+    if (NULL != origin_str_ptr && 0 == strcmp(origin_str_ptr, "0")) {
+        *origin_ptr = 0;
+    }
+    size_t n = bspl_array_size(a);
+    // One more: Never NULL when published, also without launchers.
+    wlmdock_tilebox_cell_t *cells_ptr = logged_calloc(
+        n + 1, sizeof(wlmdock_tilebox_cell_t));
+    for (size_t i = 0; NULL != cells_ptr && i < n; ++i) {
+        wlmaker_clip_cell_t c = { .lane = 0, .slot = *origin_ptr + (int)i };
+        if (!wlmaker_clip_cell_parse(bspl_array_string_value_at(a, i), &c)) {
+            bs_log(BS_WARNING, "wlmdock: Bad cell %zu of the Clip.", i);
+        }
+        cells_ptr[i] = (wlmdock_tilebox_cell_t){ .lane = c.lane,
+                                                 .slot = c.slot };
+    }
+    if (NULL != o) bspl_object_unref(o);
+    if (NULL != cells_ptr) *len_ptr = n;
+    return cells_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 /** Removes the empty tiles left for dock-apps. */
 static void _wlmdock_clear_gap_tiles(wlmdock_t *dock_ptr)
 {
@@ -1461,6 +1538,31 @@ void _wlmdock_set_launchers(
     bspl_array_t *launchers_array_ptr)
 {
     if (NULL == launchers_array_ptr) return;
+    size_t cells_len = 0;
+    int origin = 1;
+    wlmdock_tilebox_cell_t *cells_ptr = dock_ptr->clip ?
+        _wlmdock_load_cells(dock_ptr, &cells_len, &origin) : NULL;
+    bool cells_equal = cells_len == dock_ptr->cells_len &&
+        origin == dock_ptr->origin &&
+        (NULL == cells_ptr) == (NULL == dock_ptr->cells_ptr) &&
+        (0 == cells_len ||
+         0 == memcmp(cells_ptr, dock_ptr->cells_ptr,
+                     cells_len * sizeof(wlmdock_tilebox_cell_t)));
+    if (NULL != dock_ptr->cells_ptr) free(dock_ptr->cells_ptr);
+    dock_ptr->cells_ptr = cells_ptr;
+    dock_ptr->cells_len = cells_len;
+    if (origin != dock_ptr->origin) {
+        // The surface starts at another slot: Its distance from the anchor.
+        dock_ptr->origin = origin;
+        bspl_dict_t *state_dict_ptr = wlmaker_state_load(
+            dock_ptr->files_ptr, dock_ptr->state_fname_ptr);
+        wlmtk_dock_positioning_t positioning;
+        if (NULL != state_dict_ptr &&
+            _wlmdock_load_positioning(dock_ptr, state_dict_ptr, &positioning)) {
+            _wlmdock_set_positioning(dock_ptr, &positioning);
+        }
+        if (NULL != state_dict_ptr) bspl_dict_unref(state_dict_ptr);
+    }
     size_t gaps_len;
     size_t *gaps_ptr = _wlmdock_load_gaps(dock_ptr, &gaps_len);
     bool gaps_equal = gaps_len == dock_ptr->gaps_len &&
@@ -1491,7 +1593,7 @@ void _wlmdock_set_launchers(
         }
         ++launchers;
     }
-    if (equal && gaps_equal &&
+    if (equal && gaps_equal && cells_equal &&
         launchers == bspl_array_size(launchers_array_ptr)) {
         if (NULL != tiles_ptr) free(tiles_ptr);
         return;
@@ -1509,6 +1611,55 @@ void _wlmdock_set_launchers(
     size_t gap_tiles = 0;
     for (size_t i = 0; i < dock_ptr->gaps_len; ++i) {
         gap_tiles += dock_ptr->gaps_ptr[i];
+    }
+    if (NULL != dock_ptr->cells_ptr) {
+        // The Clip's grid: Each launcher in its cell. The dock-apps' cells
+        // and the empty ones stay transparent.
+        size_t n = bspl_array_size(launchers_array_ptr), k = 0;
+        wlmtk_tile_t **tiles_ptr = 0 < n ?
+            logged_calloc(n, sizeof(wlmtk_tile_t*)) : NULL;
+        wlmdock_tilebox_cell_t *c_ptr = 0 < n ?
+            logged_calloc(n, sizeof(wlmdock_tilebox_cell_t)) : NULL;
+        int last = dock_ptr->origin;
+        for (size_t i = 0; i < dock_ptr->cells_len; ++i) {
+            if (0 == dock_ptr->cells_ptr[i].lane) {
+                last = BS_MAX(last, dock_ptr->cells_ptr[i].slot);
+            }
+        }
+        for (size_t i = 0; NULL != tiles_ptr && NULL != c_ptr && i < n; ++i) {
+            bspl_dict_t *dict_ptr = bspl_dict_from_object(
+                bspl_array_at(launchers_array_ptr, i));
+            if (NULL == dict_ptr) continue;
+            wlmdock_launcher_t *launcher_ptr =
+                wlmdock_launcher_create_from_plist(
+                    &dock_ptr->style_ptr->tile, dict_ptr,
+                    dock_ptr->tracker_ptr, dock_ptr->subprocess_monitor_ptr,
+                    dock_ptr->files_ptr);
+            if (NULL == launcher_ptr) {
+                bs_log(BS_WARNING, "wlmdock: Leaving out launcher %zu.", i);
+                continue;
+            }
+            wlmdock_launcher_set_menu_handler(
+                launcher_ptr, _wlmdock_open_menu, dock_ptr);
+            tiles_ptr[k] = wlmdock_launcher_tile(launcher_ptr);
+            // Without a published cell (not expected): After the column.
+            c_ptr[k] = (k < dock_ptr->cells_len) ? dock_ptr->cells_ptr[k] :
+                (wlmdock_tilebox_cell_t){ .lane = 0, .slot = ++last };
+            ++k;
+        }
+        if (!wlmdock_tilebox_set_grid(
+                dock_ptr->tilebox_ptr, tiles_ptr, c_ptr, k, dock_ptr->origin,
+                dock_ptr->positioning.edge, &dock_ptr->style_ptr->tile)) {
+            bs_log(BS_WARNING, "wlmdock: Failed to lay out the Clip's grid.");
+        }
+        if (NULL != c_ptr) free(c_ptr);
+        if (NULL != tiles_ptr) free(tiles_ptr);
+        return;
+    }
+    if (wlmdock_tilebox_is_grid(dock_ptr->tilebox_ptr)) {
+        wlmdock_tilebox_set_grid(dock_ptr->tilebox_ptr, NULL, NULL, 0, 0,
+                                 dock_ptr->positioning.edge,
+                                 &dock_ptr->style_ptr->tile);
     }
     if (!_wlmdock_create_gap_tiles(dock_ptr, gap_tiles)) {
         bs_log(BS_WARNING, "wlmdock: Failed to leave room for dock-apps.");

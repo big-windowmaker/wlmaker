@@ -1001,6 +1001,8 @@ static int _wlmaker_layer_panel_launcher_at(
     wlmaker_dock_column_t column;
     if (!wlmaker_clip_column(layer_panel_ptr->server_ptr,
                              layer_panel_ptr->is_dock, &column)) return index;
+    // On the Clip's grid, the index is the launcher's.
+    if (column.grid) return index < (int)column.launchers ? index : -2;
     size_t i;
     if (wlmaker_dock_column_dockapp_at(&column, index, &i) ||
         i >= column.launchers) return -2;
@@ -1025,6 +1027,20 @@ bool _wlmaker_layer_panel_tile_at(
                              layer_panel_ptr->is_dock, &column)) return false;
     struct wlr_box b = wlmtk_element_get_dimensions_box(
         wlmtk_panel_element(&layer_panel_ptr->super_panel));
+    if (column.grid) {
+        // The Clip's launchers, in their cells of the grid. Elsewhere on the
+        // surface (a dock-app's cell, or none): The pointer goes through.
+        struct wlr_box pb;
+        if (!wlmaker_layer_panel_get_box(layer_panel_ptr, &pb)) return false;
+        int tx = 0, ty = 0;
+        size_t i = wlmaker_clip_grid_icon_at_point(
+            layer_panel_ptr->server_ptr, pb.x + (x - b.x), pb.y + (y - b.y),
+            &tx, &ty);
+        *index_ptr = (SIZE_MAX != i && i < column.launchers) ? (int)i : -3;
+        if (NULL != tile_x_ptr) *tile_x_ptr = tx;
+        if (NULL != tile_y_ptr) *tile_y_ptr = ty;
+        return true;
+    }
     int index = wlmaker_dock_tile_index_at(
         column.place, b.width, b.height, x - b.x, y - b.y, column.pitch);
     if (0 > index) return false;

@@ -21,6 +21,8 @@
 #define __WLMAKER_DOCK_TILEBOX_H__
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <libbase/libbase.h>
 #include <toolkit/toolkit.h>
 
 #ifdef __cplusplus
@@ -122,6 +124,50 @@ size_t wlmdock_tilebox_tiles(wlmdock_tilebox_t *tilebox_ptr,
  */
 struct wlr_box wlmdock_tilebox_tile_box(wlmdock_tilebox_t *tilebox_ptr,
                                         wlmtk_tile_t *tile_ptr);
+
+/** A cell of the grid: Lane from the edge, slot from the anchor. */
+typedef struct {
+    /** Distance from the edge, in tiles. */
+    int                       lane;
+    /** Distance from the anchor, in tiles. */
+    int                       slot;
+} wlmdock_tilebox_cell_t;
+
+/**
+ * Lays the tiles out on a grid, as the Clip's: Each tile in its cell, the
+ * cells without one left empty (transparent). Lanes go away from `edge`,
+ * slots away from the anchor (see @ref wlmdock_tilebox_set_reverse), from
+ * slot `origin` on. Replaces the tiles added before, which must have been
+ * removed. With `n` 0, the tile box is a plain box again.
+ *
+ * @param tilebox_ptr
+ * @param tiles_ptr           The tiles; listed by @ref wlmdock_tilebox_tiles
+ *                            in this order.
+ * @param cells_ptr           Their cells. Two on a cell: The later is left
+ *                            out of the layout.
+ * @param n
+ * @param origin
+ * @param edge
+ * @param tile_style_ptr      Style of the empty cells.
+ * @return true on success.
+ */
+bool wlmdock_tilebox_set_grid(
+    wlmdock_tilebox_t *tilebox_ptr,
+    wlmtk_tile_t **tiles_ptr,
+    const wlmdock_tilebox_cell_t *cells_ptr,
+    size_t n,
+    int origin,
+    uint32_t edge,
+    const struct wlmtk_tile_style *tile_style_ptr);
+
+/** Sets the edge the grid's lanes go away from. Lays them out again. */
+void wlmdock_tilebox_set_edge(wlmdock_tilebox_t *tilebox_ptr, uint32_t edge);
+
+/** @return Whether the tile box lays out a grid. */
+bool wlmdock_tilebox_is_grid(wlmdock_tilebox_t *tilebox_ptr);
+
+/** Unit test cases. */
+extern const bs_test_set_t wlmdock_tilebox_test_set;
 
 #ifdef __cplusplus
 }  // extern "C"

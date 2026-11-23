@@ -221,9 +221,19 @@ void _wlmtk_box_element_layout(wlmtk_element_t *element_ptr)
         }
         margin_element_ptr = wlmtk_element_from_dlnode(margin_dlnode_ptr);
         wlmtk_element_set_position(margin_element_ptr, margin_x, margin_y);
+        // Between two placeholders (eg. empty tiles): Nothing to separate.
+        wlmtk_element_t *next_ptr = NULL;
+        for (bs_dllist_node_t *n_ptr = dlnode_ptr->next_ptr;
+             NULL != n_ptr && NULL == next_ptr;
+             n_ptr = n_ptr->next_ptr) {
+            wlmtk_element_t *e_ptr = wlmtk_element_from_dlnode(n_ptr);
+            if (e_ptr->visible) next_ptr = e_ptr;
+        }
+        bool hidden = element_ptr->placeholder &&
+            NULL != next_ptr && next_ptr->placeholder;
         wlmtk_rectangle_set_size(
             wlmtk_rectangle_from_element(margin_element_ptr),
-            margin_width, margin_height);
+            hidden ? 0 : margin_width, hidden ? 0 : margin_height);
 
         margin_dlnode_ptr = margin_dlnode_ptr->next_ptr;
     }
@@ -272,12 +282,14 @@ void _wlmtk_box_margin_set_color(
 static void test_init_fini(bs_test_t *test_ptr);
 static void test_layout_horizontal(bs_test_t *test_ptr);
 static void test_layout_vertical(bs_test_t *test_ptr);
+static void test_placeholder_margin(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_box_test_cases[] = {
     { 1, "init_fini", test_init_fini },
     { 1, "layout_horizontal", test_layout_horizontal },
     { 1, "layout_vertical", test_layout_vertical },
+    { 1, "placeholder_margin", test_placeholder_margin },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -350,7 +362,7 @@ void test_layout_horizontal(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 64, e1_ptr->element.x);
     BS_TEST_VERIFY_EQ(test_ptr, 42, e2_ptr->element.x);
     BS_TEST_VERIFY_EQ(test_ptr, 0, e3_ptr->element.x);
-    BS_TEST_VERIFY_EQ(test_ptr, 2, bs_dllist_size(&box.margin_container.elements));
+    BS_TEST_VERIFY_EQ(test_ptr, 2u, bs_dllist_size(&box.margin_container.elements));
 
     wlmtk_element_set_visible(&e1_ptr->element, false);
     wlmtk_element_layout(wlmtk_box_element(&box));
@@ -407,6 +419,45 @@ void test_layout_vertical(bs_test_t *test_ptr)
 
     wlmtk_element_destroy(&e2_ptr->element);
     wlmtk_element_destroy(&e1_ptr->element);
+    wlmtk_box_fini(&box);
+}
+
+/* ------------------------------------------------------------------------- */
+/** No margin is drawn between two placeholders; next to a real one, it is. */
+void test_placeholder_margin(bs_test_t *test_ptr)
+{
+    wlmtk_box_t box;
+    BS_TEST_VERIFY_TRUE_OR_RETURN(
+        test_ptr, wlmtk_box_init(&box, WLMTK_BOX_VERTICAL, &test_style));
+    wlmtk_fake_element_t *e_ptr[3];
+    for (int i = 0; i < 3; ++i) {
+        e_ptr[i] = wlmtk_fake_element_create();
+        wlmtk_element_set_visible(&e_ptr[i]->element, true);
+        e_ptr[i]->dimensions.width = 10;
+        e_ptr[i]->dimensions.height = 10;
+        wlmtk_box_add_element_back(&box, &e_ptr[i]->element);
+    }
+    // A real tile, then two empty ones.
+    e_ptr[1]->element.placeholder = true;
+    e_ptr[2]->element.placeholder = true;
+    wlmtk_element_layout(wlmtk_box_element(&box));
+    BS_TEST_VERIFY_EQ(test_ptr, 2u, bs_dllist_size(&box.margin_container.elements));
+    struct wlr_box b[2];
+    int i = 0;
+    for (bs_dllist_node_t *n = box.margin_container.elements.head_ptr;
+         NULL != n && i < 2; n = n->next_ptr, ++i) {
+        b[i] = wlmtk_element_get_dimensions_box(wlmtk_element_from_dlnode(n));
+    }
+    BS_TEST_VERIFY_EQ(test_ptr, 10, b[0].width);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, b[1].width);
+    // Positions keep the margin's room, drawn or not.
+    BS_TEST_VERIFY_EQ(test_ptr, 2 * (10 + (int)test_style.width),
+                      e_ptr[2]->element.y);
+
+    for (int k = 0; k < 3; ++k) {
+        wlmtk_box_remove_element(&box, &e_ptr[k]->element);
+        wlmtk_element_destroy(&e_ptr[k]->element);
+    }
     wlmtk_box_fini(&box);
 }
 

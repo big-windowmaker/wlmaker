@@ -69,6 +69,11 @@ struct _wlmaker_tile_drag_t {
     struct wlr_box            full_area;
     /** Whether the balloon telling the column is full is shown. */
     bool                      full_balloon;
+    /**
+     * Whether the tile is over a cell of the Clip's grid that is taken: It
+     * does not attach there, and dropped there it goes back.
+     */
+    bool                      over_taken;
 };
 
 static bool _wlmaker_tile_drag_find_target(
@@ -112,6 +117,10 @@ static void _wlmaker_tile_drag_place_dockapps(
 static void _wlmaker_tile_drag_full_balloon(
     wlmaker_tile_drag_t *tile_drag_ptr,
     bool over_full);
+static size_t _wlmaker_tile_drag_grid_icon(
+    const wlmaker_tile_drag_source_t *source_ptr,
+    size_t launchers);
+static bool _wlmaker_tile_drag_apply_grid(wlmaker_tile_drag_t *tile_drag_ptr);
 
 /* == Data ================================================================= */
 
@@ -159,7 +168,35 @@ wlmaker_tile_drag_t *wlmaker_tile_drag_start(
 
     // Where it was: Its slot in the column. A new launcher has none.
     wlmaker_dock_column_t column;
-    if (WLMAKER_COLUMN_NONE != source_ptr->column &&
+    size_t grid_launchers = 0;
+    const wlmaker_clip_grid_t *grid_ptr = wlmaker_clip_grid(
+        server_ptr, &grid_launchers);
+    size_t icon = _wlmaker_tile_drag_grid_icon(source_ptr, grid_launchers);
+    if (WLMAKER_COLUMN_CLIP == source_ptr->column && NULL != grid_ptr &&
+        icon < grid_ptr->n &&
+        wlmaker_clip_column_id(server_ptr, source_ptr->column, &column)) {
+        // From the Clip: Its cell on the grid.
+        tile_drag_ptr->origin = (wlmaker_tile_drag_target_t){
+            .column = source_ptr->column,
+            .index = source_ptr->index,
+            .grid = true,
+            .cell = grid_ptr->cells_ptr[icon] };
+        wlmaker_clip_cell_position(
+            column.place, column.x, column.y, column.pitch,
+            &tile_drag_ptr->origin.cell,
+            &tile_drag_ptr->origin.x, &tile_drag_ptr->origin.y);
+        tile_drag_ptr->has_origin = true;
+        tile_drag_ptr->target = tile_drag_ptr->origin;
+        tile_drag_ptr->has_target = true;
+        if (WLMAKER_TILE_DRAG_LAUNCHER == source_ptr->kind) {
+            struct wlr_buffer *empty_ptr = wlmaker_dock_tile_buffer(
+                &server_ptr->style_ptr->tile, NULL, NULL);
+            wlmaker_dock_fx_cover_show(
+                server_ptr->dock_fx_ptr, empty_ptr,
+                tile_drag_ptr->origin.x, tile_drag_ptr->origin.y);
+            if (NULL != empty_ptr) wlr_buffer_drop(empty_ptr);
+        }
+    } else if (WLMAKER_COLUMN_NONE != source_ptr->column &&
         wlmaker_clip_column_id(server_ptr, source_ptr->column, &column)) {
         size_t position = (WLMAKER_TILE_DRAG_DOCKAPP == source_ptr->kind) ?
             wlmaker_dock_column_dockapp_position(&column, source_ptr->index) :
@@ -216,12 +253,16 @@ void wlmaker_tile_drag_motion(
 
     wlmaker_tile_drag_target_t target = {};
     tile_drag_ptr->full_column = -1;
+    tile_drag_ptr->over_taken = false;
     bool found = _wlmaker_tile_drag_find_target(tile_drag_ptr, x, y, &target);
     if (found) {
         tile_drag_ptr->target = target;
         tile_drag_ptr->has_target = true;
     } else if (!_wlmaker_tile_drag_may_detach(tile_drag_ptr)) {
         // Window Maker: Stays where it was last attached.
+    } else if (tile_drag_ptr->over_taken) {
+        // Over a taken cell: No ghost there; dropped, it goes back.
+        tile_drag_ptr->has_target = false;
     } else {
         tile_drag_ptr->has_target = false;
     }
@@ -250,6 +291,13 @@ void wlmaker_tile_drag_drop(
     tile_drag_ptr->dropped = true;
     wlmaker_dock_fx_ghost_hide(server_ptr->dock_fx_ptr);
 
+    if (!tile_drag_ptr->has_target && tile_drag_ptr->over_taken) {
+        // Dropped on another icon of the Clip: Refused, it goes back. Not
+        // lost by a slip of the hand.
+        bs_log(BS_INFO, "Cell of the Clip taken: Tile drag refused.");
+        wlmaker_tile_drag_cancel(tile_drag_ptr);
+        return;
+    }
     if (!tile_drag_ptr->has_target && 0 <= tile_drag_ptr->full_column) {
         // Dropped on a full column: Refused. It goes back where it was.
         bs_log(BS_INFO, "Column %d is full: Tile drag refused.",
@@ -535,6 +583,41 @@ bool _wlmaker_tile_drag_try_column(
             return true;
         }
     }
+    if (column.grid) {
+        // The Clip: On its grid, as Window Maker's wDockSnapIcon for WM_CLIP.
+        size_t launchers = 0;
+        const wlmaker_clip_grid_t *g_ptr = wlmaker_clip_grid(
+            server_ptr, &launchers);
+        if (NULL == g_ptr) return false;
+        size_t own_icon = (own && tile_drag_ptr->has_origin) ?
+            _wlmaker_tile_drag_grid_icon(&tile_drag_ptr->source, launchers) :
+            SIZE_MAX;
+        wlmaker_clip_cell_t cell = wlmaker_clip_cell_at(
+            column.place, column.x, column.y, column.size, column.pitch,
+            tx, ty);
+        switch (wlmaker_clip_grid_snap(g_ptr, &cell, own_icon)) {
+        case WLMAKER_CLIP_GRID_ATTACH:
+            break;
+        case WLMAKER_CLIP_GRID_OCCUPIED:
+            tile_drag_ptr->over_taken = true;
+            return false;
+        default:
+            return false;
+        }
+        *target_ptr = (wlmaker_tile_drag_target_t){
+            .column = id, .grid = true, .cell = cell };
+        if (own) {
+            target_ptr->index = tile_drag_ptr->source.index;
+        } else {
+            target_ptr->index = (WLMAKER_TILE_DRAG_LAUNCHER ==
+                                 tile_drag_ptr->source.kind) ?
+                column.launchers : column.dockapps;
+        }
+        wlmaker_clip_cell_position(column.place, column.x, column.y,
+                                   column.pitch, &cell,
+                                   &target_ptr->x, &target_ptr->y);
+        return true;
+    }
     if (!wlmaker_tile_drag_snap(
             &column, tile_drag_ptr->source.kind, own,
             own && tile_drag_ptr->has_origin ?
@@ -612,6 +695,7 @@ void _wlmaker_tile_drag_apply(wlmaker_tile_drag_t *tile_drag_ptr)
     wlmaker_dock_column_t column;
     bool mixed = wlmaker_clip_column_id(server_ptr, t_ptr->column, &column) &&
         column.mixed;
+    if (t_ptr->grid && _wlmaker_tile_drag_apply_grid(tile_drag_ptr)) return;
 
     if (WLMAKER_TILE_DRAG_DOCKAPP == s_ptr->kind) {
         if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);
@@ -729,6 +813,10 @@ void _wlmaker_tile_drag_remove(
     wlmaker_server_t *server_ptr = tile_drag_ptr->server_ptr;
     wlmaker_tile_drag_source_t *s_ptr = &tile_drag_ptr->source;
     int tx = x - s_ptr->grab_x, ty = y - s_ptr->grab_y;
+    // The other icons of the Clip stay in their cells.
+    if (WLMAKER_COLUMN_CLIP == s_ptr->column) {
+        wlmaker_clip_freeze_grid(server_ptr);
+    }
 
     struct wlr_output *wlr_output_ptr = wlr_output_layout_output_at(
         server_ptr->wlr_output_layout_ptr, x, y);
@@ -772,6 +860,100 @@ void _wlmaker_tile_drag_remove(
                                tx, ty, &area);
     }
     wlmaker_dock_launchers_edit(server_ptr, s_ptr->column, s_ptr->index, NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The icon of the source on the Clip's grid (launchers first). */
+size_t _wlmaker_tile_drag_grid_icon(
+    const wlmaker_tile_drag_source_t *source_ptr,
+    size_t launchers)
+{
+    if (WLMAKER_COLUMN_CLIP != source_ptr->column) return SIZE_MAX;
+    return (WLMAKER_TILE_DRAG_DOCKAPP == source_ptr->kind) ?
+        launchers + source_ptr->index : source_ptr->index;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Attaches the tile at the target cell of the Clip's grid. First, the cells
+ * of the Clip's icons are stored (those of a state from before the grid):
+ * The others stay where they are.
+ * @return true if done.
+ */
+bool _wlmaker_tile_drag_apply_grid(wlmaker_tile_drag_t *tile_drag_ptr)
+{
+    wlmaker_server_t *server_ptr = tile_drag_ptr->server_ptr;
+    wlmaker_tile_drag_source_t *s_ptr = &tile_drag_ptr->source;
+    wlmaker_tile_drag_target_t *t_ptr = &tile_drag_ptr->target;
+    size_t launchers = 0;
+    if (NULL == wlmaker_clip_grid(server_ptr, &launchers)) return false;
+    wlmaker_clip_freeze_grid(server_ptr);
+    // Where it comes from stays as it is, too.
+    if (WLMAKER_COLUMN_CLIP != s_ptr->column &&
+        WLMAKER_COLUMN_NONE != s_ptr->column) {
+        wlmaker_clip_freeze_dockapps(server_ptr, s_ptr->column);
+    }
+    char buf[32];
+    wlmaker_clip_cell_format(&t_ptr->cell, buf, sizeof(buf));
+
+    if (WLMAKER_TILE_DRAG_DOCKAPP == s_ptr->kind) {
+        if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);
+        if (NULL != s_ptr->tile_ptr) {
+            bs_log(BS_INFO, "Dock-app \"%s\" to the Clip's cell %s",
+                   NULL != s_ptr->name_ptr ? s_ptr->name_ptr : "(unknown)",
+                   buf);
+            wlmaker_clip_place_dockapp(server_ptr, s_ptr->tile_ptr,
+                                       &t_ptr->cell);
+        }
+        wlmaker_dock_fx_cover_hide(server_ptr->dock_fx_ptr);
+        return true;
+    }
+
+    const wlmaker_clip_grid_t *g_ptr = wlmaker_clip_grid(
+        server_ptr, &launchers);
+    if (NULL != s_ptr->launcher_ptr) {
+        // A new launcher, from an application's icon.
+        bs_log(BS_INFO, "Docking \"%s\" in the Clip's cell %s",
+               wlmaker_dock_launcher_value(s_ptr->launcher_ptr, "CommandLine"),
+               buf);
+        bspl_dict_t *d = wlmaker_dock_launcher_with_cell(
+            s_ptr->launcher_ptr, &t_ptr->cell);
+        if (NULL != d) {
+            wlmaker_dock_launchers_edit(server_ptr, WLMAKER_COLUMN_CLIP,
+                                        launchers, d);
+            bspl_dict_unref(d);
+        }
+    } else if (WLMAKER_COLUMN_CLIP == s_ptr->column) {
+        // Within the Clip: Only its cell changes.
+        bs_log(BS_INFO, "Launcher %zu to the Clip's cell %s", s_ptr->index,
+               buf);
+        if (NULL != g_ptr && s_ptr->index < launchers &&
+            launchers <= g_ptr->n) {
+            wlmaker_clip_cell_t *cells_ptr = logged_calloc(
+                launchers, sizeof(wlmaker_clip_cell_t));
+            bool *set_ptr = logged_calloc(launchers, sizeof(bool));
+            if (NULL != cells_ptr && NULL != set_ptr) {
+                memcpy(cells_ptr, g_ptr->cells_ptr,
+                       launchers * sizeof(wlmaker_clip_cell_t));
+                cells_ptr[s_ptr->index] = t_ptr->cell;
+                set_ptr[s_ptr->index] = true;
+                wlmaker_dock_launchers_set_cells(
+                    server_ptr, cells_ptr, set_ptr, launchers);
+            }
+            if (NULL != set_ptr) free(set_ptr);
+            if (NULL != cells_ptr) free(cells_ptr);
+        }
+    } else {
+        // From the Dock or a drawer: Into the Clip, at the cell.
+        bs_log(BS_INFO, "Launcher %zu of column %d to the Clip's cell %s",
+               s_ptr->index, s_ptr->column, buf);
+        wlmaker_dock_launchers_move_cell(
+            server_ptr, s_ptr->column, s_ptr->index,
+            WLMAKER_COLUMN_CLIP, launchers, &t_ptr->cell);
+    }
+    wlmaker_dock_fx_cover_hide(server_ptr->dock_fx_ptr);
+    if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */

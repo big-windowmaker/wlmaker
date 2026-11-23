@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "clip_grid.h"
 #include "toolkit/toolkit.h"
 
 struct wl_client;
@@ -301,6 +302,59 @@ void wlmaker_dockapps_freeze_after(
 uint64_t wlmaker_dockapps_positions(
     wlmaker_dockapps_t *dockapps_ptr,
     size_t launchers);
+
+/**
+ * Where a placement's tiles go, when they are not all in its dock: The
+ * Clip's grid spreads them over a dock per lane.
+ */
+typedef struct {
+    /** Puts the tile (not in any dock) into one. Its order comes later. */
+    void                      (*attach)(void *ud_ptr, wlmtk_tile_t *tile_ptr);
+    /** Takes the tile out of the dock holding it. */
+    void                      (*detach)(void *ud_ptr, wlmtk_tile_t *tile_ptr);
+    /** Argument to the callbacks. */
+    void                      *ud_ptr;
+} wlmaker_dockapps_host_t;
+
+/**
+ * Sets the host for the tiles, instead of the placement's dock. The changed
+ * callback (see @ref wlmaker_dockapps_set_changed_callback) then arranges
+ * them. NULL: The dock again.
+ */
+void wlmaker_dockapps_set_host(
+    wlmaker_dockapps_t *dockapps_ptr,
+    const wlmaker_dockapps_host_t *host_ptr);
+
+/**
+ * The cell stored for the dock-app of `tile_ptr`, on the Clip's grid (key
+ * `Cells` of the state file).
+ * @return false if there is none (or the dock-app has no name).
+ */
+bool wlmaker_dockapps_cell(
+    wlmaker_dockapps_t *dockapps_ptr,
+    wlmtk_tile_t *tile_ptr,
+    wlmaker_clip_cell_t *cell_ptr);
+
+/** A change of a dock-app's cell, see @ref wlmaker_dockapps_set_cells. */
+typedef struct {
+    /** Name of the dock-app. Entries with NULL are skipped. */
+    const char                *name_ptr;
+    /** Whether it has a cell: Else, its cell is forgotten. */
+    bool                      has_cell;
+    /** The cell. */
+    wlmaker_clip_cell_t       cell;
+} wlmaker_dockapps_cell_update_t;
+
+/**
+ * Sets (or forgets) the cells of `n` dock-apps, keeping those of the others
+ * (also of dock-apps not running now), and stores them, in one write. Does
+ * not call the changed callback: The caller arranges.
+ * @return true on success, also if nothing changed.
+ */
+bool wlmaker_dockapps_set_cells(
+    wlmaker_dockapps_t *dockapps_ptr,
+    const wlmaker_dockapps_cell_update_t *updates_ptr,
+    size_t n);
 
 /** Unit test cases. */
 extern const bs_test_set_t wlmaker_dockapps_test_set;

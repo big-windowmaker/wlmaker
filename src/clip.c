@@ -47,6 +47,7 @@
 
 #include "backend/backend.h"
 #include "action.h"
+#include "clip_grid.h"
 #include "backend/output_config.h"
 #include "context_menu.h"
 #include "dock_fx.h"
@@ -60,6 +61,21 @@
 #include "util/files.h"
 
 /* == Declarations ========================================================= */
+
+/**
+ * A lane of the Clip's grid beyond its column: A dock along the edge, at a
+ * distance from it, holding the dock-apps of that lane and empty tiles
+ * between them. Without an exclusive zone: Windows may go below, as on
+ * Window Maker.
+ */
+typedef struct {
+    /** The dock. */
+    wlmtk_dock_t              *dock_ptr;
+    /** Empty, transparent tiles: Holes, and room for launchers. */
+    wlmtk_tile_t              *spacers_ptr;
+    /** Number of tiles in @ref wlmaker_clip_lane_t::spacers_ptr. */
+    size_t                    spacers;
+} wlmaker_clip_lane_t;
 
 /** Clip handle. */
 struct _wlmaker_clip_t {
@@ -181,6 +197,23 @@ struct _wlmaker_clip_t {
     wlmaker_drawer_t          **drawers_ptr;
     /** Number of drawers. */
     size_t                    drawers;
+
+    /** Number of the Clip's launchers that `wlmdock --clip` shows. */
+    size_t                    clip_launchers;
+    /**
+     * The Clip's grid, as Window Maker's: The cells of its launchers (the
+     * first @ref wlmaker_clip_t::clip_launchers) and of its dock-apps (in
+     * their placement's order). As of the last arrangement.
+     */
+    wlmaker_clip_grid_t       grid;
+    /** For each icon of the grid: Whether its cell was not stored. */
+    bool                      *grid_derived_ptr;
+    /** Lanes 1 .. of the grid. Lane 0 is the Clip's own dock. */
+    wlmaker_clip_lane_t       *lanes_ptr;
+    /** Number of lanes in @ref wlmaker_clip_t::lanes_ptr. */
+    size_t                    lanes;
+    /** Whether arranging: Changes on the way don't arrange again. */
+    bool                      arranging;
 };
 
 static bool _wlmaker_clip_pointer_axis(
@@ -208,6 +241,24 @@ static bool _wlmaker_clip_spacer_accepts_motion(
     wlmtk_element_t *element_ptr,
     wlmtk_pointer_motion_event_t *motion_event_ptr);
 static void _wlmaker_clip_arrange(wlmaker_clip_t *clip_ptr);
+static void _wlmaker_clip_arrange_grid(wlmaker_clip_t *clip_ptr);
+static void _wlmaker_clip_update_grid(wlmaker_clip_t *clip_ptr);
+static bool _wlmaker_clip_grid_frame(
+    wlmaker_clip_t *clip_ptr,
+    int *x_ptr,
+    int *y_ptr,
+    struct wlr_box *output_ptr);
+static void _wlmaker_clip_host_attach(void *ud_ptr, wlmtk_tile_t *tile_ptr);
+static void _wlmaker_clip_host_detach(void *ud_ptr, wlmtk_tile_t *tile_ptr);
+static bool _wlmaker_clip_pool_spacers(
+    wlmtk_dock_t *dock_ptr,
+    wlmtk_tile_t **tiles_ptr_ptr,
+    size_t *n_ptr,
+    size_t spacers,
+    const struct wlmtk_tile_style *tile_style_ptr);
+static void _wlmaker_clip_destroy_lane(
+    wlmaker_clip_t *clip_ptr,
+    wlmaker_clip_lane_t *lane_ptr);
 static void _wlmaker_clip_handle_dockapps_changed(void *ud_ptr);
 static void _wlmaker_clip_publish_layout(wlmaker_clip_t *clip_ptr);
 static bool _wlmaker_clip_set_spacers(
@@ -391,17 +442,13 @@ wlmaker_clip_t *wlmaker_clip_create(
         &clip_ptr->super_tile, clip_ptr->tile_buffer_ptr);
     wlmtk_dock_add_tile(clip_ptr->wlmtk_dock_ptr, &clip_ptr->super_tile);
 
-    // Room for the launchers `wlmdock --clip` shows (those with an icon).
+    // The launchers `wlmdock --clip` shows (those with an icon). The room
+    // for them comes with the grid, once the dock-apps are there too.
     bspl_array_t *launchers_ptr = wlmaker_dock_launchers_load(
         server_ptr, "Clip");
-    size_t spacers = (NULL != launchers_ptr) ?
+    clip_ptr->clip_launchers = (NULL != launchers_ptr) ?
         bspl_array_size(launchers_ptr) : 0;
     if (NULL != launchers_ptr) bspl_array_unref(launchers_ptr);
-    if (!_wlmaker_clip_set_spacers(clip_ptr, false, spacers,
-                                   &style_ptr->tile)) {
-        wlmaker_clip_destroy(clip_ptr);
-        return NULL;
-    }
 
     if (!wlmtk_buffer_init(&clip_ptr->overlay_buffer)) {
         wlmaker_clip_destroy(clip_ptr);
@@ -483,6 +530,12 @@ wlmaker_clip_t *wlmaker_clip_create(
     wlmaker_dockapps_set_changed_callback(
         clip_ptr->dockapps_ptr, _wlmaker_clip_handle_dockapps_changed,
         clip_ptr);
+    // Its dock-apps are spread over the lanes of the grid.
+    wlmaker_dockapps_host_t host = {
+        .attach = _wlmaker_clip_host_attach,
+        .detach = _wlmaker_clip_host_detach,
+        .ud_ptr = clip_ptr };
+    wlmaker_dockapps_set_host(clip_ptr->dockapps_ptr, &host);
 
     // Dock-apps can also be attached to the Dock, as on Window Maker.
     clip_ptr->published_dock_tiles = -1;
@@ -557,6 +610,17 @@ void wlmaker_clip_destroy(wlmaker_clip_t *clip_ptr)
             clip_ptr->server_ptr->clip_ptr = NULL;
         }
     }
+    // The lanes of the grid: Their dock-apps back to the Clip's dock.
+    for (size_t i = 0; i < clip_ptr->lanes; ++i) {
+        _wlmaker_clip_destroy_lane(clip_ptr, &clip_ptr->lanes_ptr[i]);
+    }
+    if (NULL != clip_ptr->lanes_ptr) free(clip_ptr->lanes_ptr);
+    clip_ptr->lanes_ptr = NULL;
+    clip_ptr->lanes = 0;
+    if (NULL != clip_ptr->grid.cells_ptr) free(clip_ptr->grid.cells_ptr);
+    clip_ptr->grid = (wlmaker_clip_grid_t){};
+    if (NULL != clip_ptr->grid_derived_ptr) free(clip_ptr->grid_derived_ptr);
+    clip_ptr->grid_derived_ptr = NULL;
     // Shutting down: The drawers don't move their dock-apps to the Clip.
     for (size_t i = 0; i < clip_ptr->drawers; ++i) {
         wlmaker_drawer_destroy(clip_ptr->drawers_ptr[i]);
@@ -1042,6 +1106,119 @@ void wlmaker_clip_move_dockapp(
 }
 
 /* ------------------------------------------------------------------------- */
+const wlmaker_clip_grid_t *wlmaker_clip_grid(
+    wlmaker_server_t *server_ptr,
+    size_t *launchers_ptr)
+{
+    wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
+    if (NULL == clip_ptr) return NULL;
+    if (NULL != launchers_ptr) *launchers_ptr = clip_ptr->clip_launchers;
+    return &clip_ptr->grid;
+}
+
+/* ------------------------------------------------------------------------- */
+size_t wlmaker_clip_grid_icon_at_point(
+    wlmaker_server_t *server_ptr,
+    double x,
+    double y,
+    int *tile_x_ptr,
+    int *tile_y_ptr)
+{
+    wlmaker_dock_column_t column;
+    if (!wlmaker_clip_column_id(server_ptr, WLMAKER_COLUMN_CLIP, &column) ||
+        0 >= column.pitch) return SIZE_MAX;
+    const wlmaker_clip_grid_t *g_ptr = &server_ptr->clip_ptr->grid;
+    for (size_t i = 0; i < g_ptr->n; ++i) {
+        int cx, cy;
+        wlmaker_clip_cell_position(column.place, column.x, column.y,
+                                   column.pitch, &g_ptr->cells_ptr[i],
+                                   &cx, &cy);
+        struct wlr_box b = { .x = cx, .y = cy,
+                             .width = column.size, .height = column.size };
+        if (!wlr_box_contains_point(&b, x, y)) continue;
+        if (NULL != tile_x_ptr) *tile_x_ptr = x - cx;
+        if (NULL != tile_y_ptr) *tile_y_ptr = y - cy;
+        return i;
+    }
+    return SIZE_MAX;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_clip_freeze_grid(wlmaker_server_t *server_ptr)
+{
+    wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
+    if (NULL == clip_ptr || NULL == clip_ptr->dockapps_ptr) return;
+    _wlmaker_clip_update_grid(clip_ptr);
+    const wlmaker_clip_grid_t *g_ptr = &clip_ptr->grid;
+    size_t nl = clip_ptr->clip_launchers;
+    if (0 == g_ptr->n || NULL == clip_ptr->grid_derived_ptr) return;
+    // Copies: Storing re-arranges, and replaces the grid.
+    size_t n = g_ptr->n;
+    wlmaker_clip_cell_t *cells_ptr = logged_calloc(
+        n, sizeof(wlmaker_clip_cell_t));
+    bool *derived_ptr = logged_calloc(n, sizeof(bool));
+    wlmaker_dockapps_cell_update_t *u_ptr = logged_calloc(
+        n, sizeof(wlmaker_dockapps_cell_update_t));
+    if (NULL != cells_ptr && NULL != derived_ptr && NULL != u_ptr) {
+        memcpy(cells_ptr, g_ptr->cells_ptr, n * sizeof(wlmaker_clip_cell_t));
+        memcpy(derived_ptr, clip_ptr->grid_derived_ptr, n * sizeof(bool));
+        bool any = false;
+        for (size_t i = 0; i < nl; ++i) any |= derived_ptr[i];
+        // Only those without a cell: A cell stored but not shown now (eg.
+        // off a smaller screen) stays, for when it fits again.
+        if (any) {
+            wlmaker_dock_launchers_set_cells(
+                server_ptr, cells_ptr, derived_ptr, nl);
+        }
+        size_t k = 0;
+        for (size_t j = 0; nl + j < n; ++j) {
+            if (!derived_ptr[nl + j]) continue;
+            const char *name_ptr = wlmaker_dockapps_name(
+                clip_ptr->dockapps_ptr,
+                wlmaker_dockapps_tile_at(clip_ptr->dockapps_ptr, j));
+            if (NULL == name_ptr) continue;
+            u_ptr[k++] = (wlmaker_dockapps_cell_update_t){
+                .name_ptr = name_ptr, .has_cell = true,
+                .cell = cells_ptr[nl + j] };
+        }
+        if (0 < k) wlmaker_dockapps_set_cells(clip_ptr->dockapps_ptr, u_ptr, k);
+    }
+    if (NULL != u_ptr) free(u_ptr);
+    if (NULL != derived_ptr) free(derived_ptr);
+    if (NULL != cells_ptr) free(cells_ptr);
+    _wlmaker_clip_arrange(clip_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_clip_place_dockapp(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    const wlmaker_clip_cell_t *cell_ptr)
+{
+    wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
+    if (NULL == clip_ptr) return;
+    wlmaker_dockapps_t *from_ptr = wlmaker_clip_dockapps_of(
+        server_ptr, tile_ptr);
+    if (NULL == from_ptr) return;
+    const char *n_ptr = wlmaker_dockapps_name(from_ptr, tile_ptr);
+    char *name_ptr = NULL != n_ptr ? logged_strdup(n_ptr) : NULL;
+    // Its cell first: Attached, it goes right there.
+    wlmaker_dockapps_cell_update_t u = {
+        .name_ptr = name_ptr, .has_cell = true, .cell = *cell_ptr };
+    if (NULL != name_ptr) wlmaker_dockapps_set_cells(clip_ptr->dockapps_ptr,
+                                                     &u, 1);
+    if (from_ptr != clip_ptr->dockapps_ptr) {
+        wlmaker_dockapps_detach(from_ptr, tile_ptr);
+        wlmaker_dockapps_insert(
+            clip_ptr->dockapps_ptr, tile_ptr, name_ptr,
+            wlmaker_dockapps_size(clip_ptr->dockapps_ptr));
+        _wlmaker_clip_publish_dock_tiles(clip_ptr);
+    }
+    if (NULL != name_ptr) free(name_ptr);
+    _wlmaker_clip_arrange(clip_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 bool wlmaker_dock_column_dockapp_at(
     const wlmaker_dock_column_t *column_ptr,
     size_t position,
@@ -1117,7 +1294,8 @@ void wlmaker_clip_launcher_inserted(
     size_t index,
     bool removed)
 {
-    if (WLMAKER_COLUMN_CLIP != column && WLMAKER_COLUMN_DOCK != column) return;
+    // The Clip's icons keep their cells: Nothing moves.
+    if (WLMAKER_COLUMN_DOCK != column) return;
     wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_id(server_ptr, column);
     if (NULL == d_ptr) return;
     if (removed) {
@@ -1130,7 +1308,11 @@ void wlmaker_clip_launcher_inserted(
 /* ------------------------------------------------------------------------- */
 void wlmaker_clip_freeze_dockapps(wlmaker_server_t *server_ptr, int column)
 {
-    if (WLMAKER_COLUMN_CLIP != column && WLMAKER_COLUMN_DOCK != column) return;
+    if (WLMAKER_COLUMN_CLIP == column) {
+        wlmaker_clip_freeze_grid(server_ptr);
+        return;
+    }
+    if (WLMAKER_COLUMN_DOCK != column) return;
     wlmaker_dock_column_t c;
     wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_id(server_ptr, column);
     if (NULL == d_ptr || !wlmaker_clip_column_id(server_ptr, column, &c)) return;
@@ -1282,8 +1464,9 @@ bool wlmaker_clip_column_id(
         wlmtk_element_get_absolute_position(
             wlmtk_tile_element(&clip_ptr->super_tile),
             &column_ptr->x, &column_ptr->y);
-        column_ptr->launchers = clip_ptr->spacer_tiles;
+        column_ptr->launchers = clip_ptr->clip_launchers;
         column_ptr->dockapps = wlmaker_dockapps_size(clip_ptr->dockapps_ptr);
+        column_ptr->grid = true;
         column_ptr->dockapp_positions = wlmaker_dockapps_positions(
             clip_ptr->dockapps_ptr, column_ptr->launchers);
         column_ptr->mixed = true;
@@ -2335,6 +2518,8 @@ bool _wlmaker_clip_spacer_init(
     if (!wlmtk_tile_init(tile_ptr, tile_style_ptr)) return false;
     wlmtk_element_extend(wlmtk_tile_element(tile_ptr),
                          &_wlmaker_clip_spacer_element_vmt);
+    // Holes keep no margins between them.
+    wlmtk_tile_element(tile_ptr)->placeholder = true;
     return true;
 }
 
@@ -2551,8 +2736,7 @@ void _wlmaker_clip_reload_launchers(wlmaker_clip_t *clip_ptr)
     bspl_dict_unref(state_dict_ptr);
 
     bs_log(BS_INFO, "Clip %p: Room for %zu launchers.", clip_ptr, spacers);
-    _wlmaker_clip_set_spacers(clip_ptr, false, spacers,
-                              &server_ptr->style_ptr->tile);
+    clip_ptr->clip_launchers = spacers;
 
     bspl_array_t *a = wlmaker_dock_launchers_load(server_ptr, "Dock");
     if (NULL != a) {
@@ -2937,13 +3121,415 @@ bool _wlmaker_clip_set_spacers(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Finds where the Clip's grid is: The position of the Clip's tile and the
+ * box of its output, in layout coordinates.
+ * @return false if there is no output.
+ */
+bool _wlmaker_clip_grid_frame(
+    wlmaker_clip_t *clip_ptr,
+    int *x_ptr,
+    int *y_ptr,
+    struct wlr_box *output_ptr)
+{
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    wlmtk_element_get_absolute_position(
+        wlmtk_tile_element(&clip_ptr->super_tile), x_ptr, y_ptr);
+    struct wlr_output *wlr_output_ptr = wlr_output_layout_output_at(
+        server_ptr->wlr_output_layout_ptr, *x_ptr + 1, *y_ptr + 1);
+    if (NULL == wlr_output_ptr) {
+        wlr_output_ptr = wlmbe_output_description_first_fnmatch(
+            &clip_ptr->output_description, server_ptr->wlr_output_layout_ptr);
+    }
+    if (NULL == wlr_output_ptr) {
+        wlr_output_ptr = wlmbe_primary_output(server_ptr->wlr_output_layout_ptr);
+    }
+    if (NULL == wlr_output_ptr) return false;
+    wlr_output_layout_get_box(server_ptr->wlr_output_layout_ptr,
+                              wlr_output_ptr, output_ptr);
+    return !wlr_box_empty(output_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Computes the Clip's grid (see @ref wlmaker_clip_t::grid): The cells
+ * stored for its launchers and dock-apps, those kept; the others get free
+ * ones in the column's former order (as before the grid: a state without
+ * cells looks the same).
+ */
+void _wlmaker_clip_update_grid(wlmaker_clip_t *clip_ptr)
+{
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    size_t nl = clip_ptr->clip_launchers;
+    size_t nd = NULL != clip_ptr->dockapps_ptr ?
+        wlmaker_dockapps_size(clip_ptr->dockapps_ptr) : 0;
+    size_t n = nl + nd;
+    wlmaker_clip_cell_t *cells_ptr = NULL;
+    bool *stored_ptr = NULL;
+    size_t *order_ptr = NULL;
+    if (0 < n) {
+        cells_ptr = logged_calloc(n, sizeof(wlmaker_clip_cell_t));
+        stored_ptr = logged_calloc(n, sizeof(bool));
+        order_ptr = logged_calloc(n, sizeof(size_t));
+        if (NULL == cells_ptr || NULL == stored_ptr || NULL == order_ptr) {
+            // Keeps the grid as it was.
+            if (NULL != cells_ptr) free(cells_ptr);
+            if (NULL != stored_ptr) free(stored_ptr);
+            if (NULL != order_ptr) free(order_ptr);
+            return;
+        }
+    }
+
+    // The cells stored: Launchers as `wlmdock --clip` shows them.
+    bspl_array_t *a = 0 < nl ?
+        wlmaker_dock_launchers_load(server_ptr, "Clip") : NULL;
+    for (size_t i = 0; i < nl; ++i) {
+        bspl_dict_t *d = NULL;
+        if (NULL != a && i < bspl_array_size(a)) {
+            d = bspl_dict_from_object(bspl_array_at(a, i));
+        }
+        stored_ptr[i] = NULL != d &&
+            wlmaker_dock_launcher_cell(d, &cells_ptr[i]);
+    }
+    if (NULL != a) bspl_array_unref(a);
+    for (size_t j = 0; j < nd; ++j) {
+        stored_ptr[nl + j] = wlmaker_dockapps_cell(
+            clip_ptr->dockapps_ptr,
+            wlmaker_dockapps_tile_at(clip_ptr->dockapps_ptr, j),
+            &cells_ptr[nl + j]);
+    }
+
+    // The former order of the column: Dock-apps after their launchers.
+    wlmaker_dock_column_t column = {
+        .launchers = nl, .dockapps = nd,
+        .dockapp_positions = NULL != clip_ptr->dockapps_ptr ?
+        wlmaker_dockapps_positions(clip_ptr->dockapps_ptr, nl) : 0 };
+    for (size_t p = 0; p < n; ++p) {
+        size_t index;
+        bool dockapp = wlmaker_dock_column_dockapp_at(&column, p, &index);
+        order_ptr[p] = dockapp ? nl + index : index;
+    }
+
+    wlmaker_clip_grid_t grid = { .n = n, .cells_ptr = cells_ptr };
+    int x, y;
+    struct wlr_box o;
+    if (_wlmaker_clip_grid_frame(clip_ptr, &x, &y, &o)) {
+        const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
+            clip_ptr->wlmtk_dock_ptr);
+        int size = clip_ptr->super_tile.style.size;
+        wlmaker_clip_grid_bounds(
+            (wlmaker_dock_place_t){ pos_ptr->edge, pos_ptr->anchor },
+            x, y, size, size + server_ptr->style_ptr->dock.margin.width,
+            &o, &grid.lanes, &grid.slots);
+    }
+    wlmaker_clip_grid_resolve(&grid, stored_ptr, order_ptr, NULL);
+    free(order_ptr);
+
+    if (NULL != clip_ptr->grid.cells_ptr) free(clip_ptr->grid.cells_ptr);
+    if (NULL != clip_ptr->grid_derived_ptr) free(clip_ptr->grid_derived_ptr);
+    clip_ptr->grid = grid;
+    // Kept as: Whether each icon has a cell of its own stored.
+    clip_ptr->grid_derived_ptr = stored_ptr;
+    for (size_t i = 0; i < n; ++i) stored_ptr[i] = !stored_ptr[i];
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Keeps `spacers` empty tiles of `*tiles_ptr_ptr` in `dock_ptr`: Adds new
+ * ones (at the end; ordered later) or removes those beyond.
+ */
+bool _wlmaker_clip_pool_spacers(
+    wlmtk_dock_t *dock_ptr,
+    wlmtk_tile_t **tiles_ptr_ptr,
+    size_t *n_ptr,
+    size_t spacers,
+    const struct wlmtk_tile_style *tile_style_ptr)
+{
+    if (spacers == *n_ptr) return true;
+    for (size_t i = 0; i < *n_ptr; ++i) {
+        wlmtk_tile_t *t_ptr = &(*tiles_ptr_ptr)[i];
+        if (NULL != wlmtk_tile_element(t_ptr)->parent_container_ptr) {
+            wlmtk_dock_remove_tile(dock_ptr, t_ptr);
+        }
+        wlmtk_tile_fini(t_ptr);
+    }
+    if (NULL != *tiles_ptr_ptr) free(*tiles_ptr_ptr);
+    *tiles_ptr_ptr = NULL;
+    *n_ptr = 0;
+    if (0 == spacers) return true;
+    *tiles_ptr_ptr = logged_calloc(spacers, sizeof(wlmtk_tile_t));
+    if (NULL == *tiles_ptr_ptr) return false;
+    // A freshly created buffer is all zero, ie. fully transparent.
+    struct wlr_buffer *wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(
+        tile_style_ptr->size, tile_style_ptr->size);
+    for (size_t i = 0; i < spacers; ++i) {
+        wlmtk_tile_t *t_ptr = &(*tiles_ptr_ptr)[i];
+        if (!_wlmaker_clip_spacer_init(t_ptr, tile_style_ptr)) break;
+        *n_ptr = i + 1;
+        if (NULL != wlr_buffer_ptr) {
+            wlmtk_tile_set_background_buffer(t_ptr, wlr_buffer_ptr);
+        }
+        wlmtk_element_set_visible(wlmtk_tile_element(t_ptr), true);
+        wlmtk_dock_add_tile(dock_ptr, t_ptr);
+    }
+    if (NULL != wlr_buffer_ptr) wlr_buffer_drop(wlr_buffer_ptr);
+    return *n_ptr == spacers;
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The dock (the Clip's, or a lane's) holding `tile_ptr`, or NULL. */
+static wlmtk_dock_t *_wlmaker_clip_dock_holding(
+    wlmaker_clip_t *clip_ptr,
+    wlmtk_tile_t *tile_ptr)
+{
+    if (0 <= wlmtk_dock_tile_index(clip_ptr->wlmtk_dock_ptr, tile_ptr)) {
+        return clip_ptr->wlmtk_dock_ptr;
+    }
+    for (size_t i = 0; i < clip_ptr->lanes; ++i) {
+        wlmtk_dock_t *d_ptr = clip_ptr->lanes_ptr[i].dock_ptr;
+        if (NULL != d_ptr && 0 <= wlmtk_dock_tile_index(d_ptr, tile_ptr)) {
+            return d_ptr;
+        }
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Moves `tile_ptr` into `dock_ptr`, from whichever of the Clip's has it. */
+static void _wlmaker_clip_move_tile_to(
+    wlmaker_clip_t *clip_ptr,
+    wlmtk_tile_t *tile_ptr,
+    wlmtk_dock_t *dock_ptr)
+{
+    wlmtk_dock_t *from_ptr = _wlmaker_clip_dock_holding(clip_ptr, tile_ptr);
+    if (from_ptr == dock_ptr) return;
+    if (NULL != from_ptr) wlmtk_dock_remove_tile(from_ptr, tile_ptr);
+    // The dock's box sets the position along it only.
+    wlmtk_element_set_position(wlmtk_tile_element(tile_ptr), 0, 0);
+    wlmtk_dock_add_tile(dock_ptr, tile_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Implements @ref wlmaker_dockapps_host_t::attach: Into the Clip's dock. */
+void _wlmaker_clip_host_attach(void *ud_ptr, wlmtk_tile_t *tile_ptr)
+{
+    wlmaker_clip_t *clip_ptr = ud_ptr;
+    wlmtk_dock_add_tile(clip_ptr->wlmtk_dock_ptr, tile_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Implements @ref wlmaker_dockapps_host_t::detach: From its lane's dock. */
+void _wlmaker_clip_host_detach(void *ud_ptr, wlmtk_tile_t *tile_ptr)
+{
+    wlmaker_clip_t *clip_ptr = ud_ptr;
+    wlmtk_dock_t *dock_ptr = _wlmaker_clip_dock_holding(clip_ptr, tile_ptr);
+    if (NULL != dock_ptr) wlmtk_dock_remove_tile(dock_ptr, tile_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Destroys the lane's dock and its spacers. Must hold no dock-app. */
+void _wlmaker_clip_destroy_lane(
+    wlmaker_clip_t *clip_ptr,
+    wlmaker_clip_lane_t *lane_ptr)
+{
+    if (NULL == lane_ptr->dock_ptr) return;
+    _wlmaker_clip_pool_spacers(lane_ptr->dock_ptr, &lane_ptr->spacers_ptr,
+                               &lane_ptr->spacers, 0,
+                               &clip_ptr->super_tile.style);
+    // Anything else (a dock-app, when shutting down): Back to the Clip's.
+    while (0 < wlmtk_dock_tiles(lane_ptr->dock_ptr)) {
+        wlmtk_tile_t *t_ptr = NULL;
+        for (size_t j = 0; NULL == t_ptr && NULL != clip_ptr->dockapps_ptr &&
+                 j < wlmaker_dockapps_size(clip_ptr->dockapps_ptr); ++j) {
+            wlmtk_tile_t *c_ptr = wlmaker_dockapps_tile_at(
+                clip_ptr->dockapps_ptr, j);
+            if (0 <= wlmtk_dock_tile_index(lane_ptr->dock_ptr, c_ptr)) {
+                t_ptr = c_ptr;
+            }
+        }
+        if (NULL == t_ptr) break;
+        _wlmaker_clip_move_tile_to(clip_ptr, t_ptr, clip_ptr->wlmtk_dock_ptr);
+    }
+    wlmtk_layer_t *l_ptr = wlmtk_panel_get_layer(
+        wlmtk_dock_panel(lane_ptr->dock_ptr));
+    if (NULL != l_ptr) {
+        wlmtk_layer_remove_panel(l_ptr, wlmtk_dock_panel(lane_ptr->dock_ptr));
+    }
+    wlmtk_dock_destroy(lane_ptr->dock_ptr);
+    lane_ptr->dock_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Creates the dock of lane `lane` (1 ..): Beside the Clip's, `lane` away. */
+static bool _wlmaker_clip_create_lane(
+    wlmaker_clip_t *clip_ptr,
+    wlmaker_clip_lane_t *lane_ptr,
+    int lane)
+{
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    wlmtk_dock_positioning_t pos = *wlmtk_dock_get_positioning(
+        clip_ptr->wlmtk_dock_ptr);
+    int pitch = clip_ptr->super_tile.style.size +
+        server_ptr->style_ptr->dock.margin.width;
+    pos.edge_offset = pos.edge_offset + lane * pitch;
+    pos.overlay = true;
+    lane_ptr->dock_ptr = wlmtk_dock_create(&pos, &server_ptr->style_ptr->dock);
+    if (NULL == lane_ptr->dock_ptr) return false;
+    wlmtk_element_set_visible(wlmtk_dock_element(lane_ptr->dock_ptr), true);
+    // Where the Clip is: Its layer, its output.
+    wlmtk_panel_t *clip_panel_ptr = wlmtk_dock_panel(clip_ptr->wlmtk_dock_ptr);
+    wlmtk_layer_t *layer_ptr = wlmtk_panel_get_layer(clip_panel_ptr);
+    if (NULL == layer_ptr) {
+        layer_ptr = wlmtk_desktop_get_layer(
+            server_ptr->desktop_ptr,
+            wlmaker_clip_layer(server_ptr, false));
+    }
+    struct wlr_output *wlr_output_ptr = wlmbe_output_description_first_fnmatch(
+        &clip_ptr->output_description, server_ptr->wlr_output_layout_ptr);
+    if (NULL == wlr_output_ptr) {
+        wlr_output_ptr = wlmbe_primary_output(server_ptr->wlr_output_layout_ptr);
+    }
+    if (NULL != layer_ptr && NULL != wlr_output_ptr) {
+        wlmtk_layer_add_panel(layer_ptr, wlmtk_dock_panel(lane_ptr->dock_ptr),
+                              wlr_output_ptr);
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Arranges the Clip's tiles on its grid: Its column (lane 0) holds the Clip,
+ * then a tile per slot: a dock-app, or a spacer (room for a launcher, or a
+ * hole). Each further lane with dock-apps has a dock of its own, beside.
+ */
+void _wlmaker_clip_arrange_grid(wlmaker_clip_t *clip_ptr)
+{
+    if (NULL == clip_ptr->dockapps_ptr) return;
+    _wlmaker_clip_update_grid(clip_ptr);
+    const wlmaker_clip_grid_t *g_ptr = &clip_ptr->grid;
+    size_t nl = clip_ptr->clip_launchers;
+    size_t nd = g_ptr->n - nl;
+    const struct wlmtk_tile_style *ts_ptr = &clip_ptr->super_tile.style;
+
+    // Lanes holding dock-apps.
+    size_t lanes = 0;
+    for (size_t j = 0; j < nd; ++j) {
+        int l = g_ptr->cells_ptr[nl + j].lane;
+        if (0 < l && (size_t)l > lanes) lanes = l;
+    }
+    if (lanes > clip_ptr->lanes) {
+        wlmaker_clip_lane_t *l_ptr = realloc(
+            clip_ptr->lanes_ptr, lanes * sizeof(wlmaker_clip_lane_t));
+        if (NULL == l_ptr) {
+            bs_log(BS_ERROR, "Failed realloc() for the Clip's lanes.");
+            lanes = clip_ptr->lanes;
+        } else {
+            memset(&l_ptr[clip_ptr->lanes], 0,
+                   (lanes - clip_ptr->lanes) * sizeof(wlmaker_clip_lane_t));
+            clip_ptr->lanes_ptr = l_ptr;
+            clip_ptr->lanes = lanes;
+        }
+    }
+    for (size_t l = 1; l <= clip_ptr->lanes; ++l) {
+        bool used = false;
+        for (size_t j = 0; !used && j < nd; ++j) {
+            used = (int)l == g_ptr->cells_ptr[nl + j].lane;
+        }
+        wlmaker_clip_lane_t *lane_ptr = &clip_ptr->lanes_ptr[l - 1];
+        if (used && NULL == lane_ptr->dock_ptr &&
+            !_wlmaker_clip_create_lane(clip_ptr, lane_ptr, l)) {
+            bs_log(BS_ERROR, "Failed to create lane %zu of the Clip.", l);
+        }
+    }
+
+    // Each dock-app into the dock of its lane.
+    for (size_t j = 0; j < nd; ++j) {
+        int l = g_ptr->cells_ptr[nl + j].lane;
+        wlmtk_dock_t *dock_ptr = clip_ptr->wlmtk_dock_ptr;
+        if (0 < l && (size_t)l <= clip_ptr->lanes &&
+            NULL != clip_ptr->lanes_ptr[l - 1].dock_ptr) {
+            dock_ptr = clip_ptr->lanes_ptr[l - 1].dock_ptr;
+        }
+        _wlmaker_clip_move_tile_to(
+            clip_ptr, wlmaker_dockapps_tile_at(clip_ptr->dockapps_ptr, j),
+            dock_ptr);
+    }
+
+    // Lanes without dock-apps go away; the others get their order.
+    for (size_t l = 0; l <= clip_ptr->lanes; ++l) {
+        wlmtk_dock_t *dock_ptr;
+        wlmtk_tile_t **spacers_ptr_ptr;
+        size_t *spacers_ptr;
+        if (0 == l) {
+            dock_ptr = clip_ptr->wlmtk_dock_ptr;
+            spacers_ptr_ptr = &clip_ptr->spacer_tiles_ptr;
+            spacers_ptr = &clip_ptr->spacer_tiles;
+        } else {
+            wlmaker_clip_lane_t *lane_ptr = &clip_ptr->lanes_ptr[l - 1];
+            dock_ptr = lane_ptr->dock_ptr;
+            spacers_ptr_ptr = &lane_ptr->spacers_ptr;
+            spacers_ptr = &lane_ptr->spacers;
+        }
+        if (NULL == dock_ptr) continue;
+        // The column reaches its last icon; another lane its last dock-app
+        // (its launchers are drawn by `wlmdock --clip`).
+        int last = 0, dockapps = 0;
+        for (size_t i = 0; i < g_ptr->n; ++i) {
+            const wlmaker_clip_cell_t *c_ptr = &g_ptr->cells_ptr[i];
+            if ((int)l != c_ptr->lane) continue;
+            if (i >= nl) ++dockapps;
+            if (0 == l || i >= nl) last = BS_MAX(last, c_ptr->slot);
+        }
+        if (0 < l && 0 == dockapps) {
+            _wlmaker_clip_destroy_lane(clip_ptr, &clip_ptr->lanes_ptr[l - 1]);
+            continue;
+        }
+        int first = (0 == l) ? 1 : 0;
+        size_t spacers = (size_t)BS_MAX(0, last + 1 - first - dockapps);
+        if (!_wlmaker_clip_pool_spacers(dock_ptr, spacers_ptr_ptr, spacers_ptr,
+                                        spacers, ts_ptr)) {
+            bs_log(BS_WARNING, "Clip lane %zu: Failed to keep %zu spacers.",
+                   l, spacers);
+        }
+        size_t k = 0;
+        for (int slot = first; slot <= last; ++slot) {
+            wlmaker_clip_cell_t c = { .lane = l, .slot = slot };
+            size_t i = wlmaker_clip_grid_icon_at(g_ptr, &c, SIZE_MAX);
+            wlmtk_tile_t *tile_ptr = NULL;
+            if (SIZE_MAX != i && i >= nl) {
+                tile_ptr = wlmaker_dockapps_tile_at(
+                    clip_ptr->dockapps_ptr, i - nl);
+            } else if (k < *spacers_ptr) {
+                tile_ptr = &(*spacers_ptr_ptr)[k++];
+            }
+            if (NULL != tile_ptr) {
+                wlmtk_dock_move_tile(dock_ptr, tile_ptr, slot);
+            }
+        }
+    }
+    // Lanes past the last used: Dropped.
+    while (0 < clip_ptr->lanes &&
+           NULL == clip_ptr->lanes_ptr[clip_ptr->lanes - 1].dock_ptr) {
+        --clip_ptr->lanes;
+    }
+    if (0 == clip_ptr->lanes && NULL != clip_ptr->lanes_ptr) {
+        free(clip_ptr->lanes_ptr);
+        clip_ptr->lanes_ptr = NULL;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Arranges the tiles of the Clip and of the Dock's dock-apps: The room for
  * each launcher (a spacer) and the dock-apps, in the column's order. Then
  * publishes the layout for `wlmdock`.
  */
 void _wlmaker_clip_arrange(wlmaker_clip_t *clip_ptr)
 {
-    for (int dock = 0; dock < 2; ++dock) {
+    if (clip_ptr->arranging) return;
+    clip_ptr->arranging = true;
+    // The Clip: On its grid, as Window Maker's.
+    _wlmaker_clip_arrange_grid(clip_ptr);
+    for (int dock = 1; dock < 2; ++dock) {
         wlmaker_dock_column_t column;
         if (!wlmaker_clip_column_id(
                 clip_ptr->server_ptr,
@@ -2978,6 +3564,7 @@ void _wlmaker_clip_arrange(wlmaker_clip_t *clip_ptr)
         wlmaker_drawer_update_position(clip_ptr->drawers_ptr[i]);
     }
     _wlmaker_clip_publish_layout(clip_ptr);
+    clip_ptr->arranging = false;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2985,6 +3572,87 @@ void _wlmaker_clip_arrange(wlmaker_clip_t *clip_ptr)
 void _wlmaker_clip_handle_dockapps_changed(void *ud_ptr)
 {
     _wlmaker_clip_arrange(ud_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Adds a string to an array. */
+static bool _wlmaker_clip_push_string(bspl_array_t *a, const char *str_ptr)
+{
+    bspl_string_t *s_ptr = bspl_string_create(str_ptr);
+    bool rv = NULL != s_ptr &&
+        bspl_array_push_back(a, bspl_object_from_string(s_ptr));
+    if (NULL != s_ptr) bspl_string_unref(s_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Adds a string to a dict. */
+static bool _wlmaker_clip_add_string(
+    bspl_dict_t *d,
+    const char *key_ptr,
+    const char *str_ptr)
+{
+    bspl_string_t *s_ptr = bspl_string_create(str_ptr);
+    bool rv = NULL != s_ptr &&
+        bspl_dict_add(d, key_ptr, bspl_object_from_string(s_ptr));
+    if (NULL != s_ptr) bspl_string_unref(s_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Adds the layout of the Clip's grid to `dict_ptr`, as section "Clip":
+ * `Cells`, the cell of each launcher `wlmdock --clip` shows; `Origin`, the
+ * slot its surface starts at (1, after the Clip; 0 with a launcher beside
+ * the Clip); `Positions` (the slot of the dock-apps in the column) and
+ * `DockappCells` for other clients.
+ */
+static bool _wlmaker_clip_grid_layout_section(
+    wlmaker_clip_t *clip_ptr,
+    bspl_dict_t *dict_ptr)
+{
+    const wlmaker_clip_grid_t *g_ptr = &clip_ptr->grid;
+    size_t nl = BS_MIN(clip_ptr->clip_launchers, g_ptr->n);
+    bspl_dict_t *section_ptr = bspl_dict_create();
+    bspl_array_t *cells_ptr = bspl_array_create();
+    bspl_dict_t *positions_ptr = bspl_dict_create();
+    bspl_dict_t *dockapp_cells_ptr = bspl_dict_create();
+    bool rv = NULL != section_ptr && NULL != cells_ptr &&
+        NULL != positions_ptr && NULL != dockapp_cells_ptr;
+    char buf[32];
+    int origin = 1;
+    for (size_t i = 0; rv && i < nl; ++i) {
+        wlmaker_clip_cell_format(&g_ptr->cells_ptr[i], buf, sizeof(buf));
+        rv = _wlmaker_clip_push_string(cells_ptr, buf);
+        if (0 == g_ptr->cells_ptr[i].slot) origin = 0;
+    }
+    for (size_t i = nl; rv && i < g_ptr->n; ++i) {
+        const char *name_ptr = wlmaker_dockapps_name(
+            clip_ptr->dockapps_ptr,
+            wlmaker_dockapps_tile_at(clip_ptr->dockapps_ptr, i - nl));
+        if (NULL == name_ptr) continue;
+        wlmaker_clip_cell_format(&g_ptr->cells_ptr[i], buf, sizeof(buf));
+        rv = _wlmaker_clip_add_string(dockapp_cells_ptr, name_ptr, buf);
+        if (rv && 0 == g_ptr->cells_ptr[i].lane) {
+            snprintf(buf, sizeof(buf), "%d", g_ptr->cells_ptr[i].slot);
+            rv = _wlmaker_clip_add_string(positions_ptr, name_ptr, buf);
+        }
+    }
+    snprintf(buf, sizeof(buf), "%d", origin);
+    rv = rv &&
+        bspl_dict_add(section_ptr, "Cells",
+                      bspl_object_from_array(cells_ptr)) &&
+        _wlmaker_clip_add_string(section_ptr, "Origin", buf) &&
+        bspl_dict_add(section_ptr, "Positions",
+                      bspl_object_from_dict(positions_ptr)) &&
+        bspl_dict_add(section_ptr, "DockappCells",
+                      bspl_object_from_dict(dockapp_cells_ptr)) &&
+        bspl_dict_add(dict_ptr, "Clip", bspl_object_from_dict(section_ptr));
+    if (NULL != dockapp_cells_ptr) bspl_dict_unref(dockapp_cells_ptr);
+    if (NULL != positions_ptr) bspl_dict_unref(positions_ptr);
+    if (NULL != cells_ptr) bspl_array_unref(cells_ptr);
+    if (NULL != section_ptr) bspl_dict_unref(section_ptr);
+    return rv;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -3064,8 +3732,7 @@ void _wlmaker_clip_publish_layout(wlmaker_clip_t *clip_ptr)
     bs_dynbuf_t dynbuf = {};
     bool rv = _wlmaker_clip_layout_section(
         clip_ptr, WLMAKER_COLUMN_DOCK, "Dock", dict_ptr) &&
-        _wlmaker_clip_layout_section(
-            clip_ptr, WLMAKER_COLUMN_CLIP, "Clip", dict_ptr) &&
+        _wlmaker_clip_grid_layout_section(clip_ptr, dict_ptr) &&
         bs_dynbuf_init(&dynbuf, 1024, SIZE_MAX) &&
         bspl_object_write(bspl_object_from_dict(dict_ptr), &dynbuf) &&
         bs_dynbuf_append_char(&dynbuf, '\0');

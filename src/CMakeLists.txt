@@ -49,6 +49,7 @@ set(public_header_files
   action.h
   action_item.h
   clip.h
+  clip_grid.h
   config.h
   context_menu.h
   corner.h
@@ -91,6 +92,7 @@ target_sources(wlmaker_lib PRIVATE
   action.c
   action_item.c
   clip.c
+  clip_grid.c
   config.c
   context_menu.c
   corner.c
