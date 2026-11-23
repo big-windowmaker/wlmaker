@@ -1474,6 +1474,14 @@ void _wlmaker_layer_panel_end_drag(wlmaker_layer_panel_t *layer_panel_ptr)
         wlmtk_container_pointer_grab_release(
             element_ptr->parent_container_ptr, element_ptr);
     }
+    // The surface's own grab, from the button press: The release went to
+    // the drag, never to the surface. Left, it kept the pointer on the panel
+    // (any motion "accepted"), so the next click anywhere went to this
+    // panel while the seat's focus was elsewhere.
+    if (NULL != layer_panel_ptr->super_panel.super_container.
+        pointer_grab_element_ptr) {
+        layer_panel_ptr->orig_element_vmt.pointer_grab_cancel(element_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
