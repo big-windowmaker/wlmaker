@@ -102,7 +102,20 @@ wlmdock_tilebox_t *wlmdock_tilebox_create(
 /* ------------------------------------------------------------------------- */
 void wlmdock_tilebox_destroy(wlmdock_tilebox_t *tilebox_ptr)
 {
+    // As a plain box does (its container destroys the elements left): The
+    // grid's tiles still there go too, eg. the Clip's launchers at exit.
+    size_t n = tilebox_ptr->grid ? tilebox_ptr->grid_n : 0;
+    wlmtk_tile_t **left_ptr = 0 < n ? logged_calloc(n, sizeof(wlmtk_tile_t*)) : NULL;
+    if (NULL != left_ptr) {
+        memcpy(left_ptr, tilebox_ptr->grid_tiles_ptr, n * sizeof(wlmtk_tile_t*));
+    }
     _wlmdock_tilebox_clear_grid(tilebox_ptr);
+    for (size_t i = 0; NULL != left_ptr && i < n; ++i) {
+        if (NULL == left_ptr[i]) continue;
+        bs_dllist_remove(&tilebox_ptr->tiles, wlmtk_dlnode_from_tile(left_ptr[i]));
+        wlmtk_element_destroy(wlmtk_tile_element(left_ptr[i]));
+    }
+    if (NULL != left_ptr) free(left_ptr);
     if (NULL != tilebox_ptr->grid_tiles_ptr) free(tilebox_ptr->grid_tiles_ptr);
     if (NULL != tilebox_ptr->grid_cells_ptr) free(tilebox_ptr->grid_cells_ptr);
     wlmtk_box_fini(&tilebox_ptr->tile_box);
