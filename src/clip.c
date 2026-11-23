@@ -259,6 +259,7 @@ static bool _wlmaker_clip_pool_spacers(
 static void _wlmaker_clip_destroy_lane(
     wlmaker_clip_t *clip_ptr,
     wlmaker_clip_lane_t *lane_ptr);
+static void _wlmaker_clip_replace_lanes(wlmaker_clip_t *clip_ptr);
 static void _wlmaker_clip_handle_dockapps_changed(void *ud_ptr);
 static void _wlmaker_clip_publish_layout(wlmaker_clip_t *clip_ptr);
 static bool _wlmaker_clip_set_spacers(
@@ -2439,6 +2440,8 @@ void _wlmaker_clip_handle_output_layout_change(
             wlmtk_dock_panel(clip_ptr->wlmtk_dock_ptr),
             wlr_output_ptr);
     }
+    // The lanes of its grid go along.
+    _wlmaker_clip_replace_lanes(clip_ptr);
 
     // The Dock is on the primary output, its dock-apps go along. When the
     // output they were on went away, they were left on another output; and
@@ -2576,6 +2579,11 @@ void _wlmaker_clip_handle_theme_changed(
             clip_ptr, &style_ptr->tile, &style_ptr->clip)) return;
     if (!_wlmaker_clip_update_image(clip_ptr, &style_ptr->tile)) return;
     clip_ptr->style = style_ptr->clip;
+    // The grid's lanes: Their dock-apps back to the Clip's dock, which takes
+    // the style; then arranged again, in new docks.
+    for (size_t i = 0; i < clip_ptr->lanes; ++i) {
+        _wlmaker_clip_destroy_lane(clip_ptr, &clip_ptr->lanes_ptr[i]);
+    }
 
     wlmtk_dock_set_style(
         clip_ptr->wlmtk_dock_ptr,
@@ -2587,6 +2595,7 @@ void _wlmaker_clip_handle_theme_changed(
     // overwrites.
     _wlmaker_clip_apply_button_state(clip_ptr);
     _wlmaker_clip_update_spacers(clip_ptr, &style_ptr->tile);
+    _wlmaker_clip_arrange(clip_ptr);
 
     // The Dock and the Clip's launchers (wlmdock) take the new theme too,
     // as Window Maker's Dock does at once.
@@ -2747,6 +2756,7 @@ void _wlmaker_clip_apply_preview(void *data_ptr)
 
     // Re-adding the tile cancels the pointer grab: Restore it.
     _wlmaker_clip_set_place(clip_ptr->wlmtk_dock_ptr, clip_ptr->preview_place);
+    _wlmaker_clip_arrange(clip_ptr);
     clip_ptr->drag_pending = true;
     clip_ptr->dragging = true;
     wlmtk_element_t *element_ptr = wlmtk_tile_element(&clip_ptr->super_tile);
@@ -3038,6 +3048,7 @@ void _wlmaker_clip_apply_level(wlmaker_clip_t *clip_ptr, bool dock)
     } else {
         _wlmaker_clip_move_panel(
             clip_ptr, wlmtk_dock_panel(clip_ptr->wlmtk_dock_ptr), layer);
+        _wlmaker_clip_replace_lanes(clip_ptr);
         if (NULL != server_ptr->clip_layer_panel_ptr) {
             wlmaker_layer_panel_update_layer(server_ptr->clip_layer_panel_ptr);
         }
@@ -3077,6 +3088,14 @@ bool _wlmaker_clip_pointer_on(wlmaker_clip_t *clip_ptr, bool dock)
     struct wlr_cursor *c = wlmim_wlr_cursor(server_ptr->input_manager_ptr);
     wlmaker_dock_column_t column;
     if (!wlmaker_clip_column(server_ptr, dock, &column)) return false;
+    // The Clip's grid: On the Clip, or on any of its icons.
+    if (column.grid) {
+        struct wlr_box b = { .x = column.x, .y = column.y,
+                             .width = column.size, .height = column.size };
+        return wlr_box_contains_point(&b, c->x, c->y) ||
+            SIZE_MAX != wlmaker_clip_grid_icon_at_point(
+                server_ptr, c->x, c->y, NULL, NULL);
+    }
     size_t n = 1 + column.launchers + column.dockapps;
     struct wlr_box box = { .x = column.x, .y = column.y,
                            .width = column.size, .height = column.size };
@@ -3454,6 +3473,47 @@ void _wlmaker_clip_destroy_lane(
 }
 
 /* ------------------------------------------------------------------------- */
+/** @return The positioning of lane `lane`: The Clip's, `lane` tiles away. */
+static wlmtk_dock_positioning_t _wlmaker_clip_lane_positioning(
+    wlmaker_clip_t *clip_ptr,
+    int lane)
+{
+    wlmtk_dock_positioning_t pos = *wlmtk_dock_get_positioning(
+        clip_ptr->wlmtk_dock_ptr);
+    int pitch = clip_ptr->super_tile.style.size +
+        clip_ptr->server_ptr->style_ptr->dock.margin.width;
+    pos.edge_offset = pos.edge_offset + lane * pitch;
+    pos.overlay = true;
+    return pos;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Puts the lanes' docks where the Clip's is: Its layer, its output. After
+ * the Clip's level or output changed.
+ */
+void _wlmaker_clip_replace_lanes(wlmaker_clip_t *clip_ptr)
+{
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    wlmtk_layer_t *layer_ptr = wlmtk_panel_get_layer(
+        wlmtk_dock_panel(clip_ptr->wlmtk_dock_ptr));
+    struct wlr_output *wlr_output_ptr = wlmbe_output_description_first_fnmatch(
+        &clip_ptr->output_description, server_ptr->wlr_output_layout_ptr);
+    if (NULL == wlr_output_ptr) {
+        wlr_output_ptr = wlmbe_primary_output(server_ptr->wlr_output_layout_ptr);
+    }
+    for (size_t i = 0; i < clip_ptr->lanes; ++i) {
+        if (NULL == clip_ptr->lanes_ptr[i].dock_ptr) continue;
+        wlmtk_panel_t *p_ptr = wlmtk_dock_panel(clip_ptr->lanes_ptr[i].dock_ptr);
+        wlmtk_layer_t *current_ptr = wlmtk_panel_get_layer(p_ptr);
+        if (NULL != current_ptr) wlmtk_layer_remove_panel(current_ptr, p_ptr);
+        if (NULL != layer_ptr && NULL != wlr_output_ptr) {
+            wlmtk_layer_add_panel(layer_ptr, p_ptr, wlr_output_ptr);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 /** Creates the dock of lane `lane` (1 ..): Beside the Clip's, `lane` away. */
 static bool _wlmaker_clip_create_lane(
     wlmaker_clip_t *clip_ptr,
@@ -3461,12 +3521,8 @@ static bool _wlmaker_clip_create_lane(
     int lane)
 {
     wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
-    wlmtk_dock_positioning_t pos = *wlmtk_dock_get_positioning(
-        clip_ptr->wlmtk_dock_ptr);
-    int pitch = clip_ptr->super_tile.style.size +
-        server_ptr->style_ptr->dock.margin.width;
-    pos.edge_offset = pos.edge_offset + lane * pitch;
-    pos.overlay = true;
+    wlmtk_dock_positioning_t pos = _wlmaker_clip_lane_positioning(
+        clip_ptr, lane);
     lane_ptr->dock_ptr = wlmtk_dock_create(&pos, &server_ptr->style_ptr->dock);
     if (NULL == lane_ptr->dock_ptr) return false;
     wlmtk_element_set_visible(wlmtk_dock_element(lane_ptr->dock_ptr), true);
@@ -3533,6 +3589,19 @@ void _wlmaker_clip_arrange_grid(wlmaker_clip_t *clip_ptr)
         if (used && NULL == lane_ptr->dock_ptr &&
             !_wlmaker_clip_create_lane(clip_ptr, lane_ptr, l)) {
             bs_log(BS_ERROR, "Failed to create lane %zu of the Clip.", l);
+        }
+        // Where the Clip is now: Eg. moved to another corner.
+        if (NULL != lane_ptr->dock_ptr) {
+            wlmtk_dock_positioning_t pos = _wlmaker_clip_lane_positioning(
+                clip_ptr, l);
+            const wlmtk_dock_positioning_t *cur_ptr =
+                wlmtk_dock_get_positioning(lane_ptr->dock_ptr);
+            if (0 != memcmp(&pos, cur_ptr, sizeof(pos)) &&
+                !wlmtk_dock_set_positioning(lane_ptr->dock_ptr, &pos)) {
+                // Another orientation: A new dock.
+                _wlmaker_clip_destroy_lane(clip_ptr, lane_ptr);
+                if (used) _wlmaker_clip_create_lane(clip_ptr, lane_ptr, l);
+            }
         }
     }
 

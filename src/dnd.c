@@ -504,6 +504,21 @@ bspl_dict_t *_wlmaker_dnd_launcher_at(
         if (NULL != drawer_ptr && wlmaker_drawer_collapsed(drawer_ptr)) {
             continue;
         }
+        if (column.grid) {
+            // The Clip's launchers, in their cells.
+            size_t i = wlmaker_clip_grid_icon_at_point(
+                server_ptr, x, y, NULL, NULL);
+            if (SIZE_MAX == i || i >= column.launchers) continue;
+            bspl_array_t *a = wlmaker_dock_launchers_load_column(
+                server_ptr, id);
+            bspl_dict_t *dict_ptr = NULL;
+            if (NULL != a && i < bspl_array_size(a)) {
+                dict_ptr = bspl_dict_ref(
+                    bspl_dict_from_object(bspl_array_at(a, i)));
+            }
+            if (NULL != a) bspl_array_unref(a);
+            return dict_ptr;
+        }
         for (size_t i = 0; i < column.launchers; ++i) {
             int d = (int)(1 + wlmaker_dock_column_launcher_position(
                               &column, i)) * column.pitch;
