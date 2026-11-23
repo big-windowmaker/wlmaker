@@ -373,6 +373,16 @@ int wlmaker_clip_dockapp_delta_towards(
     wlmtk_tile_t *tile_ptr,
     uint32_t direction);
 
+/**
+ * Moves the dock-app of `tile_ptr`, on the Clip's grid, to the cell next to
+ * it towards `direction`: Into a free one, or swapping with the icon there.
+ * @return false if not on the Clip's grid, or it can't move there.
+ */
+bool wlmaker_clip_move_dockapp_towards(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    uint32_t direction);
+
 /** Moves the dock-app of `tile_ptr` by `delta` places, see above. */
 void wlmaker_clip_move_dockapp_by(
     wlmaker_server_t *server_ptr,

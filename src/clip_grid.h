@@ -136,6 +136,15 @@ wlmaker_clip_cell_t wlmaker_clip_cell_at(
     int tile_x,
     int tile_y);
 
+/**
+ * @return The cell next to `cell_ptr` on the screen, towards `direction`
+ *     (one of WLR_EDGE_TOP, _BOTTOM, _LEFT, _RIGHT), for the Clip at `place`.
+ */
+wlmaker_clip_cell_t wlmaker_clip_cell_towards(
+    wlmaker_dock_place_t place,
+    const wlmaker_clip_cell_t *cell_ptr,
+    uint32_t direction);
+
 /** @return Whether `cell_ptr` is within the grid's bounds. */
 bool wlmaker_clip_grid_contains(
     const wlmaker_clip_grid_t *grid_ptr,

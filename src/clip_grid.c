@@ -158,6 +158,28 @@ wlmaker_clip_cell_t wlmaker_clip_cell_at(
 }
 
 /* ------------------------------------------------------------------------- */
+wlmaker_clip_cell_t wlmaker_clip_cell_towards(
+    wlmaker_dock_place_t place,
+    const wlmaker_clip_cell_t *cell_ptr,
+    uint32_t direction)
+{
+    int dx = 0, dy = 0;
+    if (WLR_EDGE_LEFT == direction) dx = -1;
+    if (WLR_EDGE_RIGHT == direction) dx = 1;
+    if (WLR_EDGE_TOP == direction) dy = -1;
+    if (WLR_EDGE_BOTTOM == direction) dy = 1;
+    wlmaker_clip_cell_t c = *cell_ptr;
+    if (wlmaker_dock_place_vertical(place)) {
+        c.lane += (WLR_EDGE_RIGHT == place.edge) ? -dx : dx;
+        c.slot += (WLR_EDGE_BOTTOM == place.anchor) ? -dy : dy;
+    } else {
+        c.lane += (WLR_EDGE_BOTTOM == place.edge) ? -dy : dy;
+        c.slot += (WLR_EDGE_RIGHT == place.anchor) ? -dx : dx;
+    }
+    return c;
+}
+
+/* ------------------------------------------------------------------------- */
 bool wlmaker_clip_grid_contains(
     const wlmaker_clip_grid_t *grid_ptr,
     const wlmaker_clip_cell_t *cell_ptr)
@@ -476,6 +498,18 @@ void test_geometry(bs_test_t *test_ptr)
     c = wlmaker_clip_cell_at(tr, cx, 0, 64, 65, cx - 130, 65);
     BS_TEST_VERIFY_EQ(test_ptr, 1, c.lane);
     BS_TEST_VERIFY_EQ(test_ptr, 2, c.slot);
+
+    // Neighbours on the screen: Right of a cell at the right edge is a
+    // lane less; above, at the bottom anchor, a slot more.
+    c = (wlmaker_clip_cell_t){ .lane = 1, .slot = 2 };
+    wlmaker_clip_cell_t n = wlmaker_clip_cell_towards(br, &c, WLR_EDGE_RIGHT);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, n.lane);
+    n = wlmaker_clip_cell_towards(br, &c, WLR_EDGE_TOP);
+    BS_TEST_VERIFY_EQ(test_ptr, 3, n.slot);
+    n = wlmaker_clip_cell_towards(tl, &c, WLR_EDGE_RIGHT);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, n.lane);
+    n = wlmaker_clip_cell_towards(tr, &c, WLR_EDGE_BOTTOM);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, n.lane);
 }
 
 /* ------------------------------------------------------------------------- */

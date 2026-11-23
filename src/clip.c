@@ -1341,6 +1341,93 @@ static bool _wlmaker_clip_dockapp_place(
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * For a dock-app of the Clip: Its icon on the grid, and the cell next to it
+ * towards `direction`, with the icon there (or SIZE_MAX).
+ * @return Whether it can move there: The cell is on the output, and free
+ *     next to another icon (than itself), or holds another icon (they swap).
+ */
+static bool _wlmaker_clip_grid_move_target(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    uint32_t direction,
+    size_t *icon_ptr,
+    wlmaker_clip_cell_t *cell_ptr,
+    size_t *other_ptr)
+{
+    wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
+    if (NULL == clip_ptr ||
+        wlmaker_clip_dockapps_of(server_ptr, tile_ptr) != clip_ptr->dockapps_ptr) {
+        return false;
+    }
+    int index = wlmaker_dockapps_index(clip_ptr->dockapps_ptr, tile_ptr);
+    size_t icon = clip_ptr->clip_launchers + (size_t)index;
+    if (0 > index || icon >= clip_ptr->grid.n) return false;
+    const wlmtk_dock_positioning_t *pos_ptr = wlmtk_dock_get_positioning(
+        clip_ptr->wlmtk_dock_ptr);
+    wlmaker_clip_cell_t c = wlmaker_clip_cell_towards(
+        (wlmaker_dock_place_t){ pos_ptr->edge, pos_ptr->anchor },
+        &clip_ptr->grid.cells_ptr[icon], direction);
+    *icon_ptr = icon;
+    *cell_ptr = c;
+    *other_ptr = wlmaker_clip_grid_icon_at(&clip_ptr->grid, &c, icon);
+    if (!wlmaker_clip_grid_contains(&clip_ptr->grid, &c) ||
+        (0 == c.lane && 0 == c.slot)) return false;
+    if (SIZE_MAX != *other_ptr) return true;
+    return WLMAKER_CLIP_GRID_ATTACH ==
+        wlmaker_clip_grid_snap(&clip_ptr->grid, &c, icon);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_clip_move_dockapp_towards(
+    wlmaker_server_t *server_ptr,
+    wlmtk_tile_t *tile_ptr,
+    uint32_t direction)
+{
+    size_t icon, other;
+    wlmaker_clip_cell_t cell;
+    if (!_wlmaker_clip_grid_move_target(server_ptr, tile_ptr, direction,
+                                        &icon, &cell, &other)) {
+        return false;
+    }
+    wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
+    wlmaker_clip_freeze_grid(server_ptr);
+    wlmaker_clip_cell_t from = clip_ptr->grid.cells_ptr[icon];
+    size_t nl = clip_ptr->clip_launchers;
+    if (SIZE_MAX != other && other < nl) {
+        // A launcher: It takes the dock-app's cell.
+        wlmaker_clip_cell_t *cells_ptr = logged_calloc(
+            nl, sizeof(wlmaker_clip_cell_t));
+        bool *set_ptr = logged_calloc(nl, sizeof(bool));
+        if (NULL != cells_ptr && NULL != set_ptr) {
+            memcpy(cells_ptr, clip_ptr->grid.cells_ptr,
+                   nl * sizeof(wlmaker_clip_cell_t));
+            cells_ptr[other] = from;
+            set_ptr[other] = true;
+            wlmaker_dock_launchers_set_cells(server_ptr, cells_ptr, set_ptr, nl);
+        }
+        if (NULL != set_ptr) free(set_ptr);
+        if (NULL != cells_ptr) free(cells_ptr);
+    }
+    wlmaker_dockapps_cell_update_t u[2] = {};
+    size_t n = 0;
+    u[n++] = (wlmaker_dockapps_cell_update_t){
+        .name_ptr = wlmaker_dockapps_name(clip_ptr->dockapps_ptr, tile_ptr),
+        .has_cell = true, .cell = cell };
+    if (SIZE_MAX != other && other >= nl) {
+        // Another dock-app: They swap.
+        u[n++] = (wlmaker_dockapps_cell_update_t){
+            .name_ptr = wlmaker_dockapps_name(
+                clip_ptr->dockapps_ptr,
+                wlmaker_dockapps_tile_at(clip_ptr->dockapps_ptr, other - nl)),
+            .has_cell = true, .cell = from };
+    }
+    wlmaker_dockapps_set_cells(clip_ptr->dockapps_ptr, u, n);
+    _wlmaker_clip_arrange(clip_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 int wlmaker_clip_dockapp_delta_towards(
     wlmaker_server_t *server_ptr,
     wlmtk_tile_t *tile_ptr,
@@ -1348,6 +1435,14 @@ int wlmaker_clip_dockapp_delta_towards(
 {
     wlmaker_dockapps_t *d_ptr = wlmaker_clip_dockapps_of(server_ptr, tile_ptr);
     if (NULL == d_ptr) return 0;
+    // On the Clip's grid: In all four directions, cell by cell.
+    if (NULL != server_ptr->clip_ptr &&
+        d_ptr == server_ptr->clip_ptr->dockapps_ptr) {
+        size_t icon, other;
+        wlmaker_clip_cell_t cell;
+        return _wlmaker_clip_grid_move_target(
+            server_ptr, tile_ptr, direction, &icon, &cell, &other) ? 1 : 0;
+    }
     wlmaker_dock_column_t column;
     size_t position;
     if (!_wlmaker_clip_dockapp_place(server_ptr, tile_ptr, &column,

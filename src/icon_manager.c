@@ -904,7 +904,10 @@ static void _wlmaker_toplevel_icon_move(
     wlmaker_toplevel_icon_t *toplevel_icon_ptr, uint32_t direction)
 {
     wlmaker_server_t *server_ptr = toplevel_icon_ptr->icon_manager_ptr->server_ptr;
-    // In the Dock and the Clip: Past a launcher, or another dock-app.
+    // On the Clip's grid: To the next cell.
+    if (wlmaker_clip_move_dockapp_towards(
+            server_ptr, &toplevel_icon_ptr->super_tile, direction)) return;
+    // In the Dock: Past a launcher, or another dock-app.
     wlmaker_clip_move_dockapp_by(
         server_ptr,
         &toplevel_icon_ptr->super_tile,
