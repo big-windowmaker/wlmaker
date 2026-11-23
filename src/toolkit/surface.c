@@ -21,6 +21,8 @@
 
 #include "surface.h"
 
+#include <inttypes.h>
+
 #include <libbase/libbase.h>
 #include <stdlib.h>
 #include <wayland-server-protocol.h>
@@ -580,9 +582,17 @@ bool _wlmtk_surface_element_pointer_button(
     // WLMTK_BUTTON_UP event. Needs a test and fixing.
     // Additionally, this appears to trigger when creating a new XWL popup and
     // the UP event goes to the new surface. Also needs test & fixing.
-    if (WLMTK_BUTTON_UP != button_event_ptr->type) {
-        BS_ASSERT(surface_ptr->wlr_surface_ptr ==
-                  wlr_surface_get_root_surface(focused_wlr_surface_ptr));
+    // The seat's pointer focus is another surface (eg. a dock-app's, whose
+    // tile came under the pointer as the Dock changed): Not this surface's
+    // button. It ended the session, from a click on the Dock.
+    if (WLMTK_BUTTON_UP != button_event_ptr->type &&
+        surface_ptr->wlr_surface_ptr !=
+        wlr_surface_get_root_surface(focused_wlr_surface_ptr)) {
+        bs_log(BS_WARNING, "Surface %p: Button %"PRIu32" while the pointer "
+               "focus is on surface %p. Not forwarded.",
+               surface_ptr->wlr_surface_ptr, button_event_ptr->button,
+               focused_wlr_surface_ptr);
+        return false;
     }
 
     // We're only forwarding PRESSED & RELEASED events.
