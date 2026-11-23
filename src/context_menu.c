@@ -333,10 +333,12 @@ void wlmaker_context_menu_open(wlmaker_context_menu_t *context_menu_ptr)
             moved.y = row.y - moved.height;
         }
     }
-    if (moved.y != bbox.y) {
+    // Not over the icons of the Clip's grid either (above the windows too).
+    wlmaker_clip_grid_avoid(server_ptr, &moved, &area);
+    if (moved.y != bbox.y || moved.x != bbox.x) {
         wlmtk_workspace_set_window_position(
             workspace_ptr, context_menu_ptr->window_ptr,
-            wx, wy + moved.y - bbox.y);
+            wx + moved.x - bbox.x, wy + moved.y - bbox.y);
     }
     // Keyboard focus: The menu's keys work, and Escape closes it.
     wlmtk_workspace_activate_window(workspace_ptr, context_menu_ptr->window_ptr);

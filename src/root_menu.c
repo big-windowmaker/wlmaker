@@ -21,6 +21,8 @@
 
 #include "root_menu.h"
 
+#include "clip.h"
+
 #include <inttypes.h>
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
@@ -476,6 +478,8 @@ void wlmaker_root_menu_open(wlmaker_root_menu_t *root_menu_ptr,
         root_menu_ptr->window_ptr);
     struct wlr_box pos = wlmaker_context_menu_confine(
         &area, bbox.x, bbox.y, bbox.width, bbox.height);
+    // Not under the icons of the Clip's grid, which are above the windows.
+    wlmaker_clip_grid_avoid(server_ptr, &pos, &area);
     wlmtk_workspace_set_window_position(
         workspace_ptr, root_menu_ptr->window_ptr,
         x + pos.x - bbox.x, y + pos.y - bbox.y);

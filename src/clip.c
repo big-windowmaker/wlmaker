@@ -1145,6 +1145,55 @@ size_t wlmaker_clip_grid_icon_at_point(
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmaker_clip_grid_avoid(
+    wlmaker_server_t *server_ptr,
+    struct wlr_box *box_ptr,
+    const struct wlr_box *area_ptr)
+{
+    wlmaker_dock_column_t column;
+    if (!wlmaker_clip_column_id(server_ptr, WLMAKER_COLUMN_CLIP, &column) ||
+        0 >= column.pitch) return false;
+    const wlmaker_clip_grid_t *g_ptr = &server_ptr->clip_ptr->grid;
+    bool vertical = wlmaker_dock_place_vertical(column.place);
+    bool far = vertical ? WLR_EDGE_RIGHT == column.place.edge :
+        WLR_EDGE_BOTTOM == column.place.edge;
+    struct wlr_box b = *box_ptr;
+    bool moved = false;
+    // Past each icon it covers, away from the Clip's edge.
+    for (size_t round = 0; round <= g_ptr->n; ++round) {
+        bool hit = false;
+        for (size_t i = 0; i < g_ptr->n; ++i) {
+            int cx, cy;
+            wlmaker_clip_cell_position(column.place, column.x, column.y,
+                                       column.pitch, &g_ptr->cells_ptr[i],
+                                       &cx, &cy);
+            struct wlr_box c = { .x = cx, .y = cy,
+                                 .width = column.size, .height = column.size };
+            struct wlr_box isect;
+            if (!wlr_box_intersection(&isect, &c, &b)) continue;
+            hit = true;
+            int gap = column.pitch - column.size;
+            if (vertical) {
+                b.x = far ? c.x - gap - b.width : c.x + c.width + gap;
+            } else {
+                b.y = far ? c.y - gap - b.height : c.y + c.height + gap;
+            }
+        }
+        if (!hit) break;
+        moved = true;
+    }
+    // Off the area: Better over the icons than off the screen.
+    if (!moved || (NULL != area_ptr &&
+                   (b.x < area_ptr->x || b.y < area_ptr->y ||
+                    b.x + b.width > area_ptr->x + area_ptr->width ||
+                    b.y + b.height > area_ptr->y + area_ptr->height))) {
+        return false;
+    }
+    *box_ptr = b;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_clip_freeze_grid(wlmaker_server_t *server_ptr)
 {
     wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;

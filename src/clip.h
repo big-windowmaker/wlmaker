@@ -420,6 +420,16 @@ size_t wlmaker_clip_grid_icon_at_point(
     int *tile_y_ptr);
 
 /**
+ * Moves `box_ptr` (eg. a menu, which is below the docks) off the icons of
+ * the Clip's grid beside its column, away from the Clip's edge.
+ * @return true if moved, staying within `area_ptr` (may be NULL).
+ */
+bool wlmaker_clip_grid_avoid(
+    wlmaker_server_t *server_ptr,
+    struct wlr_box *box_ptr,
+    const struct wlr_box *area_ptr);
+
+/**
  * Stores the cells of the Clip's icons that have none stored yet (a state
  * from before the grid, or a new icon): Before icons are moved, so that the
  * others stay where they are, as on Window Maker.
