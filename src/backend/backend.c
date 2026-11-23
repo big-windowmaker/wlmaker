@@ -114,6 +114,14 @@ struct _wlmbe_backend_t {
 
     /** Listener for wlr_backend::events::new_output. */
     struct wl_listener        new_output_listener;
+    /** Listener for `add` of `wlr_output_layout::events`. */
+    struct wl_listener        layout_add_listener;
+    /**
+     * Name of the primary output: The first one in the layout. When it
+     * leaves the layout (unplugged, or a monitor that drops off for a
+     * moment) and comes back, it is the primary output again.
+     */
+    char                      *primary_name_ptr;
 
     /** Desired output width, for windowed mode. 0 for no preference. */
     uint32_t                  width;
@@ -161,6 +169,9 @@ static void _wlmbe_backend_handle_new_output(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmbe_backend_handle_output_power_set_mode(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmbe_backend_handle_layout_add(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
@@ -315,6 +326,11 @@ wlmbe_backend_t *wlmbe_backend_create(
         return NULL;
     }
 
+    wlmtk_util_connect_listener_signal(
+        &backend_ptr->wlr_output_layout_ptr->events.add,
+        &backend_ptr->layout_add_listener,
+        _wlmbe_backend_handle_layout_add);
+
     backend_ptr->wlr_scene_output_layout_ptr =
         wlr_scene_attach_output_layout(
             wlr_scene_ptr,
@@ -442,6 +458,7 @@ void wlmbe_backend_destroy(wlmbe_backend_t *backend_ptr)
 {
     wlmtk_util_disconnect_listener(&backend_ptr->output_power_set_mode_listener);
     wlmtk_util_disconnect_listener(&backend_ptr->new_output_listener);
+    wlmtk_util_disconnect_listener(&backend_ptr->layout_add_listener);
 
     if (NULL != backend_ptr->output_manager_ptr) {
         wlmbe_output_manager_destroy(backend_ptr->output_manager_ptr);
@@ -479,6 +496,10 @@ void wlmbe_backend_destroy(wlmbe_backend_t *backend_ptr)
     if (NULL != backend_ptr->state_fname_ptr) {
         free(backend_ptr->state_fname_ptr);
         backend_ptr->state_fname_ptr = NULL;
+    }
+    if (NULL != backend_ptr->primary_name_ptr) {
+        free(backend_ptr->primary_name_ptr);
+        backend_ptr->primary_name_ptr = NULL;
     }
 
     free(backend_ptr);
@@ -714,6 +735,41 @@ void _wlmbe_backend_handle_new_output(
         wlmbe_output_destroy(output_ptr);
     }
     wlr_output_destroy(wlr_output_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles `add` of `wlr_output_layout`: The first output to join the layout
+ * is the primary one (the Dock, the Clip, ...). wlroots appends an output
+ * that joins again (re-plugged, a monitor waking up, enabled through output
+ * management) at the end of the layout: Then the primary output is put
+ * first again, and the layout's change is told once more, for those that
+ * follow the primary output.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to struct wlr_output_layout_output.
+ */
+void _wlmbe_backend_handle_layout_add(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmbe_backend_t *backend_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmbe_backend_t, layout_add_listener);
+    struct wlr_output_layout_output *wolo_ptr = data_ptr;
+    struct wlr_output_layout *layout_ptr = backend_ptr->wlr_output_layout_ptr;
+
+    if (NULL == backend_ptr->primary_name_ptr) {
+        backend_ptr->primary_name_ptr = logged_strdup(wolo_ptr->output->name);
+        return;
+    }
+    if (0 != strcmp(backend_ptr->primary_name_ptr, wolo_ptr->output->name) ||
+        layout_ptr->outputs.next == &wolo_ptr->link) return;
+
+    wl_list_remove(&wolo_ptr->link);
+    wl_list_insert(&layout_ptr->outputs, &wolo_ptr->link);
+    bs_log(BS_INFO, "Output \"%s\" is the primary output again.",
+           wolo_ptr->output->name);
+    wl_signal_emit_mutable(&layout_ptr->events.change, layout_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1231,6 +1287,19 @@ void _wlmbe_backend_test_disabled_output(bs_test_t *test_ptr)
     so = wlr_scene_get_scene_output(wlr_scene_ptr, c);
     BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, so);
     BS_TEST_VERIFY_EQ(test_ptr, 3000, so->x);
+
+    // The primary output (the headless backend's own, the first) leaves
+    // the layout and comes back: It is the primary output again.
+    struct wlr_output *p = wlmbe_primary_output(wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, p);
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmbe_backend_test_configure(be, p, false, 0));
+    BS_TEST_VERIFY_NEQ(test_ptr, p, wlmbe_primary_output(wlr_output_layout_ptr));
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmbe_backend_test_configure(be, p, true, 0));
+    BS_TEST_VERIFY_EQ(test_ptr, p, wlmbe_primary_output(wlr_output_layout_ptr));
+    // Another output coming back stays behind it.
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmbe_backend_test_configure(be, b, false, 0));
+    BS_TEST_VERIFY_TRUE(test_ptr, _wlmbe_backend_test_configure(be, b, true, 2000));
+    BS_TEST_VERIFY_EQ(test_ptr, p, wlmbe_primary_output(wlr_output_layout_ptr));
 
     // Unplugging an output removes it from the list and from the heads.
     wlr_output_destroy(a);

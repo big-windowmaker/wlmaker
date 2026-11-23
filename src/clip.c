@@ -2161,6 +2161,36 @@ void _wlmaker_clip_handle_output_layout_change(
             wlmtk_dock_panel(clip_ptr->wlmtk_dock_ptr),
             wlr_output_ptr);
     }
+
+    // The Dock is on the primary output, its dock-apps go along. When the
+    // output they were on went away, they were left on another output; and
+    // when the primary output comes back, they return to it.
+    wlmaker_server_t *server_ptr = clip_ptr->server_ptr;
+    struct wlr_output *primary_ptr = wlmbe_primary_output(
+        server_ptr->wlr_output_layout_ptr);
+    if (NULL != clip_ptr->dock_side_ptr && NULL != primary_ptr) {
+        wlmtk_panel_t *panel_ptr = wlmtk_dock_panel(clip_ptr->dock_side_ptr);
+        layer_ptr = wlmtk_panel_get_layer(panel_ptr);
+        if (NULL != layer_ptr) {
+            wlmtk_layer_remove_panel(layer_ptr, panel_ptr);
+        } else {
+            layer_ptr = wlmtk_desktop_get_layer(
+                server_ptr->desktop_ptr, WLMTK_DESKTOP_LAYER_TOP);
+        }
+        wlmtk_layer_add_panel(layer_ptr, panel_ptr, primary_ptr);
+        _wlmaker_clip_update_dock_side(clip_ptr);
+    }
+
+    // The Dock's and the Clip's launchers (wlmdock) are layer surfaces, put
+    // on an output when created: They go along, too.
+    if (NULL != server_ptr->dock_layer_panel_ptr) {
+        wlmaker_layer_panel_set_output(
+            server_ptr->dock_layer_panel_ptr, primary_ptr);
+    }
+    if (NULL != server_ptr->clip_layer_panel_ptr) {
+        wlmaker_layer_panel_set_output(
+            server_ptr->clip_layer_panel_ptr, wlr_output_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */

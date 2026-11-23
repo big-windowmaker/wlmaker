@@ -290,6 +290,25 @@ struct wlr_surface *wlmaker_layer_panel_wlr_surface(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmaker_layer_panel_set_output(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    struct wlr_output *wlr_output_ptr)
+{
+    struct wlr_layer_surface_v1 *wlr_layer_surface_v1_ptr =
+        layer_panel_ptr->wlr_layer_surface_v1_ptr;
+    if (NULL == wlr_layer_surface_v1_ptr || NULL == wlr_output_ptr ||
+        wlr_layer_surface_v1_ptr->output == wlr_output_ptr) return;
+
+    wlr_layer_surface_v1_ptr->output = wlr_output_ptr;
+    wlmtk_layer_t *layer_ptr = wlmtk_panel_get_layer(
+        &layer_panel_ptr->super_panel);
+    if (NULL == layer_ptr) return;
+    wlmtk_layer_remove_panel(layer_ptr, &layer_panel_ptr->super_panel);
+    wlmtk_layer_add_panel(
+        layer_ptr, &layer_panel_ptr->super_panel, wlr_output_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmaker_layer_panel_update_layer(wlmaker_layer_panel_t *layer_panel_ptr)
 {
     if (NULL == layer_panel_ptr->wlr_layer_surface_v1_ptr) return;

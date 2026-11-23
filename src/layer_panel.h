@@ -35,6 +35,7 @@ extern "C" {
 /** Forward declaration for wlroots layer surface. */
 struct wlr_layer_surface_v1;
 struct wlr_surface;
+struct wlr_output;
 
 /**
  * Creates a layer panel for the given layer surface.
@@ -69,6 +70,15 @@ bool wlmaker_layer_panel_get_box(
  * launchers, as their level ("Dock position") says. Else, as requested.
  */
 void wlmaker_layer_panel_update_layer(wlmaker_layer_panel_t *layer_panel_ptr);
+
+/**
+ * Moves the panel to the output, in the layer it is in. For the Dock and the
+ * Clip's launchers (`wlmdock`), placed on an output when created: They go
+ * where the docks are, after the outputs changed.
+ */
+void wlmaker_layer_panel_set_output(
+    wlmaker_layer_panel_t *layer_panel_ptr,
+    struct wlr_output *wlr_output_ptr);
 
 /** @return The panel's surface. */
 struct wlr_surface *wlmaker_layer_panel_wlr_surface(
