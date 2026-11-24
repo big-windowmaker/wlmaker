@@ -1240,24 +1240,25 @@ void wlmaker_clip_freeze_grid(wlmaker_server_t *server_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
-void wlmaker_clip_push_icons(
+bool wlmaker_clip_push_icons(
     wlmaker_server_t *server_ptr,
     const wlmaker_clip_cell_t *cell_ptr,
     size_t own)
 {
     wlmaker_clip_t *clip_ptr = server_ptr->clip_ptr;
-    if (NULL == clip_ptr || NULL == clip_ptr->dockapps_ptr) return;
+    if (NULL == clip_ptr || NULL == clip_ptr->dockapps_ptr) return false;
     _wlmaker_clip_update_grid(clip_ptr);
     const wlmaker_clip_grid_t *g_ptr = &clip_ptr->grid;
     size_t n = g_ptr->n, nl = clip_ptr->clip_launchers;
-    if (0 == n || nl > n) return;
+    if (0 == n || nl > n) return false;
     wlmaker_clip_cell_t *cells_ptr = logged_calloc(
         n, sizeof(wlmaker_clip_cell_t));
     bool *set_ptr = logged_calloc(n, sizeof(bool));
     wlmaker_dockapps_cell_update_t *u_ptr = logged_calloc(
         n, sizeof(wlmaker_dockapps_cell_update_t));
-    if (NULL != cells_ptr && NULL != set_ptr && NULL != u_ptr &&
-        wlmaker_clip_grid_push(g_ptr, cell_ptr, own, cells_ptr)) {
+    bool pushed = NULL != cells_ptr && NULL != set_ptr && NULL != u_ptr &&
+        wlmaker_clip_grid_push(g_ptr, cell_ptr, own, cells_ptr);
+    if (pushed) {
         // All moved at once (the one moved there too): Storing re-arranges
         // and replaces the grid, so the dock-apps' names come first.
         bool any = false;
@@ -1287,6 +1288,7 @@ void wlmaker_clip_push_icons(
     if (NULL != set_ptr) free(set_ptr);
     if (NULL != cells_ptr) free(cells_ptr);
     _wlmaker_clip_arrange(clip_ptr);
+    return pushed;
 }
 
 /* ------------------------------------------------------------------------- */

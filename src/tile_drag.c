@@ -931,10 +931,17 @@ bool _wlmaker_tile_drag_apply_grid(wlmaker_tile_drag_t *tile_drag_ptr)
         // The icons from the cell on move down, making room.
         bs_log(BS_INFO, "Clip's cell %s taken: Moving the icons from there "
                "down.", buf);
-        wlmaker_clip_push_icons(
-            server_ptr, &t_ptr->cell,
-            tile_drag_ptr->has_origin ?
-            _wlmaker_tile_drag_grid_icon(s_ptr, launchers) : SIZE_MAX);
+        if (!wlmaker_clip_push_icons(
+                server_ptr, &t_ptr->cell,
+                tile_drag_ptr->has_origin ?
+                _wlmaker_tile_drag_grid_icon(s_ptr, launchers) : SIZE_MAX)) {
+            // Nothing moved: Refused like a taken cell, it goes back.
+            bs_log(BS_WARNING, "Clip's cell %s still taken: Tile drag "
+                   "refused.", buf);
+            wlmaker_dock_fx_cover_hide(server_ptr->dock_fx_ptr);
+            if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);
+            return true;
+        }
     }
 
     if (WLMAKER_TILE_DRAG_DOCKAPP == s_ptr->kind) {

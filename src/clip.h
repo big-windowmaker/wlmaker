@@ -441,8 +441,11 @@ void wlmaker_clip_freeze_grid(wlmaker_server_t *server_ptr);
  * from there on in its lane move one slot down, up to the first free cell
  * (see @ref wlmaker_clip_grid_push). `own` is the icon being moved there
  * (SIZE_MAX: one coming from elsewhere), which gets the cell. Stores it.
+ *
+ * @return false if nothing moved (no room, or out of memory): The cell is
+ *     still taken.
  */
-void wlmaker_clip_push_icons(
+bool wlmaker_clip_push_icons(
     wlmaker_server_t *server_ptr,
     const wlmaker_clip_cell_t *cell_ptr,
     size_t own);
