@@ -78,7 +78,7 @@ msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:42 share/wlmaker/Dockapps.plist:82
-#: share/wlmaker/Dockapps.plist:145 share/wlmaker/Dockapps.plist:194
+#: share/wlmaker/Dockapps.plist:145 share/wlmaker/Dockapps.plist:198
 msgid "Nothing"
 msgstr ""
 
@@ -105,7 +105,7 @@ msgstr ""
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:55 share/wlmaker/Dockapps.plist:95
 #: share/wlmaker/Dockapps.plist:113 share/wlmaker/Dockapps.plist:131
-#: share/wlmaker/Dockapps.plist:182 share/wlmaker/Dockapps.plist:204
+#: share/wlmaker/Dockapps.plist:186 share/wlmaker/Dockapps.plist:208
 msgid "Theme"
 msgstr ""
 
@@ -262,7 +262,7 @@ msgid "Graph Style"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:100 share/wlmaker/Dockapps.plist:183
+#: share/wlmaker/Dockapps.plist:100 share/wlmaker/Dockapps.plist:187
 msgid "Show Percentage"
 msgstr ""
 
@@ -369,181 +369,201 @@ msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:160
-msgid "Mode: Off"
+msgid "Mode: Scrolling"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:161
-msgid "Next Layout"
+msgid "Mode: Off"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:162
-msgid "Previous Layout"
+msgid "Previous Column"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:163
-msgid "Undo"
+msgid "Next Column"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:164
-msgid "Redo"
+msgid "Center Column"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:165
-msgid "Restore All Arranged Windows"
+msgid "Next Layout"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:166
-msgid "Arrange the Desktop"
+msgid "Previous Layout"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:167
-msgid "Edit Zones..."
+msgid "Undo"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:168
-msgid "Window Organization Preferences..."
+msgid "Redo"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:169
-msgid "Shortcuts..."
+msgid "Restore All Arranged Windows"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:170
-msgid "Application Rules..."
+msgid "Arrange the Desktop"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:171
-msgid "Monitors..."
+msgid "Edit Zones..."
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
 #: share/wlmaker/Dockapps.plist:172
+msgid "Window Organization Preferences..."
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:173
+msgid "Shortcuts..."
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:174
+msgid "Application Rules..."
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:175
+msgid "Monitors..."
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:176
 msgid "About wmake-zones"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:178
+#: share/wlmaker/Dockapps.plist:182
 msgid "Mute / Unmute"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:179
+#: share/wlmaker/Dockapps.plist:183
 msgid "Open Volume Control"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:185
+#: share/wlmaker/Dockapps.plist:189
 msgid "Click Mutes"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:186
+#: share/wlmaker/Dockapps.plist:190
 msgid "Wheel Changes Volume"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:188
+#: share/wlmaker/Dockapps.plist:192
 msgid "Volume Step"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:189
+#: share/wlmaker/Dockapps.plist:193
 msgid "1 %"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:189
+#: share/wlmaker/Dockapps.plist:193
 msgid "10 %"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:189
+#: share/wlmaker/Dockapps.plist:193
 msgid "2 %"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:189
+#: share/wlmaker/Dockapps.plist:193
 msgid "5 %"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:190
+#: share/wlmaker/Dockapps.plist:194
 msgid "Maximum Volume"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:191
+#: share/wlmaker/Dockapps.plist:195
 msgid "100 %"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:191
+#: share/wlmaker/Dockapps.plist:195
 msgid "125 %"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:191
+#: share/wlmaker/Dockapps.plist:195
 msgid "150 %"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:192
+#: share/wlmaker/Dockapps.plist:196
 msgid "Volume Control"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:195
+#: share/wlmaker/Dockapps.plist:199
 msgid "PulseAudio Volume Control"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:196
+#: share/wlmaker/Dockapps.plist:200
 msgid "PulseAudio Volume Control (Qt)"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:197
+#: share/wlmaker/Dockapps.plist:201
 msgid "PipeWire Volume Control"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:212
+#: share/wlmaker/Dockapps.plist:216
 msgid "Small Icons"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:214
+#: share/wlmaker/Dockapps.plist:218
 msgid "Icon Style"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:216
+#: share/wlmaker/Dockapps.plist:220
 msgid "Automatic"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:217
+#: share/wlmaker/Dockapps.plist:221
 msgid "Prefer Symbolic"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:218
+#: share/wlmaker/Dockapps.plist:222
 msgid "Monochrome"
 msgstr ""
 
 #. Dock-app menu, from the dock-apps' preferences schema.
-#: share/wlmaker/Dockapps.plist:219
+#: share/wlmaker/Dockapps.plist:223
 msgid "Original Colors"
 msgstr ""
 
@@ -566,7 +586,7 @@ msgstr ""
 msgid "Unhide"
 msgstr ""
 
-#: src/appicons.c:199 src/dock_menu.c:333 src/wlmdock.c:1214
+#: src/appicons.c:199 src/dock_menu.c:333 src/wlmdock.c:1286
 msgid "Launch"
 msgstr ""
 
@@ -574,7 +594,7 @@ msgstr ""
 msgid "Set Icon..."
 msgstr ""
 
-#: src/appicons.c:208 src/dock_menu.c:373 src/wlmdock.c:1217
+#: src/appicons.c:208 src/dock_menu.c:373 src/wlmdock.c:1289
 msgid "Kill"
 msgstr ""
 
@@ -599,39 +619,39 @@ msgstr ""
 msgid "Yes"
 msgstr ""
 
-#: src/clip.c:1630 src/dock_menu.c:175 src/wlmdock.c:1268
+#: src/clip.c:2007 src/dock_menu.c:175 src/wlmdock.c:1340
 msgid "Move to Left Side"
 msgstr ""
 
-#: src/clip.c:1630 src/dock_menu.c:175 src/wlmdock.c:1267
+#: src/clip.c:2007 src/dock_menu.c:175 src/wlmdock.c:1339
 msgid "Move to Right Side"
 msgstr ""
 
-#: src/clip.c:1635 src/dock_menu.c:178 src/wlmdock.c:1276
+#: src/clip.c:2012 src/dock_menu.c:178 src/wlmdock.c:1348
 msgid "Move to Bottom"
 msgstr ""
 
-#: src/clip.c:1635 src/dock_menu.c:178 src/wlmdock.c:1276
+#: src/clip.c:2012 src/dock_menu.c:178 src/wlmdock.c:1348
 msgid "Move to Top"
 msgstr ""
 
-#: src/clip.c:1664
+#: src/clip.c:2041
 msgid "Next Workspace"
 msgstr ""
 
-#: src/clip.c:1667
+#: src/clip.c:2044
 msgid "Previous Workspace"
 msgstr ""
 
-#: src/clip.c:1671
+#: src/clip.c:2048
 msgid "New Workspace"
 msgstr ""
 
-#: src/clip.c:1674
+#: src/clip.c:2051
 msgid "Destroy Last Workspace"
 msgstr ""
 
-#: src/clip.c:1682 src/dock_menu.c:193 src/wlmdock.c:1282
+#: src/clip.c:2059 src/dock_menu.c:193 src/wlmdock.c:1354
 msgid "Restore Default Launchers"
 msgstr ""
 
@@ -707,7 +727,7 @@ msgstr ""
 msgid "OK"
 msgstr ""
 
-#: src/dockapp_prefs.c:227
+#: src/dockapp_prefs.c:277
 msgid "Preferences"
 msgstr ""
 
@@ -736,55 +756,55 @@ msgstr ""
 msgid "Force Close"
 msgstr ""
 
-#: src/icon_manager.c:974
+#: src/icon_manager.c:989
 msgid "Move Up"
 msgstr ""
 
-#: src/icon_manager.c:975
+#: src/icon_manager.c:990
 msgid "Move Down"
 msgstr ""
 
-#: src/icon_manager.c:976
+#: src/icon_manager.c:991
 msgid "Move Left"
 msgstr ""
 
-#: src/icon_manager.c:977
+#: src/icon_manager.c:992
 msgid "Move Right"
 msgstr ""
 
-#: src/icon_manager.c:987
+#: src/icon_manager.c:1002
 msgid "Dock-app"
 msgstr ""
 
-#: src/root_menu.c:1252
+#: src/root_menu.c:1296
 #, c-format
 msgid "Failed, exit code %d"
 msgstr ""
 
-#: src/root_menu.c:1258
+#: src/root_menu.c:1302
 #, c-format
 msgid "Failed, signal %d"
 msgstr ""
 
-#: src/root_menu.c:1272
+#: src/root_menu.c:1316
 #, c-format
 msgid "Failed to parse Plist ARRAY from \"%.*s\""
 msgstr ""
 
-#: src/root_menu.c:1289
+#: src/root_menu.c:1333
 #, c-format
 msgid "Failed to populate menu from Plist ARRAY \"%.*s\""
 msgstr ""
 
-#: src/tile_drag.c:682
+#: src/tile_drag.c:770
 msgid "The drawer is full"
 msgstr ""
 
-#: src/tile_drag.c:684
+#: src/tile_drag.c:772
 msgid "The Dock is full"
 msgstr ""
 
-#: src/tile_drag.c:686
+#: src/tile_drag.c:774
 msgid "The Clip is full"
 msgstr ""
 
@@ -824,21 +844,21 @@ msgstr ""
 msgid "Unnamed"
 msgstr ""
 
-#: src/toolkit/window.c:557
+#: src/toolkit/window.c:562
 #, c-format
 msgid "Unnamed window %p"
 msgstr ""
 
-#: src/wlmdock.c:1220
+#: src/wlmdock.c:1292
 msgid "Remove"
 msgstr ""
 
-#: src/zones.c:940
+#: src/zones.c:999
 msgid ""
 "1-9 or arrows to choose · Enter snaps · Tab changes the layout · Esc cancels"
 msgstr ""
 
-#: src/zones.c:985
+#: src/zones.c:1044
 msgid "Window layout: choose a layout, then a zone"
 msgstr ""
 

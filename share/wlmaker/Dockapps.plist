@@ -157,7 +157,11 @@
       Actions = (
         { Title = "Mode: Zones"; Command = "wmake-zones mode zones"; },
         { Title = "Mode: Tiling"; Command = "wmake-zones mode tiling"; },
+        { Title = "Mode: Scrolling"; Command = "wmake-zones mode scroll"; },
         { Title = "Mode: Off"; Command = "wmake-zones mode off"; },
+        { Title = "Previous Column"; Command = "wmake-zones scroll left"; },
+        { Title = "Next Column"; Command = "wmake-zones scroll right"; },
+        { Title = "Center Column"; Command = "wmake-zones scroll center"; },
         { Title = "Next Layout"; Command = "wmake-zones layout next"; },
         { Title = "Previous Layout"; Command = "wmake-zones layout prev"; },
         { Title = "Undo"; Command = "wmake-zones undo"; },
