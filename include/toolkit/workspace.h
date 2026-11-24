@@ -249,6 +249,17 @@ void wlmtk_workspace_begin_window_resize(
     wlmtk_window_t *window_ptr,
     uint32_t edges);
 
+/**
+ * Sets the button whose release ends the next move or resize (BTN_LEFT by
+ * default; back to it when the move or resize ends).
+ *
+ * @param workspace_ptr
+ * @param button              linux/input-event-codes.h
+ */
+void wlmtk_workspace_set_release_button(
+    wlmtk_workspace_t *workspace_ptr,
+    uint32_t button);
+
 /** Acticates `window_ptr`. Will de-activate an earlier window. */
 void wlmtk_workspace_activate_window(
     wlmtk_workspace_t *workspace_ptr,

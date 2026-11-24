@@ -110,6 +110,11 @@ struct _wlmtk_window_t {
     uint32_t                  tiled_edges;
     /** Modifier to trigger moving the window, on pointer drag. */
     uint32_t                  move_modifier;
+    /**
+     * Second modifier (combination): Left button moves, right button resizes
+     * from the nearest edge or corner, from anywhere in the window. 0: none.
+     */
+    uint32_t                  drag_modifier;
 
     /**
      * Position of the window, and size of the content window when not in
@@ -977,6 +982,14 @@ void wlmtk_window_set_options(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmtk_window_set_drag_modifier(
+    wlmtk_window_t *window_ptr,
+    uint32_t drag_modifier)
+{
+    window_ptr->drag_modifier = drag_modifier;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmtk_window_set_workspace(
     wlmtk_window_t *window_ptr,
     wlmtk_workspace_t *workspace_ptr)
@@ -1144,6 +1157,41 @@ bool _wlmtk_window_element_pointer_button(
             return true;
         }
         return rv;
+    }
+
+    // Drag modifier (eg. Ctrl+Alt): Left moves, right resizes from the
+    // nearest edge, without the client seeing the click. Lock modifiers
+    // (Caps, Num) do not count.
+    uint32_t mods = button_event_ptr->keyboard_modifiers &
+        ~(uint32_t)(WLR_MODIFIER_CAPS | WLR_MODIFIER_MOD2);
+    if (0 != window_ptr->drag_modifier &&
+        mods == window_ptr->drag_modifier &&
+        NULL != wlmtk_window_get_workspace(window_ptr) &&
+        !window_ptr->fullscreen &&
+        (BTN_LEFT == button_event_ptr->button ||
+         BTN_RIGHT == button_event_ptr->button)) {
+        if (WLMTK_BUTTON_DOWN != button_event_ptr->type) return true;
+        wlmtk_workspace_t *ws_ptr = wlmtk_window_get_workspace(window_ptr);
+        wlmtk_workspace_activate_window(ws_ptr, window_ptr);
+        wlmtk_workspace_raise_window(ws_ptr, window_ptr);
+        if (BTN_LEFT == button_event_ptr->button) {
+            wlmtk_workspace_begin_window_move(ws_ptr, window_ptr);
+            return true;
+        }
+        if (!(window_ptr->properties & WLMTK_WINDOW_PROPERTY_RESIZABLE)) return true;
+        struct wlr_box b = wlmtk_window_get_bounding_box(window_ptr);
+        wlmtk_element_t *e = wlmtk_window_element(window_ptr);
+        double fx = b.width > 0 ? e->last_pointer_motion_event.x / b.width : 1.0;
+        double fy = b.height > 0 ? e->last_pointer_motion_event.y / b.height : 1.0;
+        uint32_t edges = 0;
+        if (fx < 1.0 / 3) edges |= WLR_EDGE_LEFT;
+        if (fx > 2.0 / 3) edges |= WLR_EDGE_RIGHT;
+        if (fy < 1.0 / 3) edges |= WLR_EDGE_TOP;
+        if (fy > 2.0 / 3) edges |= WLR_EDGE_BOTTOM;
+        if (0 == edges) edges = WLR_EDGE_RIGHT | WLR_EDGE_BOTTOM;
+        wlmtk_workspace_set_release_button(ws_ptr, BTN_RIGHT);
+        wlmtk_workspace_begin_window_resize(ws_ptr, window_ptr, edges);
+        return true;
     }
 
     // Modifier-click initiates move.

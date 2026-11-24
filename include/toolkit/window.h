@@ -565,6 +565,18 @@ void wlmtk_window_set_options(
     uint32_t move_modifier);
 
 /**
+ * Sets a second drag modifier (a combination, eg. Ctrl+Alt): The left button
+ * moves the window, the right one resizes it from the nearest edge or
+ * corner, from anywhere in the window. The click does not reach the client.
+ *
+ * @param window_ptr
+ * @param drag_modifier       WLR_MODIFIER_* bits; 0 turns it off.
+ */
+void wlmtk_window_set_drag_modifier(
+    wlmtk_window_t *window_ptr,
+    uint32_t drag_modifier);
+
+/**
  * Sets @ref wlmtk_window_t::workspace_ptr.
  *
  * Protected method, to be called only from @ref wlmtk_workspace_t.

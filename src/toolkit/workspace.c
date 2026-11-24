@@ -94,6 +94,8 @@ struct _wlmtk_workspace_t {
     int                       initial_height;
     /** Edges currently active for resizing: `enum wlr_edges`. */
     uint32_t                  resize_edges;
+    /** Button whose release ends the move or resize (BTN_LEFT by default). */
+    uint32_t                  release_button;
     /** Whether the grab is a move (signals @ref wlmtk_desktop_events_t). */
     bool                      moving;
     /** Whether an interactive resize is going on (for window_resize_end). */
@@ -698,6 +700,14 @@ void wlmtk_workspace_begin_window_resize(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmtk_workspace_set_release_button(
+    wlmtk_workspace_t *workspace_ptr,
+    uint32_t button)
+{
+    workspace_ptr->release_button = button;
+}
+
+/* ------------------------------------------------------------------------- */
 /** Acticates `window_ptr`. Will de-activate an earlier window. */
 void wlmtk_workspace_activate_window(
     wlmtk_workspace_t *workspace_ptr,
@@ -967,7 +977,11 @@ bool _wlmtk_workspace_window_element_pointer_button(
     // the move, and then figure out the exit condition (button up? key? ...)
     // from there.
     // See xdg_toplevel::move doc at https://wayland.app/protocols/xdg-shell.
-    if (button_event_ptr->button == BTN_LEFT &&
+    // The button that began it ends it: the left one by default, the right
+    // one for a resize begun by the window's drag modifier (Ctrl+Alt).
+    uint32_t release = 0 != workspace_ptr->release_button ?
+        workspace_ptr->release_button : BTN_LEFT;
+    if (button_event_ptr->button == release &&
         button_event_ptr->type == WLMTK_BUTTON_UP) {
         wlmtk_fsm_event(&workspace_ptr->fsm, PFSME_RELEASED, NULL);
     }
@@ -1448,6 +1462,7 @@ bool pfsm_reset(wlmtk_fsm_t *fsm_ptr, __UNUSED__ void *ud_ptr)
         fsm_ptr, wlmtk_workspace_t, fsm);
 
     wlmtk_window_set_resize_edges(workspace_ptr->grabbed_window_ptr, 0);
+    workspace_ptr->release_button = BTN_LEFT;
 
     if (workspace_ptr->moving) {
         _wlmtk_workspace_emit_move(workspace_ptr, WLMTK_WS_MOVE_END);
