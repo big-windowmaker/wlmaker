@@ -109,8 +109,21 @@ void wlm_cairo_7segment_display_digit(
     uint8_t digit)
 {
     BS_ASSERT(digit < UINT8_C(10));
-    uint8_t segments = seven_segment_encoding[digit];
+    wlm_cairo_7segment_display_segments(
+        cairo_ptr, pptr, x, y, color_on, color_off,
+        seven_segment_encoding[digit]);
+}
 
+/* ------------------------------------------------------------------------- */
+void wlm_cairo_7segment_display_segments(
+    cairo_t *cairo_ptr,
+    const wlm_cairo_7segment_param_t *pptr,
+    uint32_t x,
+    uint32_t y,
+    uint32_t color_on,
+    uint32_t color_off,
+    uint8_t segments)
+{
     // Vectors spanning up a segment.
     bs_vector_2f_t longitudinal = { .x = 1.0, .y = 0.0 };
     bs_vector_2f_t lateral = { .x = 0.0, .y = 1.0 };
@@ -237,12 +250,14 @@ void draw_segment(
 static void test_6x8(bs_test_t *test_ptr);
 static void test_7x10(bs_test_t *test_ptr);
 static void test_16x24(bs_test_t *test_ptr);
+static void test_segments(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlm_cairo_segment_display_test_cases[] = {
     { 1, "6x8", test_6x8 },
     { 1, "7x10", test_7x10 },
     { 1, "16x24", test_16x24 },
+    { 1, "segments", test_segments },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -328,6 +343,48 @@ void test_16x24(bs_test_t *test_ptr)
     BS_TEST_VERIFY_GFXBUF_EQUALS_PNG(
         test_ptr, gfxbuf_ptr, "segment_display_16x24.png");
     bs_gfxbuf_destroy(gfxbuf_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests that segment patterns draw the same as digits, and the minus sign. */
+void test_segments(bs_test_t *test_ptr)
+{
+    bs_gfxbuf_t *d_ptr = bs_gfxbuf_create(8, 12);
+    bs_gfxbuf_t *s_ptr = bs_gfxbuf_create(8, 12);
+    cairo_t *dc_ptr = NULL, *sc_ptr = NULL;
+    if (NULL == d_ptr || NULL == s_ptr ||
+        NULL == (dc_ptr = cairo_create_from_bs_gfxbuf(d_ptr)) ||
+        NULL == (sc_ptr = cairo_create_from_bs_gfxbuf(s_ptr))) {
+        BS_TEST_FAIL(test_ptr, "Failed to create buffers.");
+    } else {
+        // '8' illuminates all segments.
+        wlm_cairo_7segment_display_digit(
+            dc_ptr, &wlm_cairo_7segment_param_8x12, 0, 12,
+            0xffc0c0ff, 0xff202040, 8);
+        wlm_cairo_7segment_display_segments(
+            sc_ptr, &wlm_cairo_7segment_param_8x12, 0, 12,
+            0xffc0c0ff, 0xff202040, 0x7f);
+        cairo_surface_flush(cairo_get_target(dc_ptr));
+        cairo_surface_flush(cairo_get_target(sc_ptr));
+        BS_TEST_VERIFY_MEMEQ(test_ptr, d_ptr->data_ptr, s_ptr->data_ptr,
+                             8 * 12 * sizeof(uint32_t));
+
+        // The minus sign illuminates just the center: Center row is lit, top
+        // row is not.
+        bs_gfxbuf_clear(s_ptr, 0);
+        wlm_cairo_7segment_display_segments(
+            sc_ptr, &wlm_cairo_7segment_param_8x12, 0, 12,
+            0xffc0c0ff, 0xff202040, WLM_CAIRO_7SEGMENT_MINUS);
+        cairo_surface_flush(cairo_get_target(sc_ptr));
+        BS_TEST_VERIFY_NEQ(
+            test_ptr,
+            *bs_gfxbuf_pixel_at(s_ptr, 4, 1),
+            *bs_gfxbuf_pixel_at(s_ptr, 4, 6));
+    }
+    if (NULL != sc_ptr) cairo_destroy(sc_ptr);
+    if (NULL != dc_ptr) cairo_destroy(dc_ptr);
+    if (NULL != s_ptr) bs_gfxbuf_destroy(s_ptr);
+    if (NULL != d_ptr) bs_gfxbuf_destroy(d_ptr);
 }
 
 /* == End of segment_display.c ============================================= */

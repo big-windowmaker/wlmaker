@@ -33,6 +33,7 @@
 typedef struct _wlmim_cursor_t wlmim_cursor_t;
 
 struct wl_display;
+struct wlr_buffer;
 struct wlr_input_device;
 struct wlr_output_layout;
 struct wlr_seat;
@@ -103,6 +104,62 @@ bool wlmim_cursor_set_style(
 
 /** @return @ref wlmim_cursor_t::wlr_cursor_ptr. */
 struct wlr_cursor *wlmim_cursor_wlr_cursor(wlmim_cursor_t *cursor_ptr);
+
+/** @return Whether an image is asked for: false if clients hid the cursor. */
+bool wlmim_cursor_image_visible(wlmim_cursor_t *cursor_ptr);
+
+/**
+ * Magnifies the cursor's image: The image shown right now, whatever it is
+ * (theme image or client surface), with its hotspot at the same place.
+ * Follows image changes while magnified.
+ *
+ * @param cursor_ptr
+ * @param magnification       1.0 shows the image as is.
+ * @param max_magnification   Largest magnification to come: The image is
+ *                            prepared once, in this size.
+ */
+void wlmim_cursor_set_magnification(
+    wlmim_cursor_t *cursor_ptr,
+    double magnification,
+    double max_magnification);
+
+/**
+ * Replaces the cursor's image (eg. while selecting a window). Clients' and
+ * the toolkit's requests are kept and shown again once cleared.
+ *
+ * @param cursor_ptr
+ * @param wlr_buffer_ptr      The image, or NULL to clear. Gets locked.
+ * @param hotspot_x           Hotspot, in logical pixels.
+ * @param hotspot_y           Hotspot, in logical pixels.
+ * @param scale               Buffer pixels per logical pixel.
+ */
+void wlmim_cursor_set_override(
+    wlmim_cursor_t *cursor_ptr,
+    struct wlr_buffer *wlr_buffer_ptr,
+    int32_t hotspot_x,
+    int32_t hotspot_y,
+    float scale);
+
+/**
+ * Loads an image of an XCursor theme, at the cursor's size and the outputs'
+ * largest scale.
+ *
+ * @param cursor_ptr
+ * @param theme_name_ptr      Theme to load from; NULL for the current one.
+ * @param names_ptr           NULL-terminated names to try, in order.
+ * @param hotspot_x_ptr       Hotspot, in logical pixels.
+ * @param hotspot_y_ptr       Hotspot, in logical pixels.
+ * @param scale_ptr           Buffer pixels per logical pixel.
+ *
+ * @return The image, or NULL. Must be released with wlr_buffer_drop().
+ */
+struct wlr_buffer *wlmim_cursor_create_xcursor_buffer(
+    wlmim_cursor_t *cursor_ptr,
+    const char *theme_name_ptr,
+    const char *const *names_ptr,
+    int32_t *hotspot_x_ptr,
+    int32_t *hotspot_y_ptr,
+    float *scale_ptr);
 
 /**
  * Attaches the input device. May be a pointer, touch or tablet_tool device.

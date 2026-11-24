@@ -59,6 +59,37 @@ struct _wlmtk_menu_t {
     wlmtk_menu_item_t         *parent_menu_item_ptr;
     /** Current mode of the menu. */
     enum wlmtk_menu_mode      mode;
+    /** Bounds for the submenus. See @ref wlmtk_menu_set_bounds. */
+    struct wlr_box            bounds;
+    /** Whether submenus prefer to open to the left. */
+    bool                      opens_left;
+
+    /**
+     * Right-click mode: Whether a pointer position was recorded since the
+     * menu was opened. See @ref wlmtk_menu_t::rightclick_moved.
+     */
+    bool                      rightclick_has_position;
+    /** Right-click mode: The first pointer position seen after opening. */
+    double                    rightclick_x;
+    /** Right-click mode: The first pointer position seen after opening. */
+    double                    rightclick_y;
+    /**
+     * Right-click mode: Whether the pointer moved since the menu was opened.
+     * If the right button is released without the pointer having moved, it
+     * was a click: The menu stays open, see @ref wlmtk_menu_t::sticky.
+     */
+    bool                      rightclick_moved;
+    /**
+     * Right-click mode: The menu was opened by a click, and stays open.
+     * Items are then triggered by releasing either button over them, and a
+     * button press outside the menu closes it.
+     */
+    bool                      sticky;
+    /**
+     * Right-click mode: The button that opened the menu (BTN_RIGHT, unless
+     * set by @ref wlmtk_menu_set_open_button). It acts as the right one.
+     */
+    uint32_t                  open_button;
 };
 
 /** Type-safe holder for the menu style's reference counter. */
@@ -83,6 +114,9 @@ static bool _wlmtk_menu_set_item_style(
 static void _wlmtk_menu_set_item_mode(
     bs_dllist_node_t *dlnode_ptr,
     void *ud_ptr);
+static void _wlmtk_menu_update_item_shown(
+    bs_dllist_node_t *dlnode_ptr,
+    void *ud_ptr);
 
 static void _wlmtk_menu_box_element_destroy(wlmtk_element_t *element_ptr);
 
@@ -91,6 +125,18 @@ static void _wlmtk_menu_element_destroy(
 static bool _wlmtk_menu_element_pointer_button(
     wlmtk_element_t *element_ptr,
     const wlmtk_button_event_t *button_event_ptr);
+static bool _wlmtk_menu_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr);
+static bool _wlmtk_menu_sticky_pointer_button(
+    wlmtk_menu_t *menu_ptr,
+    const wlmtk_button_event_t *button_event_ptr);
+static wlmtk_menu_item_t *_wlmtk_menu_leaf_item_under_pointer(
+    wlmtk_menu_t *menu_ptr);
+static void _wlmtk_menu_reset_rightclick(wlmtk_menu_t *menu_ptr);
+
+/** Window Maker's ViKeyMenus: h j k l move in the menus. */
+static bool _wlmtk_menu_vi_keys = false;
 static bool _wlmtk_menu_element_keyboard_sym(
     wlmtk_element_t *element_ptr,
     xkb_keysym_t keysym,
@@ -109,7 +155,14 @@ static const wlmtk_element_vmt_t _wlmtk_menu_element_vmt = {
     .keyboard_sym = _wlmtk_menu_element_keyboard_sym,
     .destroy = _wlmtk_menu_element_destroy,
     .pointer_button = _wlmtk_menu_element_pointer_button,
+    .pointer_accepts_motion = _wlmtk_menu_element_pointer_accepts_motion,
 };
+
+/**
+ * Distance (in pixels, per axis) the pointer must move in right-click mode
+ * before releasing the right button triggers an item.
+ */
+static const double _wlmtk_menu_rightclick_move_threshold = 3.0;
 
 /** Extra override for the box element. Does not have a dtor by default. */
 static const wlmtk_element_vmt_t _wlmtk_menu_box_element_vmt = {
@@ -165,6 +218,8 @@ wlmtk_menu_t *wlmtk_menu_create(wlmtk_menu_style_ref_t *style_ref_ptr)
     wl_signal_init(&menu_ptr->events.open_changed);
     wl_signal_init(&menu_ptr->events.request_close);
     wl_signal_init(&menu_ptr->events.destroy);
+    wl_signal_init(&menu_ptr->events.outside_press);
+    wl_signal_init(&menu_ptr->events.inside_press);
     return menu_ptr;
 }
 
@@ -231,9 +286,17 @@ bool wlmtk_menu_set_style(
 /* ------------------------------------------------------------------------- */
 void wlmtk_menu_set_open(wlmtk_menu_t *menu_ptr, bool opened)
 {
-    if (wlmtk_menu_element(menu_ptr)->visible == opened) return;
+    // Items of a closed menu hold no buffers; drawn when (re)opened. Also
+    // when the menu's element was made visible by other means.
+    if (wlmtk_menu_element(menu_ptr)->visible == opened) {
+        bs_dllist_for_each(
+            &menu_ptr->items, _wlmtk_menu_update_item_shown, NULL);
+        return;
+    }
 
     wlmtk_element_set_visible(wlmtk_menu_element(menu_ptr), opened);
+    _wlmtk_menu_reset_rightclick(menu_ptr);
+    bs_dllist_for_each(&menu_ptr->items, _wlmtk_menu_update_item_shown, NULL);
 
     if (NULL != menu_ptr->highlighted_menu_item_ptr) {
         wlmtk_menu_item_set_highlighted(
@@ -256,6 +319,7 @@ void wlmtk_menu_set_mode(wlmtk_menu_t *menu_ptr,
 {
     if (menu_ptr->mode == mode) return;
     menu_ptr->mode = mode;
+    _wlmtk_menu_reset_rightclick(menu_ptr);
     bs_dllist_for_each(
         &menu_ptr->items,
         _wlmtk_menu_set_item_mode,
@@ -309,6 +373,101 @@ void wlmtk_menu_set_parent_item(wlmtk_menu_t *menu_ptr,
 wlmtk_menu_item_t *wlmtk_menu_get_parent_item(wlmtk_menu_t *menu_ptr)
 {
     return menu_ptr->parent_menu_item_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_menu_set_bounds(wlmtk_menu_t *menu_ptr,
+                           const struct wlr_box *bounds_ptr)
+{
+    if (NULL == bounds_ptr) {
+        menu_ptr->bounds = (struct wlr_box){};
+    } else {
+        menu_ptr->bounds = *bounds_ptr;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_box wlmtk_menu_get_bounds(wlmtk_menu_t *menu_ptr)
+{
+    while (NULL != menu_ptr->parent_menu_item_ptr &&
+           NULL != wlmtk_menu_item_get_parent_menu(
+               menu_ptr->parent_menu_item_ptr)) {
+        menu_ptr = wlmtk_menu_item_get_parent_menu(
+            menu_ptr->parent_menu_item_ptr);
+    }
+    return menu_ptr->bounds;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_menu_set_opens_left(wlmtk_menu_t *menu_ptr, bool opens_left)
+{
+    menu_ptr->opens_left = opens_left;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_menu_opens_left(wlmtk_menu_t *menu_ptr)
+{
+    return menu_ptr->opens_left;
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_box wlmtk_menu_get_extents(wlmtk_menu_t *menu_ptr)
+{
+    wlmtk_element_t *e = wlmtk_menu_element(menu_ptr);
+    int x, y;
+    wlmtk_element_get_absolute_position(e, &x, &y);
+    struct wlr_box box = wlmtk_element_get_dimensions_box(e);
+    box.x += x;
+    box.y += y;
+
+    for (bs_dllist_node_t *dlnode_ptr = menu_ptr->items.head_ptr;
+         NULL != dlnode_ptr;
+         dlnode_ptr = dlnode_ptr->next_ptr) {
+        wlmtk_menu_t *submenu_ptr = wlmtk_menu_item_get_submenu(
+            wlmtk_menu_item_from_dlnode(dlnode_ptr));
+        if (NULL == submenu_ptr || !wlmtk_menu_is_open(submenu_ptr)) continue;
+        struct wlr_box sub = wlmtk_menu_get_extents(submenu_ptr);
+        box = wlmtk_util_box_union(&box, &sub);
+    }
+    return box;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmtk_menu_place_submenu(
+    const struct wlr_box *bounds_ptr,
+    int item_left,
+    int item_right,
+    int item_top,
+    int width,
+    int height,
+    bool prefer_left,
+    int *x_ptr,
+    int *y_ptr)
+{
+    *x_ptr = item_right;
+    *y_ptr = item_top;
+    if (NULL == bounds_ptr || wlr_box_empty(bounds_ptr)) return false;
+
+    const int right = bounds_ptr->x + bounds_ptr->width;
+    const int bottom = bounds_ptr->y + bounds_ptr->height;
+    bool fits_right = item_right + width <= right;
+    bool fits_left = item_left - width >= bounds_ptr->x;
+    bool left;
+    if (prefer_left && fits_left) {
+        left = true;
+    } else if (fits_right) {
+        left = false;
+    } else if (fits_left) {
+        left = true;
+    } else {
+        // Fits on neither side: Where there is more room.
+        left = item_left - bounds_ptr->x > right - item_right;
+    }
+    *x_ptr = left ? item_left - width : item_right;
+
+    if (*y_ptr + height > bottom) *y_ptr = bottom - height;
+    if (*y_ptr < bounds_ptr->y) *y_ptr = bounds_ptr->y;
+    return left;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -460,6 +619,15 @@ void _wlmtk_menu_set_item_mode(bs_dllist_node_t *dlnode_ptr, void *ud_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+/** Callback for bs_dllist_for_each: Updates the item for the menu's state. */
+void _wlmtk_menu_update_item_shown(
+    bs_dllist_node_t *dlnode_ptr,
+    __UNUSED__ void *ud_ptr)
+{
+    wlmtk_menu_item_update_shown(wlmtk_menu_item_from_dlnode(dlnode_ptr));
+}
+
+/* ------------------------------------------------------------------------- */
 /** Dtor for @ref wlmtk_menu_t::box. */
 void _wlmtk_menu_box_element_destroy(wlmtk_element_t *element_ptr)
 {
@@ -498,6 +666,39 @@ bool _wlmtk_menu_element_pointer_button(
     wlmtk_menu_t *menu_ptr = BS_CONTAINER_OF(
         element_ptr, wlmtk_menu_t, base.super_container.super_element);
 
+    // Opened by another button (Window Maker's mouse actions): Until the
+    // menu sticks, that button works as the right one: Held, its release
+    // over an item triggers it; released where pressed, the menu stays.
+    wlmtk_button_event_t remapped;
+    if (WLMTK_MENU_MODE_RIGHTCLICK == menu_ptr->mode &&
+        NULL == menu_ptr->parent_menu_item_ptr &&
+        !menu_ptr->sticky &&
+        0 != menu_ptr->open_button &&
+        BTN_RIGHT != menu_ptr->open_button &&
+        menu_ptr->open_button == button_event_ptr->button) {
+        remapped = *button_event_ptr;
+        remapped.button = BTN_RIGHT;
+        button_event_ptr = &remapped;
+    }
+
+    // Only the top-level menu tracks whether it was opened by a click: It
+    // receives all pointer events also for its submenus.
+    if (WLMTK_MENU_MODE_RIGHTCLICK == menu_ptr->mode &&
+        NULL == menu_ptr->parent_menu_item_ptr) {
+        if (!menu_ptr->sticky &&
+            !menu_ptr->rightclick_moved &&
+            BTN_RIGHT == button_event_ptr->button &&
+            WLMTK_BUTTON_UP == button_event_ptr->type) {
+            // Released where it was opened: It was a click. Stay open.
+            menu_ptr->sticky = true;
+            return true;
+        }
+        if (menu_ptr->sticky) {
+            return _wlmtk_menu_sticky_pointer_button(
+                menu_ptr, button_event_ptr);
+        }
+    }
+
     bool rv = menu_ptr->orig_base_element_vmt.pointer_button(
         element_ptr, button_event_ptr);
 
@@ -511,6 +712,151 @@ bool _wlmtk_menu_element_pointer_button(
 }
 
 /* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_element_vmt_t::pointer_accepts_motion. Records
+ * whether the pointer moved since the menu was opened, then calls the
+ * parent's implementation.
+ *
+ * @param element_ptr
+ * @param motion_event_ptr
+ *
+ * @return See @ref wlmtk_element_vmt_t::pointer_accepts_motion.
+ */
+bool _wlmtk_menu_element_pointer_accepts_motion(
+    wlmtk_element_t *element_ptr,
+    wlmtk_pointer_motion_event_t *motion_event_ptr)
+{
+    wlmtk_menu_t *menu_ptr = BS_CONTAINER_OF(
+        element_ptr, wlmtk_menu_t, base.super_container.super_element);
+
+    if (!menu_ptr->rightclick_has_position) {
+        menu_ptr->rightclick_x = motion_event_ptr->x;
+        menu_ptr->rightclick_y = motion_event_ptr->y;
+        menu_ptr->rightclick_has_position = true;
+    } else {
+        double dx = motion_event_ptr->x - menu_ptr->rightclick_x;
+        double dy = motion_event_ptr->y - menu_ptr->rightclick_y;
+        if (dx >= _wlmtk_menu_rightclick_move_threshold ||
+            -dx >= _wlmtk_menu_rightclick_move_threshold ||
+            dy >= _wlmtk_menu_rightclick_move_threshold ||
+            -dy >= _wlmtk_menu_rightclick_move_threshold) {
+            menu_ptr->rightclick_moved = true;
+        }
+    }
+
+    return menu_ptr->orig_base_element_vmt.pointer_accepts_motion(
+        element_ptr, motion_event_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles button events for a right-click menu that was opened by a click.
+ *
+ * Releasing either button over an item triggers it, and closes the menu.
+ * Pressing a button outside the menu closes it. All other events are
+ * claimed, but ignored.
+ *
+ * @param menu_ptr
+ * @param button_event_ptr
+ *
+ * @return true.
+ */
+bool _wlmtk_menu_sticky_pointer_button(
+    wlmtk_menu_t *menu_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    wlmtk_element_t *element_ptr = wlmtk_menu_element(menu_ptr);
+    if (BTN_LEFT != button_event_ptr->button &&
+        BTN_RIGHT != button_event_ptr->button) return true;
+
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        !element_ptr->pointer_inside) {
+        wlmtk_menu_outside_press_t press = {
+            .button_event_ptr = button_event_ptr,
+            .x = element_ptr->last_pointer_motion_event.x,
+            .y = element_ptr->last_pointer_motion_event.y,
+        };
+        wl_signal_emit(&menu_ptr->events.outside_press, &press);
+        if (!press.claimed) {
+            wl_signal_emit(&menu_ptr->events.request_close, NULL);
+        }
+        return true;
+    }
+
+    if (WLMTK_BUTTON_DOWN == button_event_ptr->type &&
+        element_ptr->pointer_inside) {
+        wlmtk_menu_outside_press_t press = {
+            .button_event_ptr = button_event_ptr,
+            .x = element_ptr->last_pointer_motion_event.x,
+            .y = element_ptr->last_pointer_motion_event.y,
+        };
+        wl_signal_emit(&menu_ptr->events.inside_press, &press);
+        return true;
+    }
+
+    if (WLMTK_BUTTON_UP == button_event_ptr->type &&
+        element_ptr->pointer_inside &&
+        NULL != _wlmtk_menu_leaf_item_under_pointer(menu_ptr)) {
+        // Forward as right-button release: That triggers in right-click mode.
+        wlmtk_button_event_t e = *button_event_ptr;
+        e.button = BTN_RIGHT;
+        menu_ptr->orig_base_element_vmt.pointer_button(element_ptr, &e);
+        wl_signal_emit(&menu_ptr->events.request_close, NULL);
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Finds the item under the pointer, descending into open submenus.
+ *
+ * @param menu_ptr
+ *
+ * @return The highlighted item under the pointer, if it has no submenu. NULL
+ *     if there is no such item, eg. when the pointer is on the margin or on
+ *     an item that opens a submenu.
+ */
+wlmtk_menu_item_t *_wlmtk_menu_leaf_item_under_pointer(wlmtk_menu_t *menu_ptr)
+{
+    while (NULL != menu_ptr) {
+        wlmtk_menu_item_t *item_ptr = menu_ptr->highlighted_menu_item_ptr;
+        if (NULL == item_ptr) return NULL;
+        wlmtk_menu_t *submenu_ptr = wlmtk_menu_item_get_submenu(item_ptr);
+
+        if (wlmtk_menu_item_element(item_ptr)->pointer_inside) {
+            return NULL == submenu_ptr ? item_ptr : NULL;
+        }
+        if (NULL == submenu_ptr ||
+            !wlmtk_menu_is_open(submenu_ptr) ||
+            !wlmtk_menu_element(submenu_ptr)->pointer_inside) return NULL;
+        menu_ptr = submenu_ptr;
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Resets the state tracking a right-click, eg. when opening the menu. */
+void _wlmtk_menu_reset_rightclick(wlmtk_menu_t *menu_ptr)
+{
+    menu_ptr->rightclick_has_position = false;
+    menu_ptr->rightclick_moved = false;
+    menu_ptr->sticky = false;
+    menu_ptr->open_button = BTN_RIGHT;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_menu_set_vi_keys(bool enabled)
+{
+    _wlmtk_menu_vi_keys = enabled;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_menu_set_open_button(wlmtk_menu_t *menu_ptr, uint32_t button)
+{
+    menu_ptr->open_button = button;
+}
+
+/* ------------------------------------------------------------------------- */
 /** Implements @ref wlmtk_element_vmt_t::keyboard_sym. Translated keys. */
 bool _wlmtk_menu_element_keyboard_sym(
     wlmtk_element_t *element_ptr,
@@ -520,6 +866,16 @@ bool _wlmtk_menu_element_keyboard_sym(
 {
     wlmtk_menu_t *menu_ptr = BS_CONTAINER_OF(
         element_ptr, wlmtk_menu_t, base.super_container.super_element);
+    // Window Maker's ViKeyMenus: h j k l as the arrows.
+    if (_wlmtk_menu_vi_keys) {
+        switch (keysym) {
+        case XKB_KEY_h: keysym = XKB_KEY_Left; break;
+        case XKB_KEY_j: keysym = XKB_KEY_Down; break;
+        case XKB_KEY_k: keysym = XKB_KEY_Up; break;
+        case XKB_KEY_l: keysym = XKB_KEY_Right; break;
+        default: break;
+        }
+    }
     bs_dllist_node_t *dlnode_ptr = wlmtk_dlnode_from_menu_item(
         menu_ptr->highlighted_menu_item_ptr);
     bs_dllist_node_iterator_t node_iterator;
@@ -657,6 +1013,9 @@ static void test_pointer_highlight(bs_test_t *test_ptr);
 static void test_set_mode(bs_test_t *test_ptr);
 static void test_keyboard_navigation(bs_test_t *test_ptr);
 static void test_keyboard_navigation_nested(bs_test_t *test_ptr);
+static void test_rightclick(bs_test_t *test_ptr);
+static void test_place_submenu(bs_test_t *test_ptr);
+static void test_submenu_bounds(bs_test_t *test_ptr);
 
 /** Test cases */
 static const bs_test_case_t _wlmtk_menu_test_cases[] = {
@@ -664,6 +1023,9 @@ static const bs_test_case_t _wlmtk_menu_test_cases[] = {
     { 1, "set_mode", test_set_mode },
     { 1, "keyboard_navigation", test_keyboard_navigation },
     { 1, "keyboard_navigation_nested", test_keyboard_navigation_nested },
+    { 1, "rightclick", test_rightclick },
+    { 1, "place_submenu", test_place_submenu },
+    { 1, "submenu_bounds", test_submenu_bounds },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -1011,6 +1373,220 @@ void test_keyboard_navigation_nested(bs_test_t *test_ptr)
     BS_TEST_VERIFY_EQ(test_ptr, 1, request_close_test_listener.calls);
 
     wlmtk_menu_destroy(m0);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Tests right-click mode: Releasing the button after dragging onto an item
+ * triggers it. Releasing it without having moved keeps the menu open, and
+ * a later click on an item triggers, a click outside closes.
+ */
+void test_rightclick(bs_test_t *test_ptr)
+{
+    wlmtk_menu_t *menu_ptr = wlmtk_menu_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, menu_ptr);
+    wlmtk_element_t *me = wlmtk_menu_element(menu_ptr);
+    wlmtk_menu_item_t *i1 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i1);
+    wlmtk_menu_add_item(menu_ptr, i1);
+    wlmtk_menu_item_t *i2 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i2);
+    wlmtk_menu_add_item(menu_ptr, i2);
+
+    wlmtk_util_test_listener_t t1, t2, close;
+    wlmtk_util_connect_test_listener(
+        &wlmtk_menu_item_events(i1)->triggered, &t1);
+    wlmtk_util_connect_test_listener(
+        &wlmtk_menu_item_events(i2)->triggered, &t2);
+    wlmtk_util_connect_test_listener(
+        &wlmtk_menu_events(menu_ptr)->request_close, &close);
+    wlmtk_button_event_t rup = { .button = BTN_RIGHT, .type = WLMTK_BUTTON_UP };
+    wlmtk_button_event_t ldown = {
+        .button = BTN_LEFT, .type = WLMTK_BUTTON_DOWN };
+    wlmtk_button_event_t lup = { .button = BTN_LEFT, .type = WLMTK_BUTTON_UP };
+    wlmtk_pointer_motion_event_t e;
+
+    wlmtk_menu_set_mode(menu_ptr, WLMTK_MENU_MODE_RIGHTCLICK);
+
+    // Opened, pointer drags from first to second item, releases: Trigger.
+    wlmtk_menu_set_open(menu_ptr, true);
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 5 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 15 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &rup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t2.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, close.calls);
+    wlmtk_util_clear_test_listener(&t2);
+    wlmtk_util_clear_test_listener(&close);
+    wlmtk_menu_set_open(menu_ptr, false);
+
+    // Opened over the first item, released without moving: Stays open.
+    wlmtk_menu_set_open(menu_ptr, true);
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 5 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    e = (wlmtk_pointer_motion_event_t){ .x = 10, .y = 6 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &rup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, close.calls);
+
+    // A click on the margin between items does nothing.
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 10 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &ldown));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &lup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls + t2.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, close.calls);
+
+    // A left click on the second item triggers it, and closes the menu.
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 15 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &ldown));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, close.calls);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &lup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, t2.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, close.calls);
+    wlmtk_util_clear_test_listener(&t2);
+    wlmtk_util_clear_test_listener(&close);
+    wlmtk_menu_set_open(menu_ptr, false);
+
+    // Opened by a click, then a press outside the menu closes it.
+    wlmtk_menu_set_open(menu_ptr, true);
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 5 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &rup));
+    BS_TEST_VERIFY_EQ(test_ptr, 0, close.calls);
+    e = (wlmtk_pointer_motion_event_t){ .x = 9, .y = 55 };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_element_pointer_motion(me, &e));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_element_pointer_button(me, &ldown));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, close.calls);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, t1.calls + t2.calls);
+
+    wlmtk_util_disconnect_test_listener(&close);
+    wlmtk_util_disconnect_test_listener(&t2);
+    wlmtk_util_disconnect_test_listener(&t1);
+    wlmtk_menu_destroy(menu_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests @ref wlmtk_menu_place_submenu. */
+void test_place_submenu(bs_test_t *test_ptr)
+{
+    struct wlr_box b = { .x = 0, .y = 0, .width = 1000, .height = 700 };
+    int x, y;
+
+    // No bounds: Right of the item, aligned.
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_place_submenu(
+                             NULL, 900, 990, 650, 200, 300, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 990, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 650, y);
+
+    // Fits right.
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_place_submenu(
+                             &b, 100, 300, 50, 200, 100, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 300, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 50, y);
+
+    // Would extend beyond the right, and the bottom: Left, moved up.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_place_submenu(
+                            &b, 700, 900, 650, 200, 300, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 500, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 400, y);
+
+    // Prefers left: Stays left, unless it does not fit there.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_place_submenu(
+                            &b, 300, 500, 0, 200, 100, true, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 100, x);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_place_submenu(
+                             &b, 100, 300, 0, 200, 100, true, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 300, x);
+
+    // Fits nowhere: Where there is more room. Taller than the bounds: Top.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_place_submenu(
+                            &b, 600, 700, 100, 650, 900, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, -50, x);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, y);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_place_submenu(
+                             &b, 300, 400, 100, 650, 100, false, &x, &y));
+    BS_TEST_VERIFY_EQ(test_ptr, 400, x);
+}
+
+/* ------------------------------------------------------------------------- */
+/** A submenu opens to the left, when there is no room on the right. */
+void test_submenu_bounds(bs_test_t *test_ptr)
+{
+    wlmtk_container_t *c = wlmtk_container_create_fake_parent();
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, c);
+    wlmtk_menu_t *m0 = wlmtk_menu_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, m0);
+    wlmtk_menu_item_t *i00 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i00);
+    wlmtk_menu_add_item(m0, i00);
+    wlmtk_menu_t *m1 = wlmtk_menu_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, m1);
+    wlmtk_menu_item_set_submenu(i00, m1);
+    wlmtk_menu_item_t *i10 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i10);
+    wlmtk_menu_add_item(m1, i10);
+    wlmtk_menu_t *m2 = wlmtk_menu_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, m2);
+    wlmtk_menu_item_set_submenu(i10, m2);
+    wlmtk_menu_item_t *i20 = wlmtk_menu_item_create(&_test_style_holder.msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, i20);
+    wlmtk_menu_add_item(m2, i20);
+
+    wlmtk_element_t *me = wlmtk_menu_element(m0);
+    wlmtk_container_add_element(c, me);
+    wlmtk_element_set_visible(me, true);
+    wlmtk_element_set_position(me, 300, 50);
+    int ix, iy;
+    wlmtk_element_get_absolute_position(
+        wlmtk_menu_item_element(i00), &ix, &iy);
+    BS_TEST_VERIFY_TRUE(test_ptr, 300 <= ix && ix < 310);
+    BS_TEST_VERIFY_TRUE(test_ptr, 50 <= iy && iy < 60);
+    int w = wlmtk_element_get_dimensions_box(wlmtk_menu_element(m1)).width;
+    int h = wlmtk_element_get_dimensions_box(wlmtk_menu_element(m1)).height;
+    BS_TEST_VERIFY_TRUE(test_ptr, 100 <= w && w < 120);
+
+    // Room on the right (no bounds): Opens to the right of the item.
+    int x, y;
+    wlmtk_menu_request_item_highlight(m0, i00);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m1));
+    wlmtk_element_get_absolute_position(wlmtk_menu_element(m1), &x, &y);
+    BS_TEST_VERIFY_EQ(test_ptr, ix + 100, x);
+    BS_TEST_VERIFY_EQ(test_ptr, iy, y);
+    wlmtk_menu_request_item_highlight(m0, NULL);
+
+    // Bounds end at 450: Opens to the left of the item. And its submenu, too.
+    struct wlr_box b = { .x = 0, .y = 0, .width = 450, .height = 700 };
+    wlmtk_menu_set_bounds(m0, &b);
+    wlmtk_menu_request_item_highlight(m0, i00);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m1));
+    wlmtk_element_get_absolute_position(wlmtk_menu_element(m1), &x, &y);
+    BS_TEST_VERIFY_EQ(test_ptr, ix - w, x);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_opens_left(m1));
+    wlmtk_menu_request_item_highlight(m1, i10);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m2));
+    wlmtk_element_get_absolute_position(wlmtk_menu_element(m2), &x, &y);
+    BS_TEST_VERIFY_EQ(test_ptr, ix - 2 * w, x);
+    struct wlr_box ext = wlmtk_menu_get_extents(m0);
+    BS_TEST_VERIFY_EQ(test_ptr, ix - 2 * w, ext.x);
+    BS_TEST_VERIFY_EQ(test_ptr, 300 + w, ext.x + ext.width);
+
+    // Bounds end at 60 below: Moves up.
+    wlmtk_menu_request_item_highlight(m0, NULL);
+    b.height = 60;
+    wlmtk_menu_set_bounds(m0, &b);
+    wlmtk_menu_request_item_highlight(m0, i00);
+    wlmtk_element_get_absolute_position(wlmtk_menu_element(m1), &x, &y);
+    BS_TEST_VERIFY_EQ(test_ptr, 60 - h, y);
+
+    wlmtk_container_remove_element(c, me);
+    wlmtk_menu_destroy(m0);
+    wlmtk_container_destroy_fake_parent(c);
 }
 
 /* == End of menu.c ======================================================== */

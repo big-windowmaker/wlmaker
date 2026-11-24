@@ -32,6 +32,10 @@ configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmbattery.desktop"
   @ONLY)
 configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/wlmaker.wlmcalclock.desktop.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmcalclock.desktop"
+  @ONLY)
+configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/wlmaker.wlmclock.desktop.in"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmclock.desktop"
   @ONLY)
@@ -48,6 +52,10 @@ configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmmemgraph.desktop"
   @ONLY)
 configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/wlmaker.wlmmixer.desktop.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmmixer.desktop"
+  @ONLY)
+configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/wlmaker.wlmnetgraph.desktop.in"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmnetgraph.desktop"
   @ONLY)
@@ -59,6 +67,7 @@ configure_file(
 install(FILES
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmbattery.desktop"
+  "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmcalclock.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmclock.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmcpugraph.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmeyes.desktop"
@@ -66,6 +75,15 @@ install(FILES
   "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmnetgraph.desktop"
   "${CMAKE_CURRENT_BINARY_DIR}/wlmdock.desktop"
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
+if(LIBPULSE_FOUND)
+  install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmmixer.desktop"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
+  install(FILES
+    "wlmmixer-64x64.png"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/64x64/apps"
+    RENAME "wlmmixer.png")
+endif()
 
 # Install `wlmaker.desktop` both to wayland-sessions/ and applications/ -- it
 # can run both as main compositor, and in windowed mode.
@@ -88,6 +106,13 @@ if(DESKTOP_FILE_VALIDATOR)
   # We also want to report errors that are not "fatal" yet.
   set_property(
     TEST wlmbattery_desktop_test
+    PROPERTY FAIL_REGULAR_EXPRESSION " error: ")
+  add_test(
+    NAME wlmcalclock_desktop_test
+    COMMAND "${DESKTOP_FILE_VALIDATOR}" "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmcalclock.desktop")
+  # We also want to report errors that are not "fatal" yet.
+  set_property(
+    TEST wlmcalclock_desktop_test
     PROPERTY FAIL_REGULAR_EXPRESSION " error: ")
   add_test(
     NAME wlmclock_desktop_test
@@ -123,6 +148,13 @@ if(DESKTOP_FILE_VALIDATOR)
   # We also want to report errors that are not "fatal" yet.
   set_property(
     TEST wlmmemgraph_desktop_test
+    PROPERTY FAIL_REGULAR_EXPRESSION " error: ")
+  add_test(
+    NAME wlmmixer_desktop_test
+    COMMAND "${DESKTOP_FILE_VALIDATOR}" "${CMAKE_CURRENT_BINARY_DIR}/wlmaker.wlmmixer.desktop")
+  # We also want to report errors that are not "fatal" yet.
+  set_property(
+    TEST wlmmixer_desktop_test
     PROPERTY FAIL_REGULAR_EXPRESSION " error: ")
   add_test(
     NAME wlmeyes_desktop_test
@@ -190,6 +222,10 @@ install(FILES
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/64x64/apps"
   RENAME "wlmbattery.png")
 install(FILES
+  "wlmcalclock-64x64.png"
+  DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/64x64/apps"
+  RENAME "wlmcalclock.png")
+install(FILES
   "wlmclock-64x64.png"
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/64x64/apps"
   RENAME "wlmclock.png")
@@ -218,9 +254,13 @@ install(FILES
   "wlmaker/icons/chrome-56x56.png"
   "wlmaker/icons/chromium-56x56.png"
   "wlmaker/icons/clip-56x56.png"
+  "wlmaker/icons/dock-56x56.png"
   "wlmaker/icons/firefox-56x56.png"
   "wlmaker/icons/terminal-56x56.png"
   DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/wlmaker/icons")
+install(FILES
+  "wlmaker/Dockapps.plist"
+  DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/wlmaker")
 install(
   FILES
   "Themes/Default.plist"

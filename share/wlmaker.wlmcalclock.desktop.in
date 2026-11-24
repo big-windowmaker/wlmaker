@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=WLMCalClock
+GenericName="Wayland Maker Calendar Clock dockapp"
+Comment="Display time, weekday, day and month"
+Exec=@CMAKE_INSTALL_PREFIX@/bin/wlmcalclock
+Type=Application
+Categories=Utility;Clock;
+Keywords=clock;calendar;date;dockapp;wlmaker
+Icon=wlmcalclock

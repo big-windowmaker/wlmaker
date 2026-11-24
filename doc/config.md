@@ -115,6 +115,24 @@ The `LockScreen` action is wired to execute `Command` of `ScreenLock`.
 Example:
 @snippet{trimleft} etc/ExampleConfig.plist ScreenLock
 
+## WindowPlacement {#config_windowplacement}
+
+*Optional*: Where new windows are placed.
+
+* `Center`: Centered in the area usable for windows on the output under the
+  pointer. A window that would exactly cover another one is cascaded. Like
+  Window Maker's `WindowPlacement = center`.
+* `Smart`: Placed in the first free spot, filling the usable area row by row.
+  This is the default, if not set.
+
+The usable area is the output minus the exclusive zones of panels (eg. the
+Clip, `wlmdock`, layer-shell panels). Windows are kept within it, so that the
+title bar is always reachable; windows larger than the area are placed at its
+top-left. Maximized windows use the usable area, too.
+
+X11 windows go to the position the user or the program requested, if any.
+Dialogs (transient windows) are centered on their parent.
+
 ## Autostart {#config_autostart}
 
 An array of strings, each denoting an executable that will be executed once
@@ -162,3 +180,97 @@ Example:
 
 That example will configure any added output to use `Normal` transformation
 with a scale of `1.0`.
+
+# State file {#state_file}
+
+The state file (`State.plist`, see [etc/State.plist](../etc/State.plist))
+holds the workspaces, and the setup of the *Dock* (`wlmdock`) and the *Clip*.
+
+## Clip {#state_clip}
+
+* `Edge`, `Anchor`: Where the clip is placed, eg. `Edge = LEFT; Anchor = TOP;`.
+
+* *Optional* `Output`: Dictionary, see @ref config_output.
+
+* *Optional* `Icon`: Image of the Clip's tile: A path, or a name in
+  `${XDG_DATA_DIRS}/wlmaker/icons`. Defaults to the icon configured at build
+  time (CMake `WLMAKER_CLIP_DEFAULT_ICON`), else `clip-56x56.png`.
+
+* *Optional* `Dockapps`: Array of strings, the order in which dock-apps (eg.
+  `wlmclock`, `wlmcpugraph`) are attached to the Clip, going away from the
+  Clip. A dock-app is identified by the name of its executable. Dock-apps that
+  are not listed are attached after the listed ones, in the order they start.
+
+  Example: `Dockapps = ( "wlmclock", "wlmcpugraph", "wlmnetgraph" );`
+
+  Dock-apps can be re-arranged by dragging them with the left mouse button,
+  while holding the `MoveWindowModifier` (see @ref config_file, default
+  `Alt`) or on the tile's border; or with *Move Up* / *Move Down* from the
+  tile's menu (right button, same conditions). The resulting order is stored in `Dockapps.plist`, in the user's
+  configuration directory (`~/.config/wlmaker/`). When that file exists, it
+  takes precedence over `Dockapps`. Remove it to return to `Dockapps`.
+
+* *Optional* `Launchers`: Array of launchers attached below the Clip (eg. web
+  browser and file manager), in the same format as the Dock's `Launchers`.
+  The Clip leaves room for them, and the dock-apps follow after. They are
+  shown by a second instance of `wlmdock`, started as `wlmdock --clip`, eg.
+  from the configuration's `Autostart`.
+
+* *Optional* `Margin`: For `wlmdock --clip` only: Distance of the launchers
+  from the anchor, in pixels. Defaults to one tile, ie. right below the Clip.
+
+The Clip can be dragged to another corner of the output with the left mouse
+button (not on its workspace buttons), or moved with *Move to …* from its
+menu (right button). The new `Edge` and `Anchor` are stored in the state file
+(the `--state_file`, or `~/.config/wlmaker/State.plist`). If the Dock is in
+that corner, the Dock moves to where the Clip was.
+
+Example:
+
+```
+Clip = {
+  Edge = LEFT;
+  Anchor = TOP;
+  Icon = "clip-56x56.png";
+  Launchers = (
+    { AppID = "firefox"; CommandLine = "/usr/bin/firefox"; Icon = "firefox-56x56.png"; },
+    { CommandLine = "/usr/bin/pcmanfm"; Icon = "system-file-manager.png"; }
+  );
+  Dockapps = ( "wlmclock", "wlmcpugraph" );
+};
+```
+
+## Dock {#state_dock}
+
+Read by `wlmdock` (without `--clip`).
+
+* `Edge`, `Anchor`: Where the dock is placed, eg. `Edge = RIGHT; Anchor = TOP;`.
+
+* `Launchers`: Array of dictionaries, each with:
+  * `CommandLine`: The command to execute.
+  * `Icon`: The icon's file name, searched in `${XDG_DATA_DIRS}/wlmaker/icons`.
+  * *Optional* `AppID`: The application ID of the launched application's
+    windows, to show the launcher as running. Without it, the launcher shows
+    as running only while processes it launched itself are alive.
+
+* *Optional* `Margin`: Distance from the anchor, in pixels. Defaults to 0.
+
+* *Optional* `Icon`: Icon of the Dock's main tile: A path, or a name in
+  `${XDG_DATA_DIRS}/wlmaker/icons`. Defaults to the icon configured at build
+  time (CMake `WLMDOCK_DEFAULT_ICON`), else `dock-56x56.png`.
+
+Like on Window Maker, the Dock has a main tile nearest its anchor, which can't
+be removed: Removing all launchers can't make the Dock unreachable. Its menu
+(right button) moves the Dock to the other side or end, and restores the
+default launchers: Those of the defaults' `Launchers` (`wlmdock
+--default_state_file`, else the file configured at build time with CMake
+`WLMAKER_DEFAULT_STATE_FILE`, else `${XDG_CONFIG_DIRS}/wlmaker/State.plist`,
+else the built-in default). The Clip's menu restores the Clip's `Launchers`
+the same way. Menu items are translated for Portuguese (`pt`, `pt_BR`)
+locales, from `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` or `LANG`.
+
+The Dock can be dragged to another corner with the left mouse button: Moving
+the pointer by more than a few pixels with the button held drags it, a click
+launches. Its launchers' menu (right button) offers *Launch*, *Kill* (for
+processes it launched) and *Remove* (stored in the state file). Changes are stored in the state file; `wlmdock` re-reads
+its position on `SIGUSR1`, which wlmaker sends after moving it.

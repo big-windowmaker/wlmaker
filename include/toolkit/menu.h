@@ -77,7 +77,33 @@ typedef struct {
     struct wl_signal          request_close;
     /** The dtor has been called. */
     struct wl_signal          destroy;
+    /**
+     * A right-click menu that stays open (opened by a click) got a press
+     * outside of it. The argument is a @ref wlmtk_menu_outside_press_t: A
+     * listener that takes the press (eg. on the menu window's title bar, to
+     * pin the menu, as Window Maker does) sets `claimed`. Else, the menu
+     * closes.
+     */
+    struct wl_signal          outside_press;
+    /**
+     * The same, for a press inside a right-click menu that stays open (it
+     * otherwise waits for the release): Eg. on a submenu's title, to tear
+     * it off. A listener that takes it sets `claimed`.
+     */
+    struct wl_signal          inside_press;
 } wlmtk_menu_events_t;
+
+/** Argument of @ref wlmtk_menu_events_t::outside_press. */
+typedef struct {
+    /** The button event. */
+    const wlmtk_button_event_t *button_event_ptr;
+    /** Pointer position, relative to the menu element. */
+    double                    x;
+    /** Pointer position, relative to the menu element. */
+    double                    y;
+    /** Set by a listener that took the press: The menu stays open. */
+    bool                      claimed;
+} wlmtk_menu_outside_press_t;
 
 /**
  * Creates a menu.
@@ -130,6 +156,24 @@ void wlmtk_menu_set_open(wlmtk_menu_t *menu_ptr, bool opened);
 bool wlmtk_menu_is_open(wlmtk_menu_t *menu_ptr);
 
 /**
+ * Window Maker's `ViKeyMenus`: h, j, k and l work as the arrow keys in all
+ * menus.
+ *
+ * @param enabled
+ */
+void wlmtk_menu_set_vi_keys(bool enabled);
+
+/**
+ * Right-click mode: The menu was opened by `button` (eg. BTN_LEFT, by
+ * Window Maker's mouse actions), which then works as the right button.
+ * Call after opening; opening resets it to BTN_RIGHT.
+ *
+ * @param menu_ptr
+ * @param button
+ */
+void wlmtk_menu_set_open_button(wlmtk_menu_t *menu_ptr, uint32_t button);
+
+/**
  * Sets the mode of the menu.
  *
  * @param menu_ptr
@@ -172,6 +216,76 @@ void wlmtk_menu_set_parent_item(wlmtk_menu_t *menu_ptr,
 
 /** @return the parent menu item, if this is a submenu. NULL otherwise. */
 wlmtk_menu_item_t *wlmtk_menu_get_parent_item(wlmtk_menu_t *menu_ptr);
+
+/**
+ * Sets the bounds for the menu's submenus, eg. the usable area of the output.
+ * In the coordinates of @ref wlmtk_element_get_absolute_position. Like on
+ * Window Maker: A submenu opens to the left of its item, if it would extend
+ * beyond the right of the bounds; and moves up, to not extend beyond the
+ * bottom.
+ *
+ * @param menu_ptr
+ * @param bounds_ptr          The bounds, or NULL for none.
+ */
+void wlmtk_menu_set_bounds(wlmtk_menu_t *menu_ptr,
+                           const struct wlr_box *bounds_ptr);
+
+/**
+ * @return The bounds for the submenus of `menu_ptr`: Those set for the
+ *     top-level menu. An empty box, if there are none.
+ */
+struct wlr_box wlmtk_menu_get_bounds(wlmtk_menu_t *menu_ptr);
+
+/**
+ * Sets whether the menu's submenus prefer to open to the left. Like on
+ * Window Maker, a submenu that opened to the left, opens its submenus to the
+ * left, too.
+ *
+ * @protected Called when placing the submenu of a @ref wlmtk_menu_item_t.
+ *
+ * @param menu_ptr
+ * @param opens_left
+ */
+void wlmtk_menu_set_opens_left(wlmtk_menu_t *menu_ptr, bool opens_left);
+
+/** @return Whether the submenus prefer to open to the left. */
+bool wlmtk_menu_opens_left(wlmtk_menu_t *menu_ptr);
+
+/**
+ * @return The box covered by the menu and its open submenus, in the
+ *     coordinates of @ref wlmtk_element_get_absolute_position.
+ */
+struct wlr_box wlmtk_menu_get_extents(wlmtk_menu_t *menu_ptr);
+
+/**
+ * Computes where to place a submenu of `width` x `height` for an item: To
+ * the right of the item, or to the left if it does not fit there (or if
+ * `prefer_left` and it fits on the left). If it fits on neither side, on the
+ * side with more room. Aligned with the item's top, but moved up to not
+ * extend beyond the bottom, and down to not extend beyond the top.
+ *
+ * @param bounds_ptr          The bounds. If empty: To the right, aligned.
+ * @param item_left           Left edge of the item.
+ * @param item_right          Right edge of the item.
+ * @param item_top            Top edge of the item.
+ * @param width
+ * @param height
+ * @param prefer_left
+ * @param x_ptr               Set to the left edge of the submenu.
+ * @param y_ptr               Set to the top edge of the submenu.
+ *
+ * @return true if the submenu opens to the left.
+ */
+bool wlmtk_menu_place_submenu(
+    const struct wlr_box *bounds_ptr,
+    int item_left,
+    int item_right,
+    int item_top,
+    int width,
+    int height,
+    bool prefer_left,
+    int *x_ptr,
+    int *y_ptr);
 
 /**
  * Requests that menu_item_ptr be highlighted.

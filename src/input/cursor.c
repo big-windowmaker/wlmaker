@@ -21,11 +21,14 @@
 
 #include "cursor.h"
 
+#include <drm_fourcc.h>
 #include <ini.h>
 #include <inttypes.h>
+#include <math.h>
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 #include <linux/input-event-codes.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wayland-server-core.h>
@@ -33,16 +36,32 @@
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_cursor_shape_v1.h>
+#include <wlr/interfaces/wlr_buffer.h>
+#include <wlr/render/wlr_texture.h>
+#include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/xcursor.h>
 #undef WLR_USE_UNSTABLE
 
 #include "keyboard.h"
 #include "toolkit/toolkit.h"
 
 /* == Declarations ========================================================= */
+
+/** The kind of image requested for the cursor. */
+typedef enum {
+    _WLMIM_CURSOR_IMAGE_NONE,     ///< Hidden.
+    _WLMIM_CURSOR_IMAGE_XCURSOR,  ///< A named image of the XCursor theme.
+    _WLMIM_CURSOR_IMAGE_SURFACE,  ///< A client's cursor surface.
+} _wlmim_cursor_image_t;
 
 /** State and tools for handling wlmaker cursors. */
 struct _wlmim_cursor_t {
@@ -83,9 +102,68 @@ struct _wlmim_cursor_t {
     wlmtk_root_t              *root_ptr;
     /** The cursor shape manager. */
     struct wlr_cursor_shape_manager_v1 *wlr_cursor_shape_manager_v1_ptr;
+    /** The relative pointer manager. Owned by wl_display. */
+    struct wlr_relative_pointer_manager_v1 *wlr_relative_pointer_manager_v1_ptr;
+    /** The pointer constraints manager. Owned by wl_display. */
+    struct wlr_pointer_constraints_v1 *wlr_pointer_constraints_v1_ptr;
+    /** The constraint in effect: on the surface with pointer focus. */
+    struct wlr_pointer_constraint_v1 *active_constraint_ptr;
+    /** `new_constraint` of `wlr_pointer_constraints_v1::events`. */
+    struct wl_listener        new_constraint_listener;
+    /** `destroy` of the active constraint. */
+    struct wl_listener        constraint_destroy_listener;
+    /** `focus_change` of `wlr_seat::pointer_state.events`. */
+    struct wl_listener        pointer_focus_change_listener;
 
     /** Whether the current left-button press emulates a right button. */
     bool                      left_button_emulates_right;
+
+    /** The output layout, for the scale of the outputs. */
+    struct wlr_output_layout  *wlr_output_layout_ptr;
+
+    /**
+     * The image asked for, by the toolkit or by clients. Normally shown as
+     * is; magnified while locating the pointer; replaced by an override.
+     */
+    _wlmim_cursor_image_t     image;
+    /** Name of the XCursor image, for _WLMIM_CURSOR_IMAGE_XCURSOR. */
+    char                      *xcursor_name_ptr;
+    /** The client's surface, for _WLMIM_CURSOR_IMAGE_SURFACE. */
+    struct wlr_surface        *surface_ptr;
+    /** Hotspot within the client's surface. */
+    int32_t                   surface_hotspot_x;
+    /** Hotspot within the client's surface. */
+    int32_t                   surface_hotspot_y;
+    /** Listener for `destroy` of @ref _wlmim_cursor_t::surface_ptr. */
+    struct wl_listener        surface_destroy_listener;
+    /** Listener for `commit` of @ref _wlmim_cursor_t::surface_ptr. */
+    struct wl_listener        surface_commit_listener;
+
+    /** Magnification of the image. 1.0: As is. */
+    double                    magnification;
+    /** Largest magnification to prepare the image for. */
+    double                    max_magnification;
+    /** The image to magnify, in high resolution. NULL if not prepared. */
+    struct wlr_buffer         *source_buffer_ptr;
+    /** Pixels of @ref _wlmim_cursor_t::source_buffer_ptr per logical pixel. */
+    double                    source_ratio;
+    /** Hotspot of the unmagnified image, in logical pixels. */
+    double                    source_hotspot_x;
+    /** Hotspot of the unmagnified image, in logical pixels. */
+    double                    source_hotspot_y;
+    /** The XCursor theme in large size, loaded when magnifying. */
+    struct wlr_xcursor_theme  *large_theme_ptr;
+    /** Size @ref _wlmim_cursor_t::large_theme_ptr was loaded at. */
+    int                       large_theme_size;
+
+    /** An image replacing the requested one (eg. for selecting a window). */
+    struct wlr_buffer         *override_buffer_ptr;
+    /** Hotspot of the override, in logical pixels. */
+    int32_t                   override_hotspot_x;
+    /** Hotspot of the override, in logical pixels. */
+    int32_t                   override_hotspot_y;
+    /** Scale of the override buffer. */
+    float                     override_scale;
 };
 
 static void _wlmim_cursor_handle_cursor_shape_manager_v1_destroy(
@@ -118,6 +196,45 @@ static void _wlmim_cursor_handle_seat_request_set_cursor(
 static void _wlmim_cursor_process_motion(
     wlmim_cursor_t *cursor_ptr,
     uint32_t time_msec);
+
+static void _wlmim_cursor_handle_new_constraint(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_cursor_handle_constraint_destroy(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_cursor_handle_pointer_focus_change(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_cursor_set_constraint(
+    wlmim_cursor_t *cursor_ptr,
+    struct wlr_pointer_constraint_v1 *constraint_ptr);
+static bool _wlmim_cursor_constrained(
+    wlmim_cursor_t *cursor_ptr,
+    double dx,
+    double dy);
+
+static void _wlmim_cursor_request_xcursor(
+    void *ud_ptr,
+    const char *name_ptr);
+static void _wlmim_cursor_request_surface(
+    wlmim_cursor_t *cursor_ptr,
+    struct wlr_surface *wlr_surface_ptr,
+    int32_t hotspot_x,
+    int32_t hotspot_y);
+static void _wlmim_cursor_forget_surface(wlmim_cursor_t *cursor_ptr);
+static void _wlmim_cursor_handle_surface_destroy(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_cursor_handle_surface_commit(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_cursor_show(wlmim_cursor_t *cursor_ptr);
+static bool _wlmim_cursor_prepare_source(wlmim_cursor_t *cursor_ptr);
+static void _wlmim_cursor_drop_source(wlmim_cursor_t *cursor_ptr);
+static float _wlmim_cursor_max_output_scale(wlmim_cursor_t *cursor_ptr);
+static struct wlr_buffer *_wlmim_cursor_buffer_from_xcursor_image(
+    const struct wlr_xcursor_image *image_ptr);
 
 char *_wlmim_cursor_get_theme_name(const struct wlmim_cursor_style *style_ptr);
 static int _wlmim_cursor_theme_handler(
@@ -177,6 +294,9 @@ wlmim_cursor_t *wlmim_cursor_create(
     cursor_ptr->wlr_seat_ptr = wlr_seat_ptr;
     cursor_ptr->root_ptr = root_ptr;
     cursor_ptr->options = *options_ptr;
+    cursor_ptr->wlr_output_layout_ptr = wlr_output_layout_ptr;
+    cursor_ptr->magnification = 1.0;
+    cursor_ptr->max_magnification = 1.0;
 
     // tinywl: wlr_cursor is a utility tracking the cursor image shown on
     // screen.
@@ -197,6 +317,9 @@ wlmim_cursor_t *wlmim_cursor_create(
         wlmim_cursor_destroy(cursor_ptr);
         return NULL;
     }
+    // The toolkit's images go through here: So we know what is shown.
+    wlmtk_pointer_set_xcursor_handler(
+        cursor_ptr->pointer_ptr, _wlmim_cursor_request_xcursor, cursor_ptr);
 
     if (NULL != wl_display_ptr) {
         cursor_ptr->wlr_cursor_shape_manager_v1_ptr =
@@ -216,6 +339,37 @@ wlmim_cursor_t *wlmim_cursor_create(
             &cursor_ptr->wlr_cursor_shape_manager_v1_ptr->events.request_set_shape,
             &cursor_ptr->cursor_shape_manager_v1_set_shape_listener,
             _wlmim_cursor_handle_cursor_shape_manager_v1_set_shape);
+
+        cursor_ptr->wlr_relative_pointer_manager_v1_ptr =
+            wlr_relative_pointer_manager_v1_create(wl_display_ptr);
+        if (NULL == cursor_ptr->wlr_relative_pointer_manager_v1_ptr) {
+            bs_log(BS_ERROR,
+                   "Failed wlr_relative_pointer_manager_v1_create(%p)",
+                   wl_display_ptr);
+            wlmim_cursor_destroy(cursor_ptr);
+            return NULL;
+        }
+
+        // Pointer lock and confinement: VM viewers (SPICE, VNC) and games.
+        // spice-gtk locks the pointer without checking for the global and
+        // crashes (wl_proxy_get_version on NULL) when it is missing.
+        cursor_ptr->wlr_pointer_constraints_v1_ptr =
+            wlr_pointer_constraints_v1_create(wl_display_ptr);
+        if (NULL == cursor_ptr->wlr_pointer_constraints_v1_ptr) {
+            bs_log(BS_ERROR,
+                   "Failed wlr_pointer_constraints_v1_create(%p)",
+                   wl_display_ptr);
+            wlmim_cursor_destroy(cursor_ptr);
+            return NULL;
+        }
+        wlmtk_util_connect_listener_signal(
+            &cursor_ptr->wlr_pointer_constraints_v1_ptr->events.new_constraint,
+            &cursor_ptr->new_constraint_listener,
+            _wlmim_cursor_handle_new_constraint);
+        wlmtk_util_connect_listener_signal(
+            &cursor_ptr->wlr_seat_ptr->pointer_state.events.focus_change,
+            &cursor_ptr->pointer_focus_change_listener,
+            _wlmim_cursor_handle_pointer_focus_change);
     }
 
     // tinywl: wlr_cursor *only* displays an image on screen. It does not move
@@ -259,6 +413,15 @@ wlmim_cursor_t *wlmim_cursor_create(
 /* ------------------------------------------------------------------------- */
 void wlmim_cursor_destroy(wlmim_cursor_t *cursor_ptr)
 {
+    if (NULL != cursor_ptr->active_constraint_ptr) {
+        wlmtk_util_disconnect_listener(&cursor_ptr->constraint_destroy_listener);
+        cursor_ptr->active_constraint_ptr = NULL;
+    }
+    if (NULL != cursor_ptr->wlr_pointer_constraints_v1_ptr) {
+        wlmtk_util_disconnect_listener(&cursor_ptr->pointer_focus_change_listener);
+        wlmtk_util_disconnect_listener(&cursor_ptr->new_constraint_listener);
+        cursor_ptr->wlr_pointer_constraints_v1_ptr = NULL;
+    }
     wlmtk_util_disconnect_listener(
         &cursor_ptr->seat_request_set_cursor_listener);
     if (NULL != cursor_ptr->wlr_cursor_ptr) {
@@ -278,6 +441,21 @@ void wlmim_cursor_destroy(wlmim_cursor_t *cursor_ptr)
     if (NULL != cursor_ptr->pointer_ptr) {
         wlmtk_pointer_destroy(cursor_ptr->pointer_ptr);
         cursor_ptr->pointer_ptr = NULL;
+    }
+
+    _wlmim_cursor_forget_surface(cursor_ptr);
+    _wlmim_cursor_drop_source(cursor_ptr);
+    if (NULL != cursor_ptr->override_buffer_ptr) {
+        wlr_buffer_unlock(cursor_ptr->override_buffer_ptr);
+        cursor_ptr->override_buffer_ptr = NULL;
+    }
+    if (NULL != cursor_ptr->large_theme_ptr) {
+        wlr_xcursor_theme_destroy(cursor_ptr->large_theme_ptr);
+        cursor_ptr->large_theme_ptr = NULL;
+    }
+    if (NULL != cursor_ptr->xcursor_name_ptr) {
+        free(cursor_ptr->xcursor_name_ptr);
+        cursor_ptr->xcursor_name_ptr = NULL;
     }
 
     if (NULL != cursor_ptr->wlr_xcursor_manager_ptr) {
@@ -323,10 +501,17 @@ bool wlmim_cursor_set_style(
     if (NULL != cursor_ptr->pointer_ptr) {
         wlmtk_pointer_set_xcursor_manager(cursor_ptr->pointer_ptr, wxm_ptr);
     }
+    // Another theme or size: The large images are prepared again.
+    _wlmim_cursor_drop_source(cursor_ptr);
+    if (NULL != cursor_ptr->large_theme_ptr) {
+        wlr_xcursor_theme_destroy(cursor_ptr->large_theme_ptr);
+        cursor_ptr->large_theme_ptr = NULL;
+    }
     if (NULL != cursor_ptr->wlr_xcursor_manager_ptr) {
         wlr_xcursor_manager_destroy(cursor_ptr->wlr_xcursor_manager_ptr);
     }
     cursor_ptr->wlr_xcursor_manager_ptr = wxm_ptr;
+    _wlmim_cursor_show(cursor_ptr);
     return true;
 }
 
@@ -334,6 +519,95 @@ bool wlmim_cursor_set_style(
 struct wlr_cursor *wlmim_cursor_wlr_cursor(wlmim_cursor_t *cursor_ptr)
 {
     return cursor_ptr->wlr_cursor_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_cursor_image_visible(wlmim_cursor_t *cursor_ptr)
+{
+    return _WLMIM_CURSOR_IMAGE_NONE != cursor_ptr->image;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_cursor_set_magnification(
+    wlmim_cursor_t *cursor_ptr,
+    double magnification,
+    double max_magnification)
+{
+    if (magnification < 1.0) magnification = 1.0;
+    if (max_magnification < magnification) max_magnification = magnification;
+    if (max_magnification != cursor_ptr->max_magnification &&
+        magnification > 1.0) {
+        // Prepared for a smaller size: Prepare again, sharp.
+        if (max_magnification > cursor_ptr->max_magnification) {
+            _wlmim_cursor_drop_source(cursor_ptr);
+        }
+    }
+    cursor_ptr->max_magnification = max_magnification;
+    if (magnification == cursor_ptr->magnification) return;
+    cursor_ptr->magnification = magnification;
+    if (1.0 == magnification) {
+        // Done magnifying: Nothing kept for the next time but the theme.
+        _wlmim_cursor_drop_source(cursor_ptr);
+    }
+    _wlmim_cursor_show(cursor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_cursor_set_override(
+    wlmim_cursor_t *cursor_ptr,
+    struct wlr_buffer *wlr_buffer_ptr,
+    int32_t hotspot_x,
+    int32_t hotspot_y,
+    float scale)
+{
+    if (NULL != cursor_ptr->override_buffer_ptr) {
+        wlr_buffer_unlock(cursor_ptr->override_buffer_ptr);
+        cursor_ptr->override_buffer_ptr = NULL;
+    }
+    if (NULL != wlr_buffer_ptr) {
+        cursor_ptr->override_buffer_ptr = wlr_buffer_lock(wlr_buffer_ptr);
+        cursor_ptr->override_hotspot_x = hotspot_x;
+        cursor_ptr->override_hotspot_y = hotspot_y;
+        cursor_ptr->override_scale = 0 < scale ? scale : 1;
+    }
+    _wlmim_cursor_show(cursor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_buffer *wlmim_cursor_create_xcursor_buffer(
+    wlmim_cursor_t *cursor_ptr,
+    const char *theme_name_ptr,
+    const char *const *names_ptr,
+    int32_t *hotspot_x_ptr,
+    int32_t *hotspot_y_ptr,
+    float *scale_ptr)
+{
+    struct wlr_xcursor_manager *wxm_ptr = cursor_ptr->wlr_xcursor_manager_ptr;
+    if (NULL == wxm_ptr) return NULL;
+    float scale = _wlmim_cursor_max_output_scale(cursor_ptr);
+    int size = (int)lround(wxm_ptr->size * scale);
+    struct wlr_xcursor_theme *theme_ptr = wlr_xcursor_theme_load(
+        NULL != theme_name_ptr ? theme_name_ptr : wxm_ptr->name, size);
+    if (NULL == theme_ptr) return NULL;
+
+    struct wlr_buffer *wlr_buffer_ptr = NULL;
+    for (; NULL == wlr_buffer_ptr && NULL != *names_ptr; ++names_ptr) {
+        struct wlr_xcursor *xcursor_ptr = wlr_xcursor_theme_get_cursor(
+            theme_ptr, *names_ptr);
+        if (NULL == xcursor_ptr || 0 == xcursor_ptr->image_count) continue;
+        const struct wlr_xcursor_image *i_ptr = xcursor_ptr->images[0];
+        wlr_buffer_ptr = _wlmim_cursor_buffer_from_xcursor_image(i_ptr);
+        if (NULL == wlr_buffer_ptr) break;
+        // The theme's nominal size may differ from the images' size: Keep
+        // the image's proportion to the regular cursor.
+        float s = (float)i_ptr->height / (wxm_ptr->size > 0 ? wxm_ptr->size : 24);
+        if (s <= 0) s = scale;
+        *scale_ptr = s;
+        *hotspot_x_ptr = (int32_t)lround(i_ptr->hotspot_x / s);
+        *hotspot_y_ptr = (int32_t)lround(i_ptr->hotspot_y / s);
+    }
+    wlr_xcursor_theme_destroy(theme_ptr);
+    return wlr_buffer_ptr;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -403,10 +677,8 @@ void _wlmim_cursor_handle_cursor_shape_manager_v1_set_shape(
     struct wlr_cursor_shape_manager_v1_request_set_shape_event *e = data_ptr;
 
     if (NULL != wlr_cursor_shape_v1_name(e->shape)) {
-        wlr_cursor_set_xcursor(
-            cursor_ptr->wlr_cursor_ptr,
-            cursor_ptr->wlr_xcursor_manager_ptr,
-            wlr_cursor_shape_v1_name(e->shape));
+        _wlmim_cursor_request_xcursor(cursor_ptr,
+                                      wlr_cursor_shape_v1_name(e->shape));
     } else {
         bs_log(BS_WARNING, "Cannot resolve shape name for %d", e->shape);
     }
@@ -428,6 +700,28 @@ void _wlmim_cursor_handle_motion(
     struct wlr_pointer_motion_event *wlr_pointer_motion_event_ptr = data_ptr;
 
     wlmim_report_activity(cursor_ptr->input_manager_ptr);
+
+    // Relative motion goes to the client with pointer focus, unaccelerated
+    // and not clipped by output boundaries.
+    if (NULL != cursor_ptr->wlr_relative_pointer_manager_v1_ptr) {
+        wlr_relative_pointer_manager_v1_send_relative_motion(
+            cursor_ptr->wlr_relative_pointer_manager_v1_ptr,
+            cursor_ptr->wlr_seat_ptr,
+            (uint64_t)wlr_pointer_motion_event_ptr->time_msec * 1000,
+            wlr_pointer_motion_event_ptr->delta_x,
+            wlr_pointer_motion_event_ptr->delta_y,
+            wlr_pointer_motion_event_ptr->unaccel_dx,
+            wlr_pointer_motion_event_ptr->unaccel_dy);
+    }
+
+    // A locked pointer stays; a confined one stays inside its region.
+    if (_wlmim_cursor_constrained(
+            cursor_ptr,
+            wlr_pointer_motion_event_ptr->delta_x,
+            wlr_pointer_motion_event_ptr->delta_y)) {
+        wlr_seat_pointer_notify_frame(cursor_ptr->wlr_seat_ptr);
+        return;
+    }
 
     wlr_cursor_move(
         cursor_ptr->wlr_cursor_ptr,
@@ -458,6 +752,10 @@ void _wlmim_cursor_handle_motion_absolute(
 
     wlmim_report_activity(cursor_ptr->input_manager_ptr);
 
+    if (NULL != cursor_ptr->active_constraint_ptr &&
+        WLR_POINTER_CONSTRAINT_V1_LOCKED ==
+        cursor_ptr->active_constraint_ptr->type) return;
+
     wlr_cursor_warp_absolute(
         cursor_ptr->wlr_cursor_ptr,
         &wlr_pointer_motion_absolute_event_ptr->pointer->base,
@@ -467,6 +765,103 @@ void _wlmim_cursor_handle_motion_absolute(
     _wlmim_cursor_process_motion(
         cursor_ptr,
         wlr_pointer_motion_absolute_event_ptr->time_msec);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Whether a motion by (dx, dy) is held back by the active constraint: always
+ * for a locked pointer, and when it would leave the region of a confined one.
+ */
+bool _wlmim_cursor_constrained(
+    wlmim_cursor_t *cursor_ptr,
+    double dx,
+    double dy)
+{
+    struct wlr_pointer_constraint_v1 *c_ptr = cursor_ptr->active_constraint_ptr;
+    if (NULL == c_ptr) return false;
+    if (WLR_POINTER_CONSTRAINT_V1_LOCKED == c_ptr->type) return true;
+
+    // Confined: the new position, in surface coordinates, stays in the region.
+    struct wlr_seat_pointer_state *ps_ptr = &cursor_ptr->wlr_seat_ptr->pointer_state;
+    if (ps_ptr->focused_surface != c_ptr->surface) return false;
+    double sx = ps_ptr->sx + dx;
+    double sy = ps_ptr->sy + dy;
+    return !pixman_region32_contains_point(
+        &c_ptr->region, (int)floor(sx), (int)floor(sy), NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Makes `constraint_ptr` (or none) the active constraint. */
+void _wlmim_cursor_set_constraint(
+    wlmim_cursor_t *cursor_ptr,
+    struct wlr_pointer_constraint_v1 *constraint_ptr)
+{
+    if (cursor_ptr->active_constraint_ptr == constraint_ptr) return;
+
+    struct wlr_pointer_constraint_v1 *old_ptr = cursor_ptr->active_constraint_ptr;
+    if (NULL != old_ptr) {
+        wlmtk_util_disconnect_listener(&cursor_ptr->constraint_destroy_listener);
+        cursor_ptr->active_constraint_ptr = NULL;
+        // May destroy a oneshot constraint.
+        wlr_pointer_constraint_v1_send_deactivated(old_ptr);
+    }
+    if (NULL == constraint_ptr) return;
+
+    cursor_ptr->active_constraint_ptr = constraint_ptr;
+    wlmtk_util_connect_listener_signal(
+        &constraint_ptr->events.destroy,
+        &cursor_ptr->constraint_destroy_listener,
+        _wlmim_cursor_handle_constraint_destroy);
+    wlr_pointer_constraint_v1_send_activated(constraint_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** A client asks for a constraint: active once its surface has the pointer. */
+void _wlmim_cursor_handle_new_constraint(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_cursor_t *cursor_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_cursor_t, new_constraint_listener);
+    struct wlr_pointer_constraint_v1 *constraint_ptr = data_ptr;
+
+    if (constraint_ptr->seat == cursor_ptr->wlr_seat_ptr &&
+        constraint_ptr->surface ==
+        cursor_ptr->wlr_seat_ptr->pointer_state.focused_surface) {
+        _wlmim_cursor_set_constraint(cursor_ptr, constraint_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** The active constraint went away (unlocked by the client, surface gone). */
+void _wlmim_cursor_handle_constraint_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmim_cursor_t *cursor_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_cursor_t, constraint_destroy_listener);
+    wlmtk_util_disconnect_listener(&cursor_ptr->constraint_destroy_listener);
+    cursor_ptr->active_constraint_ptr = NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** The pointer moved to another surface: its constraint, if any, applies. */
+void _wlmim_cursor_handle_pointer_focus_change(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_cursor_t *cursor_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_cursor_t, pointer_focus_change_listener);
+    struct wlr_seat_pointer_focus_change_event *e_ptr = data_ptr;
+
+    struct wlr_pointer_constraint_v1 *constraint_ptr = NULL;
+    if (NULL != e_ptr->new_surface) {
+        constraint_ptr = wlr_pointer_constraints_v1_constraint_for_surface(
+            cursor_ptr->wlr_pointer_constraints_v1_ptr,
+            e_ptr->new_surface,
+            cursor_ptr->wlr_seat_ptr);
+    }
+    _wlmim_cursor_set_constraint(cursor_ptr, constraint_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -510,6 +905,10 @@ void _wlmim_cursor_handle_button(
         }
     }
 
+    // A filter first: eg. selecting a window to close by force.
+    if (wlmim_filter_button(cursor_ptr->input_manager_ptr, &ev, modifiers)) {
+        return;
+    }
     wlmtk_root_pointer_button(cursor_ptr->root_ptr, &ev, modifiers);
 }
 
@@ -529,6 +928,17 @@ void _wlmim_cursor_handle_axis(
     struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr = data_ptr;
 
     wlmim_report_activity(cursor_ptr->input_manager_ptr);
+
+    // Bindings with modifiers (eg. Ctrl+Alt+wheel to zoom) come first.
+    struct wlr_keyboard *wlr_keyboard_ptr = wlr_seat_get_keyboard(
+        cursor_ptr->wlr_seat_ptr);
+    uint32_t modifiers = 0;
+    if (NULL != wlr_keyboard_ptr) {
+        modifiers = wlr_keyboard_get_modifiers(wlr_keyboard_ptr);
+    }
+    if (wlmim_filter_axis(cursor_ptr->input_manager_ptr,
+                          wlr_pointer_axis_event_ptr,
+                          modifiers)) return;
 
     wlmtk_root_pointer_axis(
         cursor_ptr->root_ptr,
@@ -576,8 +986,8 @@ void _wlmim_cursor_handle_seat_request_set_cursor(
         cursor_ptr->wlr_seat_ptr->pointer_state.focused_client;
     if (focused_wlr_seat_client_ptr ==
         wlr_seat_pointer_request_set_cursor_event_ptr->seat_client) {
-        wlr_cursor_set_surface(
-            cursor_ptr->wlr_cursor_ptr,
+        _wlmim_cursor_request_surface(
+            cursor_ptr,
             wlr_seat_pointer_request_set_cursor_event_ptr->surface,
             wlr_seat_pointer_request_set_cursor_event_ptr->hotspot_x,
             wlr_seat_pointer_request_set_cursor_event_ptr->hotspot_y);
@@ -610,6 +1020,299 @@ void _wlmim_cursor_process_motion(
         cursor_ptr->wlr_cursor_ptr->y,
         time_msec,
         cursor_ptr->pointer_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Implements @ref wlmtk_pointer_xcursor_handler_t, and the cursor shape
+ * requests: A named image of the XCursor theme.
+ *
+ * @param ud_ptr              The @ref wlmim_cursor_t.
+ * @param name_ptr
+ */
+void _wlmim_cursor_request_xcursor(void *ud_ptr, const char *name_ptr)
+{
+    wlmim_cursor_t *cursor_ptr = ud_ptr;
+    if (_WLMIM_CURSOR_IMAGE_XCURSOR == cursor_ptr->image &&
+        NULL != cursor_ptr->xcursor_name_ptr &&
+        0 == strcmp(cursor_ptr->xcursor_name_ptr, name_ptr)) {
+        // Unchanged. wlroots would also skip it.
+        if (NULL == cursor_ptr->override_buffer_ptr &&
+            1.0 == cursor_ptr->magnification) {
+            wlr_cursor_set_xcursor(cursor_ptr->wlr_cursor_ptr,
+                                   cursor_ptr->wlr_xcursor_manager_ptr,
+                                   name_ptr);
+        }
+        return;
+    }
+    char *n_ptr = logged_strdup(name_ptr);
+    if (NULL == n_ptr) return;
+    _wlmim_cursor_forget_surface(cursor_ptr);
+    if (NULL != cursor_ptr->xcursor_name_ptr) free(cursor_ptr->xcursor_name_ptr);
+    cursor_ptr->xcursor_name_ptr = n_ptr;
+    cursor_ptr->image = _WLMIM_CURSOR_IMAGE_XCURSOR;
+    _wlmim_cursor_drop_source(cursor_ptr);
+    _wlmim_cursor_show(cursor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * A client's cursor surface, or none (hidden).
+ *
+ * @param cursor_ptr
+ * @param wlr_surface_ptr     May be NULL: Hides the cursor.
+ * @param hotspot_x
+ * @param hotspot_y
+ */
+void _wlmim_cursor_request_surface(
+    wlmim_cursor_t *cursor_ptr,
+    struct wlr_surface *wlr_surface_ptr,
+    int32_t hotspot_x,
+    int32_t hotspot_y)
+{
+    if (wlr_surface_ptr != cursor_ptr->surface_ptr) {
+        _wlmim_cursor_forget_surface(cursor_ptr);
+        if (NULL != wlr_surface_ptr) {
+            cursor_ptr->surface_ptr = wlr_surface_ptr;
+            wlmtk_util_connect_listener_signal(
+                &wlr_surface_ptr->events.destroy,
+                &cursor_ptr->surface_destroy_listener,
+                _wlmim_cursor_handle_surface_destroy);
+            wlmtk_util_connect_listener_signal(
+                &wlr_surface_ptr->events.commit,
+                &cursor_ptr->surface_commit_listener,
+                _wlmim_cursor_handle_surface_commit);
+        }
+    }
+    cursor_ptr->surface_hotspot_x = hotspot_x;
+    cursor_ptr->surface_hotspot_y = hotspot_y;
+    cursor_ptr->image = NULL != wlr_surface_ptr ?
+        _WLMIM_CURSOR_IMAGE_SURFACE : _WLMIM_CURSOR_IMAGE_NONE;
+    _wlmim_cursor_drop_source(cursor_ptr);
+    _wlmim_cursor_show(cursor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Stops tracking the client's cursor surface. */
+void _wlmim_cursor_forget_surface(wlmim_cursor_t *cursor_ptr)
+{
+    if (NULL == cursor_ptr->surface_ptr) return;
+    wlmtk_util_disconnect_listener(&cursor_ptr->surface_commit_listener);
+    wlmtk_util_disconnect_listener(&cursor_ptr->surface_destroy_listener);
+    cursor_ptr->surface_ptr = NULL;
+    if (_WLMIM_CURSOR_IMAGE_SURFACE == cursor_ptr->image) {
+        cursor_ptr->image = _WLMIM_CURSOR_IMAGE_NONE;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** The client's cursor surface is gone: The cursor is hidden (as wlroots). */
+void _wlmim_cursor_handle_surface_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmim_cursor_t *cursor_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_cursor_t, surface_destroy_listener);
+    _wlmim_cursor_forget_surface(cursor_ptr);
+    _wlmim_cursor_drop_source(cursor_ptr);
+    _wlmim_cursor_show(cursor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * The client's cursor surface got a new state: The hotspot moves with the
+ * surface's offset (as wlroots does), and a magnified image is redone.
+ */
+void _wlmim_cursor_handle_surface_commit(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmim_cursor_t *cursor_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_cursor_t, surface_commit_listener);
+    struct wlr_surface *s_ptr = cursor_ptr->surface_ptr;
+    cursor_ptr->surface_hotspot_x -= s_ptr->current.dx;
+    cursor_ptr->surface_hotspot_y -= s_ptr->current.dy;
+    if (1.0 < cursor_ptr->magnification &&
+        NULL == cursor_ptr->override_buffer_ptr) {
+        _wlmim_cursor_drop_source(cursor_ptr);
+        _wlmim_cursor_show(cursor_ptr);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Shows the image: The override, if any. Else the requested image,
+ * magnified if so asked. wlroots draws it, on the hardware cursor plane
+ * when the output can, else in software (also while zooming).
+ */
+void _wlmim_cursor_show(wlmim_cursor_t *cursor_ptr)
+{
+    struct wlr_cursor *c_ptr = cursor_ptr->wlr_cursor_ptr;
+    if (NULL == c_ptr) return;
+
+    if (NULL != cursor_ptr->override_buffer_ptr) {
+        wlr_cursor_set_buffer(c_ptr, cursor_ptr->override_buffer_ptr,
+                              cursor_ptr->override_hotspot_x,
+                              cursor_ptr->override_hotspot_y,
+                              cursor_ptr->override_scale);
+        return;
+    }
+
+    if (1.0 < cursor_ptr->magnification &&
+        _wlmim_cursor_prepare_source(cursor_ptr)) {
+        double m = cursor_ptr->magnification;
+        wlr_cursor_set_buffer(
+            c_ptr, cursor_ptr->source_buffer_ptr,
+            (int32_t)lround(cursor_ptr->source_hotspot_x * m),
+            (int32_t)lround(cursor_ptr->source_hotspot_y * m),
+            (float)(cursor_ptr->source_ratio / m));
+        return;
+    }
+
+    switch (cursor_ptr->image) {
+    case _WLMIM_CURSOR_IMAGE_XCURSOR:
+        if (NULL == cursor_ptr->wlr_xcursor_manager_ptr) break;
+        wlr_cursor_set_xcursor(c_ptr, cursor_ptr->wlr_xcursor_manager_ptr,
+                               cursor_ptr->xcursor_name_ptr);
+        break;
+    case _WLMIM_CURSOR_IMAGE_SURFACE:
+        wlr_cursor_set_surface(c_ptr, cursor_ptr->surface_ptr,
+                               cursor_ptr->surface_hotspot_x,
+                               cursor_ptr->surface_hotspot_y);
+        break;
+    case _WLMIM_CURSOR_IMAGE_NONE:
+    default:
+        wlr_cursor_unset_image(c_ptr);
+        break;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Prepares the image to magnify, in high resolution: For an XCursor image,
+ * the same image of the theme in the largest size needed (loaded on
+ * demand: the theme in large size stays loaded until the theme changes).
+ * For a client's surface, its texture (magnified by the renderer).
+ *
+ * @return true if @ref _wlmim_cursor_t::source_buffer_ptr is ready.
+ */
+bool _wlmim_cursor_prepare_source(wlmim_cursor_t *cursor_ptr)
+{
+    if (NULL != cursor_ptr->source_buffer_ptr) return true;
+
+    if (_WLMIM_CURSOR_IMAGE_XCURSOR == cursor_ptr->image) {
+        struct wlr_xcursor_manager *wxm_ptr =
+            cursor_ptr->wlr_xcursor_manager_ptr;
+        if (NULL == wxm_ptr || NULL == cursor_ptr->xcursor_name_ptr) {
+            return false;
+        }
+        // The regular image, at scale 1: Its size in logical pixels.
+        struct wlr_xcursor *n_ptr = wlr_xcursor_manager_get_xcursor(
+            wxm_ptr, cursor_ptr->xcursor_name_ptr, 1.0);
+        if (NULL == n_ptr) {
+            n_ptr = wlr_xcursor_manager_get_xcursor(wxm_ptr, "default", 1.0);
+        }
+        if (NULL == n_ptr || 0 == n_ptr->image_count) return false;
+        const struct wlr_xcursor_image *ni_ptr = n_ptr->images[0];
+
+        int size = (int)lround(wxm_ptr->size * cursor_ptr->max_magnification *
+                               _wlmim_cursor_max_output_scale(cursor_ptr));
+        if (NULL != cursor_ptr->large_theme_ptr &&
+            size != cursor_ptr->large_theme_size) {
+            wlr_xcursor_theme_destroy(cursor_ptr->large_theme_ptr);
+            cursor_ptr->large_theme_ptr = NULL;
+        }
+        if (NULL == cursor_ptr->large_theme_ptr) {
+            cursor_ptr->large_theme_ptr = wlr_xcursor_theme_load(
+                wxm_ptr->name, size);
+            cursor_ptr->large_theme_size = size;
+        }
+        struct wlr_xcursor *l_ptr = NULL;
+        if (NULL != cursor_ptr->large_theme_ptr) {
+            l_ptr = wlr_xcursor_theme_get_cursor(
+                cursor_ptr->large_theme_ptr, n_ptr->name);
+        }
+        // Not in large size: The regular image, magnified by the renderer.
+        const struct wlr_xcursor_image *i_ptr = ni_ptr;
+        if (NULL != l_ptr && 0 < l_ptr->image_count) i_ptr = l_ptr->images[0];
+        cursor_ptr->source_buffer_ptr =
+            _wlmim_cursor_buffer_from_xcursor_image(i_ptr);
+        if (NULL == cursor_ptr->source_buffer_ptr) return false;
+        cursor_ptr->source_ratio = (double)i_ptr->height / ni_ptr->height;
+        cursor_ptr->source_hotspot_x =
+            i_ptr->hotspot_x / cursor_ptr->source_ratio;
+        cursor_ptr->source_hotspot_y =
+            i_ptr->hotspot_y / cursor_ptr->source_ratio;
+        return true;
+    }
+
+    if (_WLMIM_CURSOR_IMAGE_SURFACE == cursor_ptr->image) {
+        struct wlr_surface *s_ptr = cursor_ptr->surface_ptr;
+        struct wlr_texture *t_ptr = wlr_surface_get_texture(s_ptr);
+        if (NULL == t_ptr || 0 >= s_ptr->current.width ||
+            0 >= s_ptr->current.height) return false;
+        struct wlr_buffer *b_ptr = bs_gfxbuf_create_wlr_buffer(
+            t_ptr->width, t_ptr->height);
+        if (NULL == b_ptr) return false;
+        bs_gfxbuf_t *g_ptr = bs_gfxbuf_from_wlr_buffer(b_ptr);
+        if (!wlr_texture_read_pixels(
+                t_ptr, &(struct wlr_texture_read_pixels_options){
+                    .data = g_ptr->data_ptr,
+                    .format = DRM_FORMAT_ARGB8888,
+                    .stride = g_ptr->pixels_per_line * sizeof(uint32_t) })) {
+            bs_log(BS_DEBUG, "Cursor: Failed to read the surface's pixels.");
+            wlr_buffer_drop(b_ptr);
+            return false;
+        }
+        cursor_ptr->source_buffer_ptr = b_ptr;
+        cursor_ptr->source_ratio = (double)t_ptr->width / s_ptr->current.width;
+        cursor_ptr->source_hotspot_x = cursor_ptr->surface_hotspot_x;
+        cursor_ptr->source_hotspot_y = cursor_ptr->surface_hotspot_y;
+        return true;
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Releases the prepared image to magnify. */
+void _wlmim_cursor_drop_source(wlmim_cursor_t *cursor_ptr)
+{
+    wlr_buffer_drop_nullify(&cursor_ptr->source_buffer_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return The largest scale of the outputs, at least 1. */
+float _wlmim_cursor_max_output_scale(wlmim_cursor_t *cursor_ptr)
+{
+    float scale = 1.0;
+    if (NULL == cursor_ptr->wlr_output_layout_ptr) return scale;
+    struct wlr_output_layout_output *lo_ptr;
+    wl_list_for_each(lo_ptr, &cursor_ptr->wlr_output_layout_ptr->outputs,
+                     link) {
+        if (lo_ptr->output->enabled && lo_ptr->output->scale > scale) {
+            scale = lo_ptr->output->scale;
+        }
+    }
+    return scale;
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return A copy of the XCursor image, as a buffer. */
+struct wlr_buffer *_wlmim_cursor_buffer_from_xcursor_image(
+    const struct wlr_xcursor_image *image_ptr)
+{
+    if (0 == image_ptr->width || 0 == image_ptr->height) return NULL;
+    struct wlr_buffer *b_ptr = bs_gfxbuf_create_wlr_buffer(
+        image_ptr->width, image_ptr->height);
+    if (NULL == b_ptr) return NULL;
+    bs_gfxbuf_t *g_ptr = bs_gfxbuf_from_wlr_buffer(b_ptr);
+    // XCursor images are premultiplied ARGB, as the buffer.
+    for (uint32_t y = 0; y < image_ptr->height; ++y) {
+        memcpy(g_ptr->data_ptr + y * g_ptr->pixels_per_line,
+               image_ptr->buffer + y * image_ptr->width * 4,
+               image_ptr->width * 4);
+    }
+    return b_ptr;
 }
 
 /* ------------------------------------------------------------------------- */

@@ -1,0 +1,927 @@
+# Texts of wlmaker, the gettext domain "wlmaker".
+# Copyright (C) YEAR wlmaker contributors
+# This file is distributed under the same license as the wlmaker package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: wlmaker\n"
+"Report-Msgid-Bugs-To: https://github.com/phkaeser/wlmaker/issues\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:24
+msgid "Default Colors"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:25
+msgid "Green LCD (Classic)"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:26
+msgid "Amber"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:27
+msgid "Blue"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:28
+msgid "NeXT Grey"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:29
+msgid "High Contrast"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:32
+msgid "Every Half Second"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:33
+msgid "Every Second"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:34
+msgid "Every 2 Seconds"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:35
+msgid "Every 5 Seconds"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:38
+msgid "Filled"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:39
+msgid "Line Only"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:42 share/wlmaker/Dockapps.plist:82
+#: share/wlmaker/Dockapps.plist:145 share/wlmaker/Dockapps.plist:194
+msgid "Nothing"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:43
+msgid "Task Manager"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:44
+msgid "System Monitor"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:45
+msgid "htop in a Terminal"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:52
+msgid "Open Calendar"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:55 share/wlmaker/Dockapps.plist:95
+#: share/wlmaker/Dockapps.plist:113 share/wlmaker/Dockapps.plist:131
+#: share/wlmaker/Dockapps.plist:182 share/wlmaker/Dockapps.plist:204
+msgid "Theme"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:56
+msgid "Clock Style"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:57
+msgid "Analog"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:57
+msgid "Digital"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:58
+msgid "12-Hour Clock (AM/PM)"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:60
+msgid "Show Seconds"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:61
+msgid "Blinking Colon"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:63
+msgid "Calendar Style"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:64
+msgid "Digital Display"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:64
+msgid "Paper Sheet"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:65
+msgid "Show the Year"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:67
+msgid "Time Zone"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:69
+msgid "Local Time"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:70
+msgid "Brasília"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:71
+msgid "Manaus"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:72
+msgid "Rio Branco"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:73
+msgid "Fernando de Noronha"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:74
+msgid "UTC"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:75
+msgid "Lisbon"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:76
+msgid "London"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:77
+msgid "New York"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:78
+msgid "Tokyo"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:80 share/wlmaker/Dockapps.plist:103
+#: share/wlmaker/Dockapps.plist:121 share/wlmaker/Dockapps.plist:143
+msgid "On Click"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:83
+msgid "GNOME Calendar"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:84
+msgid "Thunderbird Calendar"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:85
+msgid "Calendar in a Terminal"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:92 share/wlmaker/Dockapps.plist:110
+msgid "Open Task Manager"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:96
+msgid "Show"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:97
+msgid "Each Core"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:97
+msgid "Total Usage"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:98 share/wlmaker/Dockapps.plist:114
+#: share/wlmaker/Dockapps.plist:135
+msgid "Graph Style"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:100 share/wlmaker/Dockapps.plist:183
+msgid "Show Percentage"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:102 share/wlmaker/Dockapps.plist:120
+#: share/wlmaker/Dockapps.plist:142
+msgid "Update"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:116
+msgid "Show Usage"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:117 share/wlmaker/Dockapps.plist:140
+msgid "Units"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:118
+msgid "MB / GB"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:118
+msgid "Percent"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:119
+msgid "Show Swap"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:128
+msgid "Open Network Settings"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:132
+msgid "Interface"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:133
+msgid "All Interfaces"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:137
+msgid "Show Text"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:138
+msgid "Text"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:139
+msgid "Download / Upload"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:139
+msgid "Graph Scale"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:141
+msgid "Bits per Second"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:141
+msgid "Bytes per Second"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:146
+msgid "Network Connections"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:147
+msgid "Network Information"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:148
+msgid "nmtui in a Terminal"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:158
+msgid "Mode: Zones"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:159
+msgid "Mode: Tiling"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:160
+msgid "Mode: Off"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:161
+msgid "Next Layout"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:162
+msgid "Previous Layout"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:163
+msgid "Undo"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:164
+msgid "Redo"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:165
+msgid "Restore All Arranged Windows"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:166
+msgid "Arrange the Desktop"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:167
+msgid "Edit Zones..."
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:168
+msgid "Window Organization Preferences..."
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:169
+msgid "Shortcuts..."
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:170
+msgid "Application Rules..."
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:171
+msgid "Monitors..."
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:172
+msgid "About wmake-zones"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:178
+msgid "Mute / Unmute"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:179
+msgid "Open Volume Control"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:185
+msgid "Click Mutes"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:186
+msgid "Wheel Changes Volume"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:188
+msgid "Volume Step"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:189
+msgid "1 %"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:189
+msgid "10 %"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:189
+msgid "2 %"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:189
+msgid "5 %"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:190
+msgid "Maximum Volume"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:191
+msgid "100 %"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:191
+msgid "125 %"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:191
+msgid "150 %"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:192
+msgid "Volume Control"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:195
+msgid "PulseAudio Volume Control"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:196
+msgid "PulseAudio Volume Control (Qt)"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:197
+msgid "PipeWire Volume Control"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:212
+msgid "Small Icons"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:214
+msgid "Icon Style"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:216
+msgid "Automatic"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:217
+msgid "Prefer Symbolic"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:218
+msgid "Monochrome"
+msgstr ""
+
+#. Dock-app menu, from the dock-apps' preferences schema.
+#: share/wlmaker/Dockapps.plist:219
+msgid "Original Colors"
+msgstr ""
+
+#. TRANSLATORS: Name of a new workspace, with its number. As
+#. Window Maker's "Workspace %i".
+#: src/action.c:328
+#, c-format
+msgid "Workspace %zu"
+msgstr ""
+
+#: src/appicons.c:190 src/dock_menu.c:339
+msgid "Unhide Here"
+msgstr ""
+
+#: src/appicons.c:194 src/dock_menu.c:347
+msgid "Hide"
+msgstr ""
+
+#: src/appicons.c:194 src/dock_menu.c:347
+msgid "Unhide"
+msgstr ""
+
+#: src/appicons.c:199 src/dock_menu.c:333 src/wlmdock.c:1214
+msgid "Launch"
+msgstr ""
+
+#: src/appicons.c:203
+msgid "Set Icon..."
+msgstr ""
+
+#: src/appicons.c:208 src/dock_menu.c:373 src/wlmdock.c:1217
+msgid "Kill"
+msgstr ""
+
+#. TRANSLATORS: %s is the name of the application.
+#: src/appicons.c:554 src/dock_menu.c:610
+#, c-format
+msgid ""
+"%s will be forcibly closed.\n"
+"Any unsaved changes will be lost.\n"
+"Please confirm."
+msgstr ""
+
+#: src/appicons.c:567 src/dock_menu.c:620
+msgid "Kill Application"
+msgstr ""
+
+#: src/appicons.c:569 src/dock_menu.c:622
+msgid "No"
+msgstr ""
+
+#: src/appicons.c:569 src/dock_menu.c:622
+msgid "Yes"
+msgstr ""
+
+#: src/clip.c:1630 src/dock_menu.c:175 src/wlmdock.c:1268
+msgid "Move to Left Side"
+msgstr ""
+
+#: src/clip.c:1630 src/dock_menu.c:175 src/wlmdock.c:1267
+msgid "Move to Right Side"
+msgstr ""
+
+#: src/clip.c:1635 src/dock_menu.c:178 src/wlmdock.c:1276
+msgid "Move to Bottom"
+msgstr ""
+
+#: src/clip.c:1635 src/dock_menu.c:178 src/wlmdock.c:1276
+msgid "Move to Top"
+msgstr ""
+
+#: src/clip.c:1664
+msgid "Next Workspace"
+msgstr ""
+
+#: src/clip.c:1667
+msgid "Previous Workspace"
+msgstr ""
+
+#: src/clip.c:1671
+msgid "New Workspace"
+msgstr ""
+
+#: src/clip.c:1674
+msgid "Destroy Last Workspace"
+msgstr ""
+
+#: src/clip.c:1682 src/dock_menu.c:193 src/wlmdock.c:1282
+msgid "Restore Default Launchers"
+msgstr ""
+
+#: src/dock_menu.c:135 src/dock_menu.c:830
+msgid "Drawer"
+msgstr ""
+
+#: src/dock_menu.c:149 src/dock_menu.c:291
+msgid "Remove Icon"
+msgstr ""
+
+#: src/dock_menu.c:226
+msgid "Dock position"
+msgstr ""
+
+#: src/dock_menu.c:232
+msgid "Normal"
+msgstr ""
+
+#: src/dock_menu.c:233
+msgid "Auto raise & lower"
+msgstr ""
+
+#: src/dock_menu.c:234 src/dock_menu.c:268 src/dock_menu.c:303
+msgid "Keep on Top"
+msgstr ""
+
+#: src/dock_menu.c:251
+msgid "Add a drawer"
+msgstr ""
+
+#: src/dock_menu.c:263
+msgid "Drawer options"
+msgstr ""
+
+#: src/dock_menu.c:272
+msgid "Collapsed"
+msgstr ""
+
+#: src/dock_menu.c:278
+msgid "Autocollapse"
+msgstr ""
+
+#: src/dock_menu.c:284 src/dock_menu.c:309
+msgid "Autoraise"
+msgstr ""
+
+#: src/dock_menu.c:300
+msgid "Clip Options"
+msgstr ""
+
+#: src/dock_menu.c:340
+msgid "Bring Here"
+msgstr ""
+
+#: src/dock_menu.c:357 src/dock_menu.c:359
+msgid "Settings..."
+msgstr ""
+
+#: src/dock_menu.c:367
+msgid "Remove drawer"
+msgstr ""
+
+#: src/dock_menu.c:831
+msgid "All icons in this drawer will be detached!"
+msgstr ""
+
+#: src/dock_menu.c:832
+msgid "Cancel"
+msgstr ""
+
+#: src/dock_menu.c:832 src/force_close.c:583
+msgid "OK"
+msgstr ""
+
+#: src/dockapp_prefs.c:227
+msgid "Preferences"
+msgstr ""
+
+#: src/force_close.c:421
+msgid ""
+"This is not the window of an application.\n"
+"Press Ctrl+Alt+Escape and click on the window\n"
+"of the application to close."
+msgstr ""
+
+#. TRANSLATORS: %s is the title of the window.
+#: src/force_close.c:459
+#, c-format
+msgid ""
+"“%s” is part of the session,\n"
+"and is not closed by force."
+msgstr ""
+
+#: src/force_close.c:463
+msgid ""
+"This window is part of the session,\n"
+"and is not closed by force."
+msgstr ""
+
+#: src/force_close.c:582
+msgid "Force Close"
+msgstr ""
+
+#: src/icon_manager.c:974
+msgid "Move Up"
+msgstr ""
+
+#: src/icon_manager.c:975
+msgid "Move Down"
+msgstr ""
+
+#: src/icon_manager.c:976
+msgid "Move Left"
+msgstr ""
+
+#: src/icon_manager.c:977
+msgid "Move Right"
+msgstr ""
+
+#: src/icon_manager.c:987
+msgid "Dock-app"
+msgstr ""
+
+#: src/root_menu.c:1252
+#, c-format
+msgid "Failed, exit code %d"
+msgstr ""
+
+#: src/root_menu.c:1258
+#, c-format
+msgid "Failed, signal %d"
+msgstr ""
+
+#: src/root_menu.c:1272
+#, c-format
+msgid "Failed to parse Plist ARRAY from \"%.*s\""
+msgstr ""
+
+#: src/root_menu.c:1289
+#, c-format
+msgid "Failed to populate menu from Plist ARRAY \"%.*s\""
+msgstr ""
+
+#: src/tile_drag.c:682
+msgid "The drawer is full"
+msgstr ""
+
+#: src/tile_drag.c:684
+msgid "The Dock is full"
+msgstr ""
+
+#: src/tile_drag.c:686
+msgid "The Clip is full"
+msgstr ""
+
+#: src/tl_menu.c:120
+msgid "Maximize"
+msgstr ""
+
+#: src/tl_menu.c:126
+msgid "Unmaximize"
+msgstr ""
+
+#: src/tl_menu.c:132
+msgid "Fullscreen"
+msgstr ""
+
+#: src/tl_menu.c:138
+msgid "Miniaturize"
+msgstr ""
+
+#: src/tl_menu.c:144
+msgid "Shade"
+msgstr ""
+
+#: src/tl_menu.c:151
+msgid "Unshade"
+msgstr ""
+
+#: src/tl_menu.c:158
+msgid "Move to workspace ..."
+msgstr ""
+
+#: src/tl_menu.c:164
+msgid "Close"
+msgstr ""
+
+#: src/toolkit/primitives.c:282 src/toolkit/primitives.c:294
+msgid "Unnamed"
+msgstr ""
+
+#: src/toolkit/window.c:557
+#, c-format
+msgid "Unnamed window %p"
+msgstr ""
+
+#: src/wlmdock.c:1220
+msgid "Remove"
+msgstr ""
+
+#: src/zones.c:940
+msgid ""
+"1-9 or arrows to choose · Enter snaps · Tab changes the layout · Esc cancels"
+msgstr ""
+
+#: src/zones.c:985
+msgid "Window layout: choose a layout, then a zone"
+msgstr ""
+
+#: tool/menu.c:94
+msgid "Audio & Video"
+msgstr ""
+
+#: tool/menu.c:95
+msgid "Video"
+msgstr ""
+
+#: tool/menu.c:96
+msgid "Development"
+msgstr ""
+
+#: tool/menu.c:97
+msgid "Education"
+msgstr ""
+
+#: tool/menu.c:98
+msgid "Game"
+msgstr ""
+
+#: tool/menu.c:99
+msgid "Graphics"
+msgstr ""
+
+#: tool/menu.c:100
+msgid "Network"
+msgstr ""
+
+#: tool/menu.c:101
+msgid "Office"
+msgstr ""
+
+#: tool/menu.c:102
+msgid "Science"
+msgstr ""
+
+#: tool/menu.c:103
+msgid "Settings"
+msgstr ""
+
+#: tool/menu.c:104
+msgid "System"
+msgstr ""
+
+#: tool/menu.c:105
+msgid "Utility"
+msgstr ""
+
+#: tool/menu.c:108
+msgid "Screensaver"
+msgstr ""
+
+#: tool/menu.c:109
+msgid "Tray Icon"
+msgstr ""
+
+#: tool/menu.c:110
+msgid "Applet"
+msgstr ""
+
+#: tool/menu.c:111
+msgid "Shell"
+msgstr ""
+
+#: tool/menu.c:116
+msgid "Other"
+msgstr ""
+
+#: tool/menu.c:128
+msgid "Appearance"
+msgstr ""
+
+#: tool/menu.c:133
+msgid "System Themes"
+msgstr ""
+
+#: tool/menu.c:169 tool/menu.c:183
+msgid "User Themes"
+msgstr ""
+
+#: tool/menu.c:212
+msgid "Applications"
+msgstr ""

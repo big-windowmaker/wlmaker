@@ -251,6 +251,25 @@ void wlmtk_element_get_position(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmtk_element_get_absolute_position(
+    wlmtk_element_t *element_ptr,
+    int *x_ptr,
+    int *y_ptr)
+{
+    int x = 0, y = 0;
+    while (NULL != element_ptr) {
+        int ex, ey;
+        wlmtk_element_get_position(element_ptr, &ex, &ey);
+        x += ex;
+        y += ey;
+        element_ptr = NULL != element_ptr->parent_container_ptr ?
+            &element_ptr->parent_container_ptr->super_element : NULL;
+    }
+    if (NULL != x_ptr) *x_ptr = x;
+    if (NULL != y_ptr) *y_ptr = y;
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmtk_element_set_position(
     wlmtk_element_t *element_ptr,
     int x,

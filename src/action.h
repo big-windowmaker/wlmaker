@@ -47,6 +47,7 @@ typedef enum {
     WLMAKER_ACTION_WORKSPACE_TO_NEXT,
     WLMAKER_ACTION_WORKSPACE_ADD,
     WLMAKER_ACTION_WORKSPACE_DESTROY_LAST,
+    WLMAKER_ACTION_WORKSPACE_SWITCH_TO,
 
     WLMAKER_ACTION_TASK_TO_PREVIOUS,
     WLMAKER_ACTION_TASK_TO_NEXT,
@@ -61,13 +62,17 @@ typedef enum {
     WLMAKER_ACTION_WINDOW_FULLSCREEN,
     WLMAKER_ACTION_WINDOW_SHADE,
     WLMAKER_ACTION_WINDOW_UNSHADE,
+    WLMAKER_ACTION_WINDOW_TOGGLE_SHADED,
+    WLMAKER_ACTION_WINDOW_MINIMIZE,
     WLMAKER_ACTION_WINDOW_CLOSE,
     WLMAKER_ACTION_WINDOW_TO_NEXT_WORKSPACE,
     WLMAKER_ACTION_WINDOW_TO_PREVIOUS_WORKSPACE,
+    WLMAKER_ACTION_WINDOW_TO_WORKSPACE,
 
     WLMAKER_ACTION_ROOT_MENU,
 
     WLMAKER_ACTION_THEME_LOAD_FROM_FILE,
+    WLMAKER_ACTION_RELOAD_CONFIGURATION,
 
     WLMAKER_ACTION_OUTPUT_MAGNIFY,
     WLMAKER_ACTION_OUTPUT_REDUCE,
@@ -86,6 +91,15 @@ typedef enum {
     WLMAKER_ACTION_SWITCH_TO_VT10,
     WLMAKER_ACTION_SWITCH_TO_VT11,
     WLMAKER_ACTION_SWITCH_TO_VT12,
+
+    WLMAKER_ACTION_ZONES,
+
+    WLMAKER_ACTION_ZOOM_IN,
+    WLMAKER_ACTION_ZOOM_OUT,
+    WLMAKER_ACTION_ZOOM_RESET,
+
+    WLMAKER_ACTION_LOCATE_POINTER,
+    WLMAKER_ACTION_FORCE_CLOSE_SELECT,
 
 } wlmaker_action_t;
 
@@ -110,6 +124,23 @@ wlmaker_action_handle_t *wlmaker_action_bind_keys(
     bspl_dict_t *keybindings_dict_ptr,
     bool add_logo);
 
+struct wlr_pointer_axis_event;
+
+/**
+ * Processes an axis event (wheel, touchpad scrolling) for the bindings of
+ * `WheelUp`, `WheelDown`, `WheelLeft` and `WheelRight`, eg. "Ctrl+Alt+WheelUp".
+ *
+ * @param handle_ptr
+ * @param wlr_pointer_axis_event_ptr
+ * @param modifiers           Keyboard modifiers currently held.
+ *
+ * @return true if a binding took the event. It is then not passed on.
+ */
+bool wlmaker_action_process_axis(
+    wlmaker_action_handle_t *handle_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers);
+
 /**
  * Unbinds actions previously bound by @ref wlmaker_action_bind_keys.
  *
@@ -128,6 +159,18 @@ void wlmaker_action_execute(
     wlmaker_server_t *server_ptr,
     wlmaker_action_t action,
     void *arg_ptr);
+
+/**
+ * Loads a theme file and applies it to the windows, menus and cursor.
+ *
+ * @param server_ptr
+ * @param fname_ptr           Theme file, or NULL for the default theme.
+ *
+ * @return true on success.
+ */
+bool wlmaker_action_theme_load_from_file(
+    wlmaker_server_t *server_ptr,
+    const char *fname_ptr);
 
 /** Unit test set. */
 extern const bs_test_set_t   wlmaker_action_test_set;

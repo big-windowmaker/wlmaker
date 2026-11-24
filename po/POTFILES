@@ -1,0 +1,19 @@
+# Files with translatable texts of the domain "wlmaker" (see update-pot.sh),
+# relative to the source directory. po/check-i18n.sh fails when a file with
+# marked texts is missing here.
+share/wlmaker/Dockapps.plist
+src/action.c
+src/appicons.c
+src/clip.c
+src/dock_menu.c
+src/dockapp_prefs.c
+src/force_close.c
+src/icon_manager.c
+src/root_menu.c
+src/tile_drag.c
+src/tl_menu.c
+src/toolkit/primitives.c
+src/toolkit/window.c
+src/wlmdock.c
+src/zones.c
+tool/menu.c

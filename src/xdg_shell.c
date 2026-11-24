@@ -60,6 +60,30 @@ wlmaker_xdg_shell_t *wlmaker_xdg_shell_create(wlmaker_server_t *server_ptr)
         return NULL;
     }
 
+    // XDG foreign lets a client parent its toplevel to a toplevel of another
+    // client, eg. a portal's file dialog to the application window.
+    xdg_shell_ptr->wlr_xdg_foreign_registry_ptr =
+        wlr_xdg_foreign_registry_create(server_ptr->wl_display_ptr);
+    if (NULL == xdg_shell_ptr->wlr_xdg_foreign_registry_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_xdg_foreign_registry_create(%p)",
+               server_ptr->wl_display_ptr);
+        wlmaker_xdg_shell_destroy(xdg_shell_ptr);
+        return NULL;
+    }
+    xdg_shell_ptr->wlr_xdg_foreign_v1_ptr = wlr_xdg_foreign_v1_create(
+        server_ptr->wl_display_ptr,
+        xdg_shell_ptr->wlr_xdg_foreign_registry_ptr);
+    xdg_shell_ptr->wlr_xdg_foreign_v2_ptr = wlr_xdg_foreign_v2_create(
+        server_ptr->wl_display_ptr,
+        xdg_shell_ptr->wlr_xdg_foreign_registry_ptr);
+    if (NULL == xdg_shell_ptr->wlr_xdg_foreign_v1_ptr ||
+        NULL == xdg_shell_ptr->wlr_xdg_foreign_v2_ptr) {
+        bs_log(BS_ERROR, "Failed wlr_xdg_foreign_v1_create() or "
+               "wlr_xdg_foreign_v2_create()");
+        wlmaker_xdg_shell_destroy(xdg_shell_ptr);
+        return NULL;
+    }
+
     wlmtk_util_connect_listener_signal(
         &xdg_shell_ptr->wlr_xdg_shell_ptr->events.new_toplevel,
         &xdg_shell_ptr->new_toplevel_listener,

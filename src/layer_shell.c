@@ -21,6 +21,8 @@
 
 #include "layer_shell.h"
 
+#include <string.h>
+
 #include <libbase/libbase.h>
 #include <stdlib.h>
 #include <wayland-server-core.h>
@@ -28,6 +30,8 @@
 #include <wlr/types/wlr_layer_shell_v1.h>
 #undef WLR_USE_UNSTABLE
 
+#include "backend/backend.h"
+#include "clip.h"
 #include "layer_panel.h"
 #include "toolkit/toolkit.h"
 #include "server.h"
@@ -126,9 +130,35 @@ void handle_new_surface(
         listener_ptr, wlmaker_layer_shell_t, new_surface_listener);
     struct wlr_layer_surface_v1 *wlr_layer_surface_v1_ptr = data_ptr;
 
+    // The Clip's launchers (wlmdock --clip) go where the Clip is, the Dock
+    // (wlmdock) on the primary output: The compositor places them, and
+    // their dock-apps, there. On the output at the cursor, a restarted
+    // wlmdock showed the launchers on another monitor, and left the room by
+    // the Clip black.
+    const char *ns_ptr = wlr_layer_surface_v1_ptr->namespace;
+    if (NULL == wlr_layer_surface_v1_ptr->output && NULL != ns_ptr) {
+        if (0 == strcmp(ns_ptr, "wlmdock-clip")) {
+            wlr_layer_surface_v1_ptr->output = wlmaker_clip_output(
+                layer_shell_ptr->server_ptr);
+        } else if (0 == strcmp(ns_ptr, "wlmdock")) {
+            wlr_layer_surface_v1_ptr->output = wlmbe_primary_output(
+                layer_shell_ptr->server_ptr->wlr_output_layout_ptr);
+        }
+    }
     if (NULL == wlr_layer_surface_v1_ptr->output) {
         wlr_layer_surface_v1_ptr->output = wlmaker_server_get_output_at_cursor(
             layer_shell_ptr->server_ptr);
+    }
+
+    // A dock-app (eg. the system tray): A tile on the docks, as the
+    // dock-apps of the icon protocol.
+    if (NULL != wlr_layer_surface_v1_ptr->namespace &&
+        0 == strcmp(wlr_layer_surface_v1_ptr->namespace, "wlmaker-dockapp") &&
+        NULL != layer_shell_ptr->server_ptr->icon_manager_ptr &&
+        wlmaker_icon_manager_adopt_layer_surface(
+            layer_shell_ptr->server_ptr->icon_manager_ptr,
+            wlr_layer_surface_v1_ptr)) {
+        return;
     }
 
     wlmaker_layer_panel_t *layer_panel_ptr =

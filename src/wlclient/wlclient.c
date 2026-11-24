@@ -32,7 +32,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <pthread.h>
 #include <sys/signalfd.h>
+#include <sys/timerfd.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <wayland-client-core.h>
@@ -56,6 +58,19 @@ struct wl_seat;
 struct wl_surface;
 
 /* == Declarations ========================================================= */
+
+/** Maximum number of file descriptors watched by @ref wlmcl_client_register_fd. */
+#define WLMCL_CLIENT_MAX_FD_WATCHES 4
+
+/** A file descriptor watched by the client's mainloop. */
+typedef struct {
+    /** The file descriptor. -1 if the slot is unused. */
+    int                       fd;
+    /** Callback for when `fd` is readable. */
+    wlmcl_client_callback_t   callback;
+    /** Argument to the callback. */
+    void                      *callback_ud_ptr;
+} wlmcl_client_fd_watch_t;
 
 /** State of the wayland client. */
 struct _wlmcl_client_t {
@@ -91,14 +106,35 @@ struct _wlmcl_client_t {
 
     /** List of registered timers. TODO(kaeser@gubbe.ch): Replace with HEAP. */
     bs_dllist_t               timers;
+    /**
+     * Timer file descriptor, armed for the earliest of the registered timers.
+     * Uses CLOCK_REALTIME, the same as `bs_usec()`, so the timer also expires
+     * correctly after a suspend. -1 if not created.
+     */
+    int                       timer_fd;
+    /** File descriptors watched, see @ref wlmcl_client_register_fd. */
+    wlmcl_client_fd_watch_t   fd_watches[WLMCL_CLIENT_MAX_FD_WATCHES];
 
     /** Output interface data. */
     struct wlmcl_output_interface *output_interface_ptr;
 
     /** File descriptor to monitor SIGINT. */
     int                       signal_fd;
+    /** The signals monitored by @ref wlmcl_client_t::signal_fd. */
+    sigset_t                  signal_set;
     /** Whether @ref wlmcl_client_initialize was executed. */
     bool                      initialized;
+
+    /** Surface that currently has pointer focus, or NULL. */
+    struct wl_surface         *pointer_focus_surface_ptr;
+    /** Pointer position on @ref wlmcl_client_t::pointer_focus_surface_ptr. */
+    double                    pointer_x;
+    /** Pointer position on @ref wlmcl_client_t::pointer_focus_surface_ptr. */
+    double                    pointer_y;
+    /** Axis events accumulated for the current pointer frame. */
+    struct wlmcl_client_pointer_axis_event pending_axis[2];
+    /** Whether there is an axis event for the current frame, per axis. */
+    bool                      pending_axis_valid[2];
 
     /** Whether to keep the client running. */
     volatile bool             keep_running;
@@ -172,6 +208,10 @@ static wlmcl_client_timer_t *wlmcl_client_timer_create(
     void *callback_ud_ptr);
 static void wlmcl_client_timer_destroy(
     wlmcl_client_timer_t *timer_ptr);
+static void _wlmcl_client_timer_fd_arm(wlmcl_client_t *client_ptr);
+static void _wlmcl_client_timers_flush(
+    wlmcl_client_t *client_ptr,
+    bool all);
 
 static void wlmcl_client_seat_setup(
     wlmcl_client_t *client_ptr,
@@ -332,6 +372,18 @@ static const object_t objects[] = {
     { NULL, 0, 0, NULL }  // sentinel.
 };
 
+/* ------------------------------------------------------------------------- */
+/**
+ * In a forked child: Unblocks all signals, eg. those blocked for the client's
+ * signalfd, so they are not inherited by launched programs.
+ */
+static void _wlmcl_client_atfork_child(void)
+{
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigprocmask(SIG_SETMASK, &signal_set, NULL);
+}
+
 /* == Exported methods ===================================================== */
 
 /* ------------------------------------------------------------------------- */
@@ -339,11 +391,20 @@ wlmcl_client_t *wlmcl_client_create(const char *app_id_ptr)
 {
     wlmcl_client_t *wlclient_ptr = logged_calloc(1, sizeof(*wlclient_ptr));
     if (NULL == wlclient_ptr) return NULL;
+    wlclient_ptr->timer_fd = -1;
+    for (size_t i = 0; i < WLMCL_CLIENT_MAX_FD_WATCHES; ++i) {
+        wlclient_ptr->fd_watches[i].fd = -1;
+    }
     wl_log_set_handler_client(wl_to_bs_log);
 
     wl_signal_init(&wlclient_ptr->events.key);
     wl_signal_init(&wlclient_ptr->events.keymap);
     wl_signal_init(&wlclient_ptr->events.keyboard_repeat_info);
+    wl_signal_init(&wlclient_ptr->events.pointer_changed);
+    wl_signal_init(&wlclient_ptr->events.pointer_leave);
+    wl_signal_init(&wlclient_ptr->events.pointer_motion);
+    wl_signal_init(&wlclient_ptr->events.pointer_button);
+    wl_signal_init(&wlclient_ptr->events.pointer_axis);
 
     if (NULL != app_id_ptr) {
         wlclient_ptr->attributes.app_id_ptr = logged_strdup(app_id_ptr);
@@ -359,11 +420,22 @@ wlmcl_client_t *wlmcl_client_create(const char *app_id_ptr)
         wlmcl_client_destroy(wlclient_ptr);
         return NULL;
     }
-    if (sigaddset(&signal_set, SIGINT)) {
-        bs_log(BS_ERROR | BS_ERRNO, "Failed sigemptyset(%p, %d)",
-               &signal_set, SIGINT);
+    // SIGTERM, too: Eg. when the session ends, so the client exits cleanly.
+    if (sigaddset(&signal_set, SIGINT) || sigaddset(&signal_set, SIGTERM)) {
+        bs_log(BS_ERROR | BS_ERRNO, "Failed sigaddset(%p, ...)",
+               &signal_set);
         wlmcl_client_destroy(wlclient_ptr);
         return NULL;
+    }
+    // Processes forked by the client (eg. launched by the dock) must not
+    // inherit the blocked signals.
+    static bool atfork_registered = false;
+    if (!atfork_registered) {
+        if (0 != pthread_atfork(NULL, NULL, _wlmcl_client_atfork_child)) {
+            bs_log(BS_WARNING, "Failed pthread_atfork(NULL, NULL, %p)",
+                   _wlmcl_client_atfork_child);
+        }
+        atfork_registered = true;
     }
     if (sigprocmask(SIG_BLOCK, &signal_set, NULL) == -1) {
         bs_log(BS_ERROR | BS_ERRNO, "Failed sigprocmask(SIG_BLOCK, %p, NULL)",
@@ -371,10 +443,20 @@ wlmcl_client_t *wlmcl_client_create(const char *app_id_ptr)
         wlmcl_client_destroy(wlclient_ptr);
         return NULL;
     }
+    wlclient_ptr->signal_set = signal_set;
     wlclient_ptr->signal_fd = signalfd(-1, &signal_set, SFD_NONBLOCK);
     if (0 >= wlclient_ptr->signal_fd) {
         bs_log(BS_ERROR | BS_ERRNO, "Failed signalfd(-1, %p, SFD_NONBLOCK)",
                &signal_set);
+        wlmcl_client_destroy(wlclient_ptr);
+        return NULL;
+    }
+
+    wlclient_ptr->timer_fd = timerfd_create(
+        CLOCK_REALTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (0 > wlclient_ptr->timer_fd) {
+        bs_log(BS_ERROR | BS_ERRNO, "Failed timerfd_create(CLOCK_REALTIME, "
+               "TFD_NONBLOCK | TFD_CLOEXEC)");
         wlmcl_client_destroy(wlclient_ptr);
         return NULL;
     }
@@ -463,6 +545,10 @@ void wlmcl_client_destroy(wlmcl_client_t *wlclient_ptr)
     if (0 < wlclient_ptr->signal_fd) {
         close(wlclient_ptr->signal_fd);
         wlclient_ptr->signal_fd = 0;
+    }
+    if (0 <= wlclient_ptr->timer_fd) {
+        close(wlclient_ptr->timer_fd);
+        wlclient_ptr->timer_fd = -1;
     }
 
     if (NULL != wlclient_ptr->attributes.app_id_ptr) {
@@ -560,6 +646,29 @@ struct wlmcl_client_events *wlmcl_client_events(wlmcl_client_t *wlclient_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmcl_client_add_signal(wlmcl_client_t *wlclient_ptr, int signal_number)
+{
+    sigset_t signal_set = wlclient_ptr->signal_set;
+    if (0 != sigaddset(&signal_set, signal_number)) {
+        bs_log(BS_ERROR | BS_ERRNO, "Failed sigaddset(%p, %d)",
+               &signal_set, signal_number);
+        return false;
+    }
+    if (0 != sigprocmask(SIG_BLOCK, &signal_set, NULL)) {
+        bs_log(BS_ERROR | BS_ERRNO, "Failed sigprocmask(SIG_BLOCK, %p, NULL)",
+               &signal_set);
+        return false;
+    }
+    if (0 > signalfd(wlclient_ptr->signal_fd, &signal_set, SFD_NONBLOCK)) {
+        bs_log(BS_ERROR | BS_ERRNO, "Failed signalfd(%d, %p, SFD_NONBLOCK)",
+               wlclient_ptr->signal_fd, &signal_set);
+        return false;
+    }
+    wlclient_ptr->signal_set = signal_set;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 int wlmcl_client_signal_fd(wlmcl_client_t *wlclient_ptr)
 {
     return wlclient_ptr->signal_fd;
@@ -609,20 +718,38 @@ void wlmcl_client_run(wlmcl_client_t *wlclient_ptr)
             }
         }
 
-        struct pollfd pollfds[2];
-        pollfds[0].fd = wl_display_get_fd(wlclient_ptr->attributes.wl_display_ptr);
-        pollfds[0].events = POLLIN;
-        pollfds[0].revents = 0;
+        _wlmcl_client_timer_fd_arm(wlclient_ptr);
 
-        pollfds[1].fd = wlclient_ptr->signal_fd;
-        pollfds[1].events = POLLIN;
-        pollfds[1].revents = 0;
+        // Display, signal and timer FDs; followed by the watched FDs.
+        struct pollfd pollfds[3 + WLMCL_CLIENT_MAX_FD_WATCHES];
+        size_t watch_idx[WLMCL_CLIENT_MAX_FD_WATCHES];
+        nfds_t nfds = 0;
+        pollfds[nfds++] = (struct pollfd){
+            .fd = wl_display_get_fd(wlclient_ptr->attributes.wl_display_ptr),
+            .events = POLLIN };
+        pollfds[nfds++] = (struct pollfd){
+            .fd = wlclient_ptr->signal_fd, .events = POLLIN };
+        pollfds[nfds++] = (struct pollfd){
+            .fd = wlclient_ptr->timer_fd, .events = POLLIN };
+        size_t watches = 0;
+        for (size_t i = 0; i < WLMCL_CLIENT_MAX_FD_WATCHES; ++i) {
+            if (0 > wlclient_ptr->fd_watches[i].fd) continue;
+            watch_idx[watches++] = i;
+            pollfds[nfds++] = (struct pollfd){
+                .fd = wlclient_ptr->fd_watches[i].fd, .events = POLLIN };
+        }
 
-        int rv = poll(&pollfds[0], 2, 100);
+        // No timeout: The timer FD wakes us up for the next timer.
+        int rv = poll(&pollfds[0], nfds, -1);
         if (0 > rv && EINTR != errno) {
-            bs_log(BS_ERROR | BS_ERRNO, "Failed poll(%p, 1, 100)", &pollfds);
+            bs_log(BS_ERROR | BS_ERRNO, "Failed poll(%p, %lu, -1)",
+                   &pollfds, (unsigned long)nfds);
             wl_display_cancel_read(wlclient_ptr->attributes.wl_display_ptr);
             break;  // Error!
+        }
+        if (0 > rv) {
+            // EINTR: Nothing is readable, revents may be stale.
+            for (nfds_t i = 0; i < nfds; ++i) pollfds[i].revents = 0;
         }
 
         if (pollfds[0].revents & POLLIN) {
@@ -651,6 +778,28 @@ void wlmcl_client_run(wlmcl_client_t *wlclient_ptr)
             wlclient_ptr->keep_running = false;
         }
 
+        bool clock_was_set = false;
+        if (pollfds[2].revents & POLLIN) {
+            uint64_t expirations;
+            if (0 > read(wlclient_ptr->timer_fd, &expirations,
+                         sizeof(expirations)) &&
+                ECANCELED == errno) {
+                // The realtime clock was set (eg. by NTP, or manually).
+                clock_was_set = true;
+            }
+        }
+
+        for (size_t i = 0; i < watches; ++i) {
+            if (!(pollfds[3 + i].revents & (POLLIN | POLLHUP | POLLERR))) {
+                continue;
+            }
+            // The callback of an earlier watch may have unregistered it.
+            wlmcl_client_fd_watch_t *watch_ptr =
+                &wlclient_ptr->fd_watches[watch_idx[i]];
+            if (watch_ptr->fd != pollfds[3 + i].fd) continue;
+            watch_ptr->callback(wlclient_ptr, watch_ptr->callback_ud_ptr);
+        }
+
         if (0 > wl_display_dispatch_pending(wlclient_ptr->attributes.wl_display_ptr)) {
             bs_log(BS_ERROR | BS_ERRNO,
                    "Failed wl_display_dispatch_queue_pending(%p)",
@@ -672,17 +821,7 @@ void wlmcl_client_run(wlmcl_client_t *wlclient_ptr)
             break;  // Error!
         }
 
-        // Flush the timer queue.
-        uint64_t current_usec = bs_usec();
-        bs_dllist_node_t *dlnode_ptr;
-        while (NULL != (dlnode_ptr = wlclient_ptr->timers.head_ptr) &&
-               ((wlmcl_client_timer_t*)dlnode_ptr)->target_usec <= current_usec) {
-            bs_dllist_pop_front(&wlclient_ptr->timers);
-
-            wlmcl_client_timer_t *timer_ptr = (wlmcl_client_timer_t*)dlnode_ptr;
-            timer_ptr->callback(wlclient_ptr, timer_ptr->callback_ud_ptr);
-            wlmcl_client_timer_destroy(timer_ptr);
-        }
+        _wlmcl_client_timers_flush(wlclient_ptr, clock_was_set);
 
     } while (wlclient_ptr->keep_running);
 }
@@ -709,6 +848,46 @@ bool wlmcl_client_register_timer(
     wlmcl_client_timer_t *timer_ptr = wlmcl_client_timer_create(
         wlclient_ptr, target_usec, callback, callback_ud_ptr);
     return (timer_ptr != NULL);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmcl_client_register_fd(
+    wlmcl_client_t *wlclient_ptr,
+    int fd,
+    wlmcl_client_callback_t callback,
+    void *callback_ud_ptr)
+{
+    if (0 > fd || NULL == callback) return false;
+    wlmcl_client_fd_watch_t *free_watch_ptr = NULL;
+    for (size_t i = 0; i < WLMCL_CLIENT_MAX_FD_WATCHES; ++i) {
+        wlmcl_client_fd_watch_t *watch_ptr = &wlclient_ptr->fd_watches[i];
+        if (fd == watch_ptr->fd) {
+            bs_log(BS_ERROR, "File descriptor %d is already watched.", fd);
+            return false;
+        }
+        if (0 > watch_ptr->fd && NULL == free_watch_ptr) {
+            free_watch_ptr = watch_ptr;
+        }
+    }
+    if (NULL == free_watch_ptr) {
+        bs_log(BS_ERROR, "Cannot watch more than %d file descriptors.",
+               WLMCL_CLIENT_MAX_FD_WATCHES);
+        return false;
+    }
+    free_watch_ptr->fd = fd;
+    free_watch_ptr->callback = callback;
+    free_watch_ptr->callback_ud_ptr = callback_ud_ptr;
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmcl_client_unregister_fd(wlmcl_client_t *wlclient_ptr, int fd)
+{
+    for (size_t i = 0; i < WLMCL_CLIENT_MAX_FD_WATCHES; ++i) {
+        wlmcl_client_fd_watch_t *watch_ptr = &wlclient_ptr->fd_watches[i];
+        if (fd != watch_ptr->fd) continue;
+        *watch_ptr = (wlmcl_client_fd_watch_t){ .fd = -1 };
+    }
 }
 
 /* == Local (static) methods =============================================== */
@@ -888,6 +1067,7 @@ wlmcl_client_timer_t *wlmcl_client_timer_create(
         if (timer_ptr->target_usec > ref_timer_ptr->target_usec) continue;
         bs_dllist_insert_node_before(
             &client_ptr->timers, dlnode_ptr, &timer_ptr->dlnode);
+        break;
     }
     if (NULL == dlnode_ptr) {
         bs_dllist_push_back(&client_ptr->timers, &timer_ptr->dlnode);
@@ -905,6 +1085,65 @@ wlmcl_client_timer_t *wlmcl_client_timer_create(
 void wlmcl_client_timer_destroy(wlmcl_client_timer_t *timer_ptr)
 {
     free(timer_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Arms @ref wlmcl_client_t::timer_fd for the earliest registered timer, or
+ * disarms it if there is no timer registered.
+ *
+ * @param client_ptr
+ */
+void _wlmcl_client_timer_fd_arm(wlmcl_client_t *client_ptr)
+{
+    struct itimerspec itimerspec = {};
+    wlmcl_client_timer_t *timer_ptr =
+        (wlmcl_client_timer_t*)client_ptr->timers.head_ptr;
+    if (NULL != timer_ptr) {
+        // An all-zero it_value would disarm the timer.
+        uint64_t usec = BS_MAX(timer_ptr->target_usec, UINT64_C(1));
+        itimerspec.it_value.tv_sec = usec / 1000000;
+        itimerspec.it_value.tv_nsec = (usec % 1000000) * 1000;
+    }
+    if (0 != timerfd_settime(
+            client_ptr->timer_fd,
+            TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET,
+            &itimerspec,
+            NULL)) {
+        bs_log(BS_WARNING | BS_ERRNO, "Failed timerfd_settime(%d, ...)",
+               client_ptr->timer_fd);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Calls and destroys the timers that are due.
+ *
+ * @param client_ptr
+ * @param all                 Whether to call all timers, irrespective of
+ *                            their target time. Used when the realtime clock
+ *                            was set: Clients then re-register their timers
+ *                            relative to the new time.
+ */
+void _wlmcl_client_timers_flush(wlmcl_client_t *client_ptr, bool all)
+{
+    // Moves the due timers to a separate list first: Callbacks may register
+    // new timers, and these must wait for the next iteration.
+    bs_dllist_t due_timers = {};
+    uint64_t current_usec = bs_usec();
+    bs_dllist_node_t *dlnode_ptr;
+    while (NULL != (dlnode_ptr = client_ptr->timers.head_ptr) &&
+           (all ||
+            ((wlmcl_client_timer_t*)dlnode_ptr)->target_usec <= current_usec)) {
+        bs_dllist_pop_front(&client_ptr->timers);
+        bs_dllist_push_back(&due_timers, dlnode_ptr);
+    }
+
+    while (NULL != (dlnode_ptr = bs_dllist_pop_front(&due_timers))) {
+        wlmcl_client_timer_t *timer_ptr = (wlmcl_client_timer_t*)dlnode_ptr;
+        timer_ptr->callback(client_ptr, timer_ptr->callback_ud_ptr);
+        wlmcl_client_timer_destroy(timer_ptr);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -945,10 +1184,16 @@ void wlmcl_client_seat_handle_capabilities(
             client_ptr->attributes.wl_pointer_ptr,
             &wlmcl_client_pointer_listener,
             client_ptr);
+        wl_signal_emit(&client_ptr->events.pointer_changed, NULL);
     } else if (!supports_pointer &&
                NULL != client_ptr->attributes.wl_pointer_ptr) {
-        wl_pointer_release(client_ptr->attributes.wl_pointer_ptr);
+        // Listeners release objects referring to the pointer before release.
+        struct wl_pointer *wl_pointer_ptr =
+            client_ptr->attributes.wl_pointer_ptr;
         client_ptr->attributes.wl_pointer_ptr = NULL;
+        client_ptr->pointer_focus_surface_ptr = NULL;
+        wl_signal_emit(&client_ptr->events.pointer_changed, NULL);
+        wl_pointer_release(wl_pointer_ptr);
     }
 
     bool supports_keyboard = capabilities & WL_SEAT_CAPABILITY_KEYBOARD;
@@ -958,7 +1203,7 @@ void wlmcl_client_seat_handle_capabilities(
             client_ptr->wl_keyboard_ptr,
             &wlmcl_client_keyboard_listener,
             client_ptr);
-    } else if (!supports_keyboard && NULL != client_ptr->wl_pointer_ptr) {
+    } else if (!supports_keyboard && NULL != client_ptr->wl_keyboard_ptr) {
         wl_keyboard_release(client_ptr->wl_keyboard_ptr);
         client_ptr->wl_keyboard_ptr = NULL;
     }
@@ -981,11 +1226,14 @@ void wlmcl_client_pointer_handle_enter(
     void *data_ptr,
     struct wl_pointer *wl_pointer,
     uint32_t serial,
-    __UNUSED__ struct wl_surface *surface,
-    __UNUSED__ wl_fixed_t surface_x,
-    __UNUSED__ wl_fixed_t surface_y)
+    struct wl_surface *surface,
+    wl_fixed_t surface_x,
+    wl_fixed_t surface_y)
 {
     wlmcl_client_t *client_ptr = data_ptr;
+    client_ptr->pointer_focus_surface_ptr = surface;
+    client_ptr->pointer_x = wl_fixed_to_double(surface_x);
+    client_ptr->pointer_y = wl_fixed_to_double(surface_y);
     if (NULL == client_ptr->attributes.cursor_shape_manager_ptr) return;
 
     struct wp_cursor_shape_device_v1 *shape_device_ptr =
@@ -1004,58 +1252,100 @@ void wlmcl_client_pointer_handle_enter(
 /* ------------------------------------------------------------------------- */
 /** Called when the client looses pointer focus. */
 void wlmcl_client_pointer_handle_leave(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer,
     __UNUSED__ uint32_t serial,
-    __UNUSED__ struct wl_surface *surface)
+    struct wl_surface *surface)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    client_ptr->pointer_focus_surface_ptr = NULL;
+    client_ptr->pending_axis_valid[0] = false;
+    client_ptr->pending_axis_valid[1] = false;
+    wl_signal_emit(&client_ptr->events.pointer_leave, surface);
 }
 
 /* ------------------------------------------------------------------------- */
 /** Called upon pointer motion. */
 void wlmcl_client_pointer_handle_motion(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer,
     __UNUSED__ uint32_t time,
-    __UNUSED__ wl_fixed_t surface_x,
-    __UNUSED__ wl_fixed_t surface_y)
+    wl_fixed_t surface_x,
+    wl_fixed_t surface_y)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    client_ptr->pointer_x = wl_fixed_to_double(surface_x);
+    client_ptr->pointer_y = wl_fixed_to_double(surface_y);
+    struct wlmcl_client_pointer_motion_event event = {
+        .wl_surface_ptr = client_ptr->pointer_focus_surface_ptr,
+        .x = client_ptr->pointer_x,
+        .y = client_ptr->pointer_y,
+    };
+    wl_signal_emit(&client_ptr->events.pointer_motion, &event);
 }
 
 /* ------------------------------------------------------------------------- */
 /** Called upon pointer button events. */
 void wlmcl_client_pointer_handle_button(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer,
     __UNUSED__ uint32_t serial,
     __UNUSED__ uint32_t time,
-    __UNUSED__ uint32_t button,
-    __UNUSED__ uint32_t state)
+    uint32_t button,
+    uint32_t state)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    struct wlmcl_client_pointer_button_event event = {
+        .wl_surface_ptr = client_ptr->pointer_focus_surface_ptr,
+        .button = button,
+        .pressed = WL_POINTER_BUTTON_STATE_PRESSED == state,
+        .x = client_ptr->pointer_x,
+        .y = client_ptr->pointer_y,
+    };
+    wl_signal_emit(&client_ptr->events.pointer_button, &event);
 }
 
 /* ------------------------------------------------------------------------- */
 /** Called upon axis events. */
 void wlmcl_client_pointer_handle_axis(
-    __UNUSED__ void *data,
-    __UNUSED__ struct wl_pointer *wl_pointer,
+    void *data_ptr,
+    struct wl_pointer *wl_pointer,
     __UNUSED__ uint32_t time,
-    __UNUSED__ uint32_t axis,
-    __UNUSED__ wl_fixed_t value)
+    uint32_t axis,
+    wl_fixed_t value)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    if (WL_POINTER_AXIS_HORIZONTAL_SCROLL < axis) return;
+
+    struct wlmcl_client_pointer_axis_event *event_ptr =
+        &client_ptr->pending_axis[axis];
+    if (!client_ptr->pending_axis_valid[axis]) {
+        *event_ptr = (struct wlmcl_client_pointer_axis_event){};
+    }
+    event_ptr->wl_surface_ptr = client_ptr->pointer_focus_surface_ptr;
+    event_ptr->axis = axis;
+    event_ptr->value += wl_fixed_to_double(value);
+    client_ptr->pending_axis_valid[axis] = true;
+
+    // Before version 5, there are no frame events to group the axis events.
+    if (WL_POINTER_FRAME_SINCE_VERSION > wl_pointer_get_version(wl_pointer)) {
+        wlmcl_client_pointer_handle_frame(data_ptr, wl_pointer);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
 /** Called upon frame events. */
 void wlmcl_client_pointer_handle_frame(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    for (int axis = 0; axis < 2; ++axis) {
+        if (!client_ptr->pending_axis_valid[axis]) continue;
+        client_ptr->pending_axis_valid[axis] = false;
+        wl_signal_emit(&client_ptr->events.pointer_axis,
+                       &client_ptr->pending_axis[axis]);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1082,12 +1372,24 @@ void wlmcl_client_pointer_handle_axis_stop(
 /* ------------------------------------------------------------------------- */
 /** Called upon axis click events. */
 void wlmcl_client_pointer_handle_axis_discrete(
-    __UNUSED__ void *data,
+    void *data_ptr,
     __UNUSED__ struct wl_pointer *wl_pointer,
-    __UNUSED__ uint32_t axis,
-    __UNUSED__ int32_t discrete)
+    uint32_t axis,
+    int32_t discrete)
 {
-    /* Currently nothing done. */
+    wlmcl_client_t *client_ptr = data_ptr;
+    if (WL_POINTER_AXIS_HORIZONTAL_SCROLL < axis) return;
+
+    // Sent before the corresponding `axis` event, within the same frame.
+    struct wlmcl_client_pointer_axis_event *event_ptr =
+        &client_ptr->pending_axis[axis];
+    if (!client_ptr->pending_axis_valid[axis]) {
+        *event_ptr = (struct wlmcl_client_pointer_axis_event){};
+    }
+    event_ptr->wl_surface_ptr = client_ptr->pointer_focus_surface_ptr;
+    event_ptr->axis = axis;
+    event_ptr->discrete += discrete;
+    client_ptr->pending_axis_valid[axis] = true;
 }
 
 /* ------------------------------------------------------------------------- */

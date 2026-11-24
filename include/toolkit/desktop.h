@@ -65,7 +65,36 @@ typedef struct {
     struct wl_signal          window_mapped;
     /** Triggers when a window is unmapped from a workspace. */
     struct wl_signal          window_unmapped;
+    /**
+     * Interactive move of a window: begins, moves and ends. For window
+     * organizers (zones, snapping). Data: @ref wlmtk_window_move_event_t.
+     */
+    struct wl_signal          window_move_begin;
+    /** See @ref wlmtk_desktop_events_t::window_move_begin. */
+    struct wl_signal          window_move_motion;
+    /** See @ref wlmtk_desktop_events_t::window_move_begin. */
+    struct wl_signal          window_move_end;
+    /**
+     * An interactive resize ended (the client may still be adopting the
+     * size). Data: @ref wlmtk_window_move_event_t.
+     */
+    struct wl_signal          window_resize_end;
+    /**
+     * The usable area of an output changed (a Dock, Clip or panel with an
+     * exclusive zone moved, appeared or went away). Data: NULL.
+     */
+    struct wl_signal          usable_area_changed;
 } wlmtk_desktop_events_t;
+
+/** Data of the window move signals. Coordinates in layout space. */
+typedef struct {
+    /** The window being moved. */
+    struct _wlmtk_window_t    *window_ptr;
+    /** Pointer position. */
+    double                    x;
+    /** Pointer position. */
+    double                    y;
+} wlmtk_window_move_event_t;
 
 /**
  * Indicates which layer the view shall be rendered in.
@@ -142,8 +171,9 @@ void wlmtk_desktop_remove_workspace(
 wlmtk_workspace_t *wlmtk_desktop_get_current_workspace(wlmtk_desktop_t *desktop_ptr);
 
 /**
- * Destroys the last workspace -- if it's not the only remaining workspace, not
- * the current workspace, and if there's no windows contained in it.
+ * Destroys the last workspace -- if it's not the only remaining workspace.
+ * Like Window Maker: If it is the current workspace, switches to the one
+ * before first. Windows on it are moved to the workspace before.
  *
  * @param desktop_ptr
  */
@@ -164,6 +194,30 @@ void wlmtk_desktop_switch_to_next_workspace(wlmtk_desktop_t *desktop_ptr);
 void wlmtk_desktop_switch_to_previous_workspace(wlmtk_desktop_t *desktop_ptr);
 
 /**
+ * Returns the workspace at position `index` (counting from 0).
+ *
+ * @param desktop_ptr
+ * @param index
+ *
+ * @return The workspace, or NULL if there are not that many workspaces.
+ */
+wlmtk_workspace_t *wlmtk_desktop_get_workspace_at(
+    wlmtk_desktop_t *desktop_ptr,
+    size_t index);
+
+/**
+ * Switches to the workspace at position `index` (counting from 0).
+ *
+ * @param desktop_ptr
+ * @param index
+ *
+ * @return false if there is no workspace at `index`.
+ */
+bool wlmtk_desktop_switch_to_workspace_at(
+    wlmtk_desktop_t *desktop_ptr,
+    size_t index);
+
+/**
  * Runs |func()| for each workspace.
  *
  * @param desktop_ptr
@@ -178,7 +232,9 @@ void wlmtk_desktop_for_each_workspace(
 /**
  * Locks the desktop, using the provided element.
  *
- * The desktop must not be locked already. If locked successfully, the desktop will
+ * The desktop must not be locked already, unless the earlier lock was
+ * abandoned (see @ref wlmtk_desktop_lock_unreference): Then `element_ptr`
+ * takes over the lock. If locked successfully, the desktop will
  * keep a reference to `element_ptr`. The lock must call @ref wlmtk_desktop_unlock
  * to unlock desktop, and for releasing the reference.
  *
@@ -208,6 +264,12 @@ bool wlmtk_desktop_unlock(
 
 /** @return Whether desktop is locked. */
 bool wlmtk_desktop_locked(wlmtk_desktop_t *desktop_ptr);
+
+/**
+ * @return Whether desktop is locked, and the lock is held by an element. That
+ *     is false if the desktop is unlocked, or if the lock was abandoned.
+ */
+bool wlmtk_desktop_lock_held(wlmtk_desktop_t *desktop_ptr);
 
 /**
  * Releases the lock reference, but keeps the desktop locked.
@@ -247,6 +309,53 @@ bool wlmtk_desktop_set_style(
 wlmtk_layer_t *wlmtk_desktop_get_layer(
     wlmtk_desktop_t *desktop_ptr,
     wlmtk_desktop_layer_t layer);
+
+/**
+ * Returns the area of `wlr_output_ptr` that is usable for windows: The output's
+ * extents, minus the exclusive zones of panels (eg. docks, layer shells) in
+ * all of the desktop's layers.
+ *
+ * @param desktop_ptr
+ * @param wlr_output_ptr      The output, or NULL for the primary output.
+ *
+ * @return The usable area, in layout coordinates. An empty box, if there is
+ *     no output.
+ */
+struct wlr_box wlmtk_desktop_get_usable_area(
+    wlmtk_desktop_t *desktop_ptr,
+    struct wlr_output *wlr_output_ptr);
+
+/** Window placement policies. See @ref wlmtk_desktop_set_window_placement. */
+typedef enum {
+    /** Places windows in free spots, filling the area row by row. */
+    WLMTK_WINDOW_PLACEMENT_SMART,
+    /** Centers windows in the usable area of the output under the pointer. */
+    WLMTK_WINDOW_PLACEMENT_CENTER,
+} wlmtk_window_placement_t;
+
+/** Sets the policy for placing new windows. Default: Smart. */
+void wlmtk_desktop_set_window_placement(
+    wlmtk_desktop_t *desktop_ptr,
+    wlmtk_window_placement_t placement);
+
+/** @return The policy for placing new windows. */
+wlmtk_window_placement_t wlmtk_desktop_get_window_placement(
+    wlmtk_desktop_t *desktop_ptr);
+
+/**
+ * Sets whether windows get activated when the pointer enters them
+ * ("focus follows pointer", Window Maker's 'sloppy' focus). Default: false,
+ * windows get activated by a click.
+ *
+ * @param desktop_ptr
+ * @param follows
+ */
+void wlmtk_desktop_set_focus_follows_pointer(
+    wlmtk_desktop_t *desktop_ptr,
+    bool follows);
+
+/** @return Whether windows get activated when the pointer enters them. */
+bool wlmtk_desktop_get_focus_follows_pointer(wlmtk_desktop_t *desktop_ptr);
 
 /** Unit test cases. */
 extern const bs_test_set_t wlmtk_desktop_test_set;

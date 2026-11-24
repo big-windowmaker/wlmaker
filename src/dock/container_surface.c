@@ -20,6 +20,7 @@
 
 #include "container_surface.h"
 
+#include <drm_fourcc.h>
 #include <libbase/libbase.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -35,6 +36,7 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/types/wlr_seat.h>
 #undef WLR_USE_UNSTABLE
 
@@ -53,8 +55,16 @@ struct wlmdock_container_surface {
 
     /** The local scene graph, to represent all from @ref container. */
     struct wlr_scene          *wlr_scene_ptr;
+    /**
+     * A fully transparent buffer below everything, marked as opaque: The
+     * scene would otherwise clear areas without content (eg. beside the menu)
+     * to opaque black. This one gets copied into the output's buffer.
+     */
+    struct wlr_scene_buffer   *transparent_buffer_ptr;
     /** For `events.frame` of @ref wlr_output_ptr. */
     struct wl_listener        output_frame_listener;
+    /** For `events.destroy` of @ref wlr_output_ptr. */
+    struct wl_listener        output_destroy_listener;
 
     /* -- References to parent objects ------------------ */
     /** Output layout for this surface's compositor. */
@@ -66,6 +76,9 @@ struct wlmdock_container_surface {
 };
 
 static void _wlmdock_container_surface_handle_output_frame(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmdock_container_surface_handle_output_destroy(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 
@@ -94,6 +107,12 @@ struct wlmdock_container_surface *wlmdock_container_surface_create(
         return NULL;
     }
 
+    container_surface_ptr->transparent_buffer_ptr = wlr_scene_buffer_create(
+        &container_surface_ptr->wlr_scene_ptr->tree, NULL);
+    if (NULL == container_surface_ptr->transparent_buffer_ptr) {
+        wlmdock_container_surface_destroy(container_surface_ptr);
+        return NULL;
+    }
     if (!wlmtk_container_init_attached(
             &container_surface_ptr->container,
             &container_surface_ptr->wlr_scene_ptr->tree)) {
@@ -157,6 +176,12 @@ struct wlmdock_container_surface *wlmdock_container_surface_create(
         &container_surface_ptr->wlr_output_ptr->events.frame,
         &container_surface_ptr->output_frame_listener,
         _wlmdock_container_surface_handle_output_frame);
+    // The backend may destroy the output, eg. when the parent compositor
+    // goes away. Listeners must be gone before.
+    wlmtk_util_connect_listener_signal(
+        &container_surface_ptr->wlr_output_ptr->events.destroy,
+        &container_surface_ptr->output_destroy_listener,
+        _wlmdock_container_surface_handle_output_destroy);
 
     return container_surface_ptr;
 }
@@ -165,6 +190,8 @@ struct wlmdock_container_surface *wlmdock_container_surface_create(
 void wlmdock_container_surface_destroy(
     struct wlmdock_container_surface *container_surface_ptr)
 {
+    wlmtk_util_disconnect_listener(
+        &container_surface_ptr->output_destroy_listener);
     wlmtk_util_disconnect_listener(
         &container_surface_ptr->output_frame_listener);
 
@@ -203,17 +230,46 @@ void wlmdock_container_surface_commit_size(
     int height)
 {
     if (0 >= width || 0 >= height) return;
+    if (NULL == container_surface_ptr->wlr_output_ptr) return;
 
     struct wlr_output_state state;
     wlr_output_state_init(&state);
     wlr_output_state_set_enabled(&state, width > 0 && height > 0);
     wlr_output_state_set_custom_mode(&state, width, height, 0);
+    // With alpha: Areas without content are transparent.
+    wlr_output_state_set_render_format(&state, DRM_FORMAT_ARGB8888);
     if (!wlr_output_commit_state(
             container_surface_ptr->wlr_output_ptr, &state)) {
-        bs_log(BS_WARNING, "Failed wlr_output_commit_state(%p, %p) for %dx%d",
-               container_surface_ptr->wlr_output_ptr, &state, width, height);
+        // Report once: The dock will not be visible.
+        static bool reported = false;
+        if (!reported) {
+            bs_log(BS_ERROR, "Failed to configure the dock's output to "
+                   "%dx%d: The dock cannot draw. Check the renderer "
+                   "(WLR_RENDERER) and buffer allocation.", width, height);
+            reported = true;
+        }
     }
     wlr_output_state_finish(&state);
+
+    // Transparent where there is no content. A new buffer only for a new
+    // size.
+    struct wlr_buffer *current_ptr =
+        container_surface_ptr->transparent_buffer_ptr->buffer;
+    struct wlr_buffer *wlr_buffer_ptr = NULL;
+    if (NULL == current_ptr ||
+        current_ptr->width != width || current_ptr->height != height) {
+        wlr_buffer_ptr = bs_gfxbuf_create_wlr_buffer(width, height);
+    }
+    if (NULL != wlr_buffer_ptr) {
+        wlr_scene_buffer_set_buffer(
+            container_surface_ptr->transparent_buffer_ptr, wlr_buffer_ptr);
+        wlr_buffer_drop(wlr_buffer_ptr);
+        pixman_region32_t region;
+        pixman_region32_init_rect(&region, 0, 0, width, height);
+        wlr_scene_buffer_set_opaque_region(
+            container_surface_ptr->transparent_buffer_ptr, &region);
+        pixman_region32_fini(&region);
+    }
 
     if (!wlr_scene_output_commit(
             container_surface_ptr->wlr_scene_output_ptr, NULL)) {
@@ -243,6 +299,28 @@ void _wlmdock_container_surface_handle_output_frame(
     clock_gettime(CLOCK_MONOTONIC, &now);
     wlr_scene_output_send_frame_done(
         container_surface_ptr->wlr_scene_output_ptr, &now);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handles the output's destruction (eg. by the backend, when the parent
+ * compositor went away): Releases the references to it.
+ */
+void _wlmdock_container_surface_handle_output_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    struct wlmdock_container_surface *container_surface_ptr = BS_CONTAINER_OF(
+        listener_ptr, struct wlmdock_container_surface,
+        output_destroy_listener);
+
+    wlmtk_util_disconnect_listener(
+        &container_surface_ptr->output_frame_listener);
+    wlmtk_util_disconnect_listener(
+        &container_surface_ptr->output_destroy_listener);
+    // The scene output and the output layout follow the output's destruction.
+    container_surface_ptr->wlr_scene_output_ptr = NULL;
+    container_surface_ptr->wlr_output_ptr = NULL;
 }
 
 /* == End of container_surface.c =========================================== */

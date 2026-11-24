@@ -35,6 +35,10 @@ apt-get install -y \
   xwayland
 ```
 
+Optional: `libpulse-dev`, for the `wlmmixer` DockApp. It works with PulseAudio
+and with PipeWire (through `pipewire-pulse`). Without it, `wlmmixer` is not
+built.
+
 See the [github build workflow](../.github/workflows/build-for-linux.yml)
 as reference.
 

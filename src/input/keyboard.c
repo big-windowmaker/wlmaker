@@ -34,6 +34,7 @@
 #define WLR_USE_UNSTABLE
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
 #undef WLR_USE_UNSTABLE
 #include <xkbcommon/xkbcommon.h>
 
@@ -166,7 +167,11 @@ wlmim_keyboard_t *wlmim_keyboard_create(
         }
     }
 
-    wlr_seat_set_keyboard(wlr_seat_ptr, keyboard_ptr->wlr_keyboard_ptr);
+    // A virtual keyboard has no keymap until the client sends one. Don't
+    // make it the seat's keyboard before, that would clear clients' keymap.
+    if (NULL != keyboard_ptr->wlr_keyboard_ptr->keymap) {
+        wlr_seat_set_keyboard(wlr_seat_ptr, keyboard_ptr->wlr_keyboard_ptr);
+    }
     return keyboard_ptr;
 }
 
@@ -251,7 +256,10 @@ void wlmim_keyboard_configure(
     struct xkb_keymap *xkb_keymap_ptr,
     const struct wlmim_keyboard_options *options_ptr)
 {
-    if (keyboard_ptr->xkb_keymap_ptr != xkb_keymap_ptr) {
+    // Virtual keyboards come with the keymap provided by their client.
+    bool is_virtual = NULL != wlr_input_device_get_virtual_keyboard(
+        &keyboard_ptr->wlr_keyboard_ptr->base);
+    if (!is_virtual && keyboard_ptr->xkb_keymap_ptr != xkb_keymap_ptr) {
         if (NULL != keyboard_ptr->xkb_keymap_ptr) {
             xkb_keymap_unref(keyboard_ptr->xkb_keymap_ptr);
         }
@@ -418,8 +426,41 @@ void handle_key(struct wl_listener *listener_ptr, void *data_ptr)
         }
     }
 
+    // A key binding names the key's plain keysym, eg. "Ctrl+Alt+Backspace".
+    // With some XKB options, the modifiers translate the key to another
+    // keysym: terminate:ctrl_alt_bksp makes Ctrl+Alt+BackSpace the
+    // Terminate_Server keysym. If no binding matched the translated keysyms,
+    // try the key's keysyms at the first shift level, as other compositors do.
+    if (!processed &&
+        WL_KEYBOARD_KEY_STATE_PRESSED == wlr_keyboard_key_event_ptr->state) {
+        struct xkb_state *xkb_state_ptr =
+            keyboard_ptr->wlr_keyboard_ptr->xkb_state;
+        const xkb_keysym_t *raw_syms;
+        int raw_count = xkb_keymap_key_get_syms_by_level(
+            xkb_state_get_keymap(xkb_state_ptr),
+            keycode,
+            xkb_state_key_get_layout(xkb_state_ptr, keycode),
+            0,
+            &raw_syms);
+        for (int i = 0; i < raw_count && !processed; ++i) {
+            bool translated = false;
+            for (int j = 0; j < key_syms_count; ++j) {
+                if (key_syms[j] == raw_syms[i]) translated = true;
+            }
+            if (translated) continue;
+            processed = wlmim_process_key(keyboard_ptr->input_manager_ptr,
+                                          raw_syms[i],
+                                          modifiers);
+        }
+    }
+
     if (processed) return;
 
+    // Events are interpreted by the seat's keyboard keymap: With multiple
+    // keyboards (eg. virtual keyboards), use the keyboard of this event.
+    wlr_seat_set_keyboard(
+        keyboard_ptr->wlr_seat_ptr,
+        keyboard_ptr->wlr_keyboard_ptr);
     wlmtk_element_keyboard_event(
         keyboard_ptr->root_element_ptr,
         wlr_keyboard_key_event_ptr);

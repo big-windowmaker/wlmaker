@@ -40,6 +40,7 @@ add_library(wlm_graph_shared STATIC wlm_graph_shared.c)
 target_include_directories(wlm_graph_shared PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(
   wlm_graph_shared
+  wlm_settings
   wlmclient_lib
   primitives)
 if(iwyu_path_and_options)
@@ -48,7 +49,24 @@ if(iwyu_path_and_options)
     C_INCLUDE_WHAT_YOU_USE "${iwyu_path_and_options}")
 endif()
 
-add_wlm_app(wlmclock wlmclient_lib primitives m)
+add_library(wlm_calendar STATIC wlm_calendar.c wlm_calendar.h)
+target_link_libraries(wlm_calendar libbase)
+add_library(wlm_volume STATIC wlm_volume.c wlm_volume.h)
+target_link_libraries(wlm_volume libbase m)
+add_library(wlm_settings STATIC wlm_settings.c wlm_settings.h)
+target_link_libraries(wlm_settings libbase libbase_plist)
+if(iwyu_path_and_options)
+  set_target_properties(
+    wlm_calendar wlm_volume wlm_settings PROPERTIES
+    C_INCLUDE_WHAT_YOU_USE "${iwyu_path_and_options}")
+endif()
+
+add_executable(apps_test apps_test.c)
+target_link_libraries(apps_test wlm_calendar wlm_volume wlm_settings libbase)
+add_test(NAME apps_test COMMAND apps_test)
+
+add_wlm_app(wlmclock wlm_settings wlmclient_lib primitives m)
+add_wlm_app(wlmcalclock wlm_calendar wlm_settings wlmclient_lib primitives m)
 add_wlm_app(wlmeyes m wlmclient_lib)
 add_wlm_app(wlmcpugraph wlm_graph_shared wlmclient_lib primitives)
 add_wlm_app(wlmmemgraph wlm_graph_shared wlmclient_lib primitives)
@@ -57,4 +75,13 @@ add_wlm_app(wlmbattery libbase wlmclient_lib primitives)
 
 install(
   TARGETS wlmclock wlmeyes wlmcpugraph wlmmemgraph wlmnetgraph wlmbattery
+  wlmcalclock
   DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+# The mixer talks to PulseAudio, or to PipeWire through pipewire-pulse.
+if(LIBPULSE_FOUND)
+  add_wlm_app(wlmmixer wlm_volume wlm_settings wlmclient_lib primitives PkgConfig::LIBPULSE m)
+  install(TARGETS wlmmixer DESTINATION "${CMAKE_INSTALL_BINDIR}")
+else()
+  message(STATUS "libpulse not found. Will not build wlmmixer.")
+endif()

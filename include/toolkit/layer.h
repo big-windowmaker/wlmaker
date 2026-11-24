@@ -98,6 +98,24 @@ void wlmtk_layer_reconfigure_output(
     struct wlr_box *usable_area_ptr);
 
 /**
+ * One pass of @ref wlmtk_layer_reconfigure_output: Only the panels that span
+ * a full edge with an exclusive zone (`full_edge`), or only the others. The
+ * desktop runs the first pass for all layers before the second, so a panel
+ * avoids the exclusive zones of the panels in every layer.
+ *
+ * @param layer_ptr
+ * @param wlr_output_ptr
+ * @param usable_area_ptr     In: the area left by the panels configured
+ *                            before. Out: minus the exclusive zones of these.
+ * @param full_edge
+ */
+void wlmtk_layer_reconfigure_output_pass(
+    wlmtk_layer_t *layer_ptr,
+    struct wlr_output *wlr_output_ptr,
+    struct wlr_box *usable_area_ptr,
+    bool full_edge);
+
+/**
  * Calls @ref wlmtk_panel_compute_dimensions for each contained panel.
  *
  * The Wayland protocol spells it is 'undefined' how panels (layer shells)

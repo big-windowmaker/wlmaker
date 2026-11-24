@@ -23,6 +23,7 @@
 
 #include <libbase/libbase.h>
 #include <stdbool.h>
+#include <sys/types.h>
 
 /** Forward definition for the subprocess monitor. */
 typedef struct _wlm_util_subprocess_monitor_t wlm_util_subprocess_monitor_t;
@@ -104,6 +105,16 @@ void wlm_util_subprocess_monitor_cede(
     struct wlm_util_subprocess *subprocess_handle_ptr);
 
 /**
+ * Returns the process ID of the subprocess.
+ *
+ * @param subprocess_handle_ptr
+ *
+ * @return The PID, or 0 if not known.
+ */
+pid_t wlm_util_subprocess_pid(
+    struct wlm_util_subprocess *subprocess_handle_ptr);
+
+/**
  * Starts, entrust and cedes a subprocess to the monitor.
  *
  * A convenience wrapper for `bs_subprocess_start`,
@@ -118,6 +129,10 @@ void wlm_util_subprocess_monitor_cede(
 bool wlm_util_subprocess_monitor_run(
     wlm_util_subprocess_monitor_t *monitor_ptr,
     bs_subprocess_t *subprocess_ptr);
+
+/** @return The event loop the monitor runs on. */
+struct wl_event_loop *wlm_util_subprocess_monitor_event_loop(
+    wlm_util_subprocess_monitor_t *monitor_ptr);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -20,16 +20,37 @@
  */
 
 #include <libbase/libbase.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdlib.h>
 
 #include "action.h"
 #include "action_item.h"
 #include "clip.h"
+#include "clip_grid.h"
 #include "config.h"
+#include "context_menu.h"
 #include "corner.h"
+#include "dialog.h"
+#include "dnd.h"
+#include "force_close.h"
+#include "locate_pointer.h"
+#include "drawer.h"
+#include "dock_fx.h"
+#include "dock_launchers.h"
+#include "dock_menu.h"
+#include "app_icon.h"
+#include "appicons.h"
+#include "dock_position.h"
+#include "window_attributes.h"
+#include "dockapp_prefs.h"
+#include "i18n.h"
+#include "dockapps.h"
 #include "layer_panel.h"
 #include "lock_mgr.h"
+#include "menu_scroll.h"
 #include "root_menu.h"
+#include "tile_drag.h"
 #include "toplevel_tracker.h"
 #include "util/backtrace.h"
 #include "workspace_manager.h"
@@ -47,6 +68,14 @@
 /** Main program, runs the unit tests. */
 int main(int argc, const char **argv)
 {
+    // As wlmaker's main(): The subprocess monitor reads SIGCHLD through a
+    // signalfd; blocked before any thread starts (GLib's, eg. gdbus), no
+    // other thread takes and drops it (generated_menu then hung).
+    sigset_t signal_set;
+    sigemptyset(&signal_set);
+    sigaddset(&signal_set, SIGCHLD);
+    pthread_sigmask(SIG_BLOCK, &signal_set, NULL);
+
     if (!wlm_util_backtrace_setup(argv[0])) return EXIT_FAILURE;
 
     const bs_test_param_t params = { .test_data_dir_ptr = TEST_DATA_DIR };
@@ -54,14 +83,33 @@ int main(int argc, const char **argv)
         &wlmaker_action_item_test_set,
         &wlmaker_action_test_set,
         &wlmaker_clip_test_set,
+        &wlmaker_app_icon_test_set,
+        &wlmaker_appicons_test_set,
+        &wlmaker_clip_grid_test_set,
         &wlmaker_config_test_set,
+        &wlmaker_context_menu_test_set,
         &wlmaker_corner_test_set,
+        &wlmaker_dialog_test_set,
+        &wlmaker_locate_pointer_test_set,
+        &wlmaker_force_close_test_set,
+        &wlmaker_dnd_test_set,
+        &wlmaker_drawer_test_set,
+        &wlmaker_dock_fx_test_set,
+        &wlmaker_dock_launchers_test_set,
+        &wlmaker_dock_menu_test_set,
+        &wlmaker_dock_position_test_set,
+        &wlmaker_dockapp_prefs_test_set,
+        &wlmaker_i18n_test_set,
+        &wlmaker_dockapps_test_set,
         &wlmaker_layer_panel_test_set,
         &wlmaker_lock_mgr_test_set,
+        &wlmaker_menu_scroll_test_set,
         &wlmaker_root_menu_test_set,
+        &wlmaker_tile_drag_test_set,
         &wlmaker_toplevel_tracker_test_set,
         &wlm_workspace_manager_test_set,
         &wlmaker_xdg_decoration_test_set,
+        &wlmaker_window_attributes_test_set,
         &wlmaker_xdg_toplevel_test_set,
 #if defined(WLMAKER_HAVE_XWAYLAND)
         &wlmaker_xwl_surface_test_set,

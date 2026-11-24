@@ -46,6 +46,20 @@ typedef struct {
     enum wlr_edges            edge;
     /** Dock anchor, along @ref wlmtk_dock_positioning_t::edge. */
     enum wlr_edges            anchor;
+    /** Distance from the anchor, in pixels. Optional, defaults to 0. */
+    int                       margin;
+    /**
+     * Distance from the edge, in pixels. Optional, defaults to 0. Eg. for a
+     * row of tiles sticking out of a dock's column, as Window Maker's
+     * drawers.
+     */
+    int                       edge_offset;
+    /**
+     * Whether the dock is positioned relative to the full output, ignoring
+     * other panels' exclusive zones, and without an exclusive zone of its own.
+     * Eg. for placing launchers adjacent to the Clip. Optional.
+     */
+    bool                      overlay;
 } wlmtk_dock_positioning_t;
 
 /** Styling information for the dock. */
@@ -109,6 +123,51 @@ void wlmtk_dock_add_tile(
 void wlmtk_dock_remove_tile(
     wlmtk_dock_t *dock_ptr,
     wlmtk_tile_t *tile_ptr);
+
+/** @return The current positioning of `dock_ptr`. */
+const wlmtk_dock_positioning_t *wlmtk_dock_get_positioning(
+    wlmtk_dock_t *dock_ptr);
+
+/**
+ * Moves the dock to another edge and anchor, eg. to another corner of the
+ * output. The tiles keep their order, counted from the anchor.
+ *
+ * @param dock_ptr
+ * @param positioning_ptr
+ *
+ * @return false if the positioning would change the dock's orientation:
+ *     That is not supported.
+ */
+bool wlmtk_dock_set_positioning(
+    wlmtk_dock_t *dock_ptr,
+    const wlmtk_dock_positioning_t *positioning_ptr);
+
+/** @return Number of tiles in the dock. */
+size_t wlmtk_dock_tiles(wlmtk_dock_t *dock_ptr);
+
+/**
+ * Returns the index of `tile_ptr` in the dock, counted from the dock's anchor:
+ * The tile nearest to the anchor has index 0.
+ *
+ * @param dock_ptr
+ * @param tile_ptr
+ *
+ * @return The index, or -1 if `tile_ptr` is not in the dock.
+ */
+int wlmtk_dock_tile_index(wlmtk_dock_t *dock_ptr, wlmtk_tile_t *tile_ptr);
+
+/**
+ * Moves `tile_ptr` to position `index`, counted from the dock's anchor. An
+ * index beyond the last tile moves it to the far end.
+ *
+ * @param dock_ptr
+ * @param tile_ptr
+ * @param index
+ */
+void wlmtk_dock_move_tile(
+    wlmtk_dock_t *dock_ptr,
+    wlmtk_tile_t *tile_ptr,
+    size_t index);
 
 /** @return Pointer to the superclass @ref wlmtk_panel_t of `dock_ptr`. */
 wlmtk_panel_t *wlmtk_dock_panel(wlmtk_dock_t *dock_ptr);

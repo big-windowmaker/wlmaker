@@ -127,6 +127,13 @@ void wlm_util_subprocess_monitor_destroy(
 }
 
 /* ------------------------------------------------------------------------- */
+struct wl_event_loop *wlm_util_subprocess_monitor_event_loop(
+    wlm_util_subprocess_monitor_t *monitor_ptr)
+{
+    return monitor_ptr->wl_event_loop_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
 struct wlm_util_subprocess *wlm_util_subprocess_monitor_entrust(
     wlm_util_subprocess_monitor_t *monitor_ptr,
     bs_subprocess_t *subprocess_ptr,
@@ -179,6 +186,14 @@ bool wlm_util_subprocess_monitor_run(
 error:
     if (NULL != subprocess_ptr) bs_subprocess_destroy(subprocess_ptr);
     return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+pid_t wlm_util_subprocess_pid(
+    struct wlm_util_subprocess *subprocess_handle_ptr)
+{
+    if (NULL == subprocess_handle_ptr->subprocess_ptr) return 0;
+    return bs_subprocess_pid(subprocess_handle_ptr->subprocess_ptr);
 }
 
 /* == Local (static) methods =============================================== */

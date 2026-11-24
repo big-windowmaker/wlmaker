@@ -128,6 +128,18 @@ void wlmbe_output_config_apply_attributes(
     const wlmbe_output_config_attributes_t *attributes_ptr);
 
 /**
+ * Sets the attributes of a newly discovered output, one that has no stored
+ * configuration: Enabled, in the mode it is lit with, or the preferred mode.
+ *
+ * @param config_ptr          Created by
+ *                            @ref wlmbe_output_config_create_from_wlr.
+ * @param wlr_output_ptr
+ */
+void wlmbe_output_config_init_discovered(
+    wlmbe_output_config_t *config_ptr,
+    struct wlr_output *wlr_output_ptr);
+
+/**
  * Creates a new output config from `wlr_output`.
  *
  * @param wlr_output_ptr

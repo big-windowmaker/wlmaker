@@ -18,6 +18,7 @@ cmake_minimum_required(VERSION 3.13)
 include(WaylandProtocol)
 
 pkg_check_modules(WAYLAND_CLIENT REQUIRED IMPORTED_TARGET wayland-client>=1.22.0)
+pkg_check_modules(PIXMAN REQUIRED IMPORTED_TARGET pixman-1)
 pkg_get_variable(wayland_protocol_dir wayland-protocols pkgdatadir)
 
 add_library(wlmdock_lib STATIC)
@@ -29,10 +30,16 @@ waylandprotocol_add(
 
 target_compile_definitions(
   wlmdock_lib PRIVATE "WLMAKER_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
+# Icon of the Dock's main tile, when the state has no `Icon`.
+set(WLMDOCK_DEFAULT_ICON "" CACHE STRING
+  "Icon of the Dock's main tile: A path, or a name in wlmaker/icons.")
+target_compile_definitions(
+  wlmdock_lib PRIVATE "WLMDOCK_DEFAULT_ICON=\"${WLMDOCK_DEFAULT_ICON}\"")
 target_sources(
   wlmdock_lib
   PRIVATE
   launcher.c
+  maintile.c
   container_surface.c
   subcompositor.c
   tilebox.c
@@ -48,6 +55,7 @@ target_include_directories(
 )
 target_link_libraries(
   wlmdock_lib
+  PkgConfig::PIXMAN
   libbase
   wlmclient_lib
   wlmaker_lib

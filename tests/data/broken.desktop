@@ -1,0 +1,8 @@
+# Made-up entry, as found in the wild (guvcview): A key the parser rejects.
+# The applications menu leaves it out, and is made from the other files.
+[Desktop Entry]
+Name=Broken
+_Comment=Not a valid key
+Exec=broken
+Type=Application
+Categories=System;

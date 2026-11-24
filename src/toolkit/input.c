@@ -38,7 +38,15 @@ struct _wlmtk_pointer_t {
     struct wlr_xcursor_manager *wlr_xcursor_manager_ptr;
     /** Store the current pointer, to reset when we change style. */
     wlmtk_pointer_cursor_t     cursor;
+    /** Optional handler for setting the image. */
+    wlmtk_pointer_xcursor_handler_t xcursor_handler;
+    /** Argument to @ref _wlmtk_pointer_t::xcursor_handler. */
+    void                      *xcursor_handler_ud_ptr;
 };
+
+static void _wlmtk_pointer_show(
+    wlmtk_pointer_t *pointer_ptr,
+    const char *name_ptr);
 
 /** Lookup table for XCursor names. */
 static const char* _wlmtk_pointer_cursor_names[] = {
@@ -84,10 +92,7 @@ void wlmtk_pointer_set_cursor(
         NULL == pointer_ptr->wlr_xcursor_manager_ptr) return;
     if (cursor < 0 || cursor >= WLMTK_POINTER_CURSOR_MAX) return;
 
-    wlr_cursor_set_xcursor(
-        pointer_ptr->wlr_cursor_ptr,
-        pointer_ptr->wlr_xcursor_manager_ptr,
-        _wlmtk_pointer_cursor_names[cursor]);
+    _wlmtk_pointer_show(pointer_ptr, _wlmtk_pointer_cursor_names[cursor]);
     pointer_ptr->cursor = cursor;
 }
 
@@ -97,10 +102,35 @@ void wlmtk_pointer_set_xcursor_manager(
     struct wlr_xcursor_manager *wxm_ptr)
 {
     pointer_ptr->wlr_xcursor_manager_ptr = wxm_ptr;
+    _wlmtk_pointer_show(pointer_ptr,
+                        _wlmtk_pointer_cursor_names[pointer_ptr->cursor]);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmtk_pointer_set_xcursor_handler(
+    wlmtk_pointer_t *pointer_ptr,
+    wlmtk_pointer_xcursor_handler_t handler,
+    void *ud_ptr)
+{
+    pointer_ptr->xcursor_handler = handler;
+    pointer_ptr->xcursor_handler_ud_ptr = ud_ptr;
+}
+
+/* == Local (static) methods =============================================== */
+
+/* ------------------------------------------------------------------------- */
+/** Shows the named image: Through the handler, if there is one. */
+void _wlmtk_pointer_show(wlmtk_pointer_t *pointer_ptr, const char *name_ptr)
+{
+    if (NULL != pointer_ptr->xcursor_handler) {
+        pointer_ptr->xcursor_handler(
+            pointer_ptr->xcursor_handler_ud_ptr, name_ptr);
+        return;
+    }
     wlr_cursor_set_xcursor(
         pointer_ptr->wlr_cursor_ptr,
-        wxm_ptr,
-        _wlmtk_pointer_cursor_names[pointer_ptr->cursor]);
+        pointer_ptr->wlr_xcursor_manager_ptr,
+        name_ptr);
 }
 
 /* == End of input.c ======================================================= */

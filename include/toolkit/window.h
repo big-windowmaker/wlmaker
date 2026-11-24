@@ -93,6 +93,20 @@ typedef struct {
      * Takes a `bool` as argument, specifying whether to enable maximized.
      */
     struct wl_signal          request_maximized;
+
+    /**
+     * Signals that the window moved on the workspace (placed, dragged, or
+     * resized at the left or top edge). Eg. for XWayland, which needs the
+     * X window's position to match, for the client's popups.
+     */
+    struct wl_signal          position_changed;
+
+    /**
+     * Signals that the window's tiled edges changed (snapped to a zone or
+     * tiled: the client may drop its shadows and rounded corners). Takes a
+     * `uint32_t*` with the WLR_EDGE_* bitmask.
+     */
+    struct wl_signal          tiled_changed;
 } wlmtk_window_events_t;
 
 /** Style options for the window. */
@@ -181,8 +195,60 @@ wlmtk_window_t *wlmtk_window_from_element(wlmtk_element_t *element_ptr);
  */
 struct wlr_box wlmtk_window_get_bounding_box(wlmtk_window_t *window_ptr);
 
+/** @return The window's properties, see `WLMTK_WINDOW_PROPERTY_*`. */
+uint32_t wlmtk_window_get_properties(wlmtk_window_t *window_ptr);
+
+/**
+ * Places the window so that its bounding box (with decorations) becomes
+ * `box_ptr`: Moves it and requests the matching content size. For window
+ * organizers (zones, tiling). Un-maximizes; ignored when fullscreen.
+ *
+ * @param window_ptr
+ * @param box_ptr             In layout coordinates.
+ */
+void wlmtk_window_request_bounding_box(
+    wlmtk_window_t *window_ptr,
+    const struct wlr_box *box_ptr);
+
+/**
+ * Stores the minimum content size the client asks for (xdg_toplevel
+ * min_width/min_height, or the X11 WM_NORMAL_HINTS). 0: No minimum.
+ *
+ * @param window_ptr
+ * @param width
+ * @param height
+ */
+void wlmtk_window_set_min_size(
+    wlmtk_window_t *window_ptr,
+    int width,
+    int height);
+
+/**
+ * Minimum size of the bounding box: The client's minimum content size plus
+ * the decoration. For window organizers, to tell whether a window fits a
+ * cell. Each dimension is 0 when the client sets no minimum for it.
+ *
+ * @param window_ptr
+ * @param width_ptr
+ * @param height_ptr
+ */
+void wlmtk_window_get_min_bounding_size(
+    wlmtk_window_t *window_ptr,
+    int *width_ptr,
+    int *height_ptr);
+
 /** Helper: Indicates that the position has changed. */
 void wlmtk_window_position_changed(wlmtk_window_t *window_ptr);
+
+/**
+ * Sets the edges at which the window is tiled (WLR_EDGE_* bitmask, 0 for a
+ * free window), and tells the client through @ref
+ * wlmtk_window_events_t::tiled_changed when they change.
+ *
+ * @param window_ptr
+ * @param edges
+ */
+void wlmtk_window_set_tiled_edges(wlmtk_window_t *window_ptr, uint32_t edges);
 
 /**
  * Sets properties for the window.
@@ -269,6 +335,37 @@ bool wlmtk_window_set_title(
 const char *wlmtk_window_get_title(wlmtk_window_t *window_ptr);
 
 /**
+ * Sets the application's identity: The xdg-shell app ID, or for X11 clients
+ * the class and instance of WM_CLASS. Used to match per-application rules;
+ * not shown to the user.
+ *
+ * @param window_ptr
+ * @param app_id_ptr          App ID or WM_CLASS class. May be NULL.
+ * @param instance_ptr        WM_CLASS instance, or the app ID. May be NULL.
+ *
+ * @return true on success.
+ */
+bool wlmtk_window_set_app_id(
+    wlmtk_window_t *window_ptr,
+    const char *app_id_ptr,
+    const char *instance_ptr);
+
+/** @return The app ID (or WM_CLASS class), or NULL if not known. */
+const char *wlmtk_window_get_app_id(wlmtk_window_t *window_ptr);
+
+/** @return The WM_CLASS instance (or the app ID), or NULL if not known. */
+const char *wlmtk_window_get_instance(wlmtk_window_t *window_ptr);
+
+/**
+ * Marks the window as a dialog: It has a parent, is modal, or declares
+ * itself as a dialog. Window organizers leave dialogs alone.
+ */
+void wlmtk_window_set_dialog(wlmtk_window_t *window_ptr, bool dialog);
+
+/** @return Whether the window is a dialog. */
+bool wlmtk_window_is_dialog(wlmtk_window_t *window_ptr);
+
+/**
  * Sets the window as activated, depending on the argument's value.
  *
  * An activated window will have keyboard focus and would have distinct
@@ -339,9 +436,33 @@ void wlmtk_window_request_close(wlmtk_window_t *window_ptr);
 /**
  * Requests to minimize (iconify) the window.
  *
+ * The window is hidden, but remains on its workspace, and in the task list.
+ * Raising the window (@ref wlmtk_workspace_raise_window) restores it.
+ *
  * @param window_ptr
  */
 void wlmtk_window_request_minimize(wlmtk_window_t *window_ptr);
+
+/**
+ * @return Whether the window was placed already, ie. received its initial
+ *     position from @ref wlmtk_workspace_map_window. Private: For workspace.
+ */
+bool wlmtk_window_is_placed(wlmtk_window_t *window_ptr);
+
+/** Marks the window as placed. Private: To be called by workspace only. */
+void wlmtk_window_set_placed(wlmtk_window_t *window_ptr);
+
+/** @return Whether the window is minimized. */
+bool wlmtk_window_is_minimized(wlmtk_window_t *window_ptr);
+
+/**
+ * Sets the window's minimized state. Private: To be called by the workspace
+ * only. Emits @ref wlmtk_window_events_t::state_changed.
+ *
+ * @param window_ptr
+ * @param minimized
+ */
+void wlmtk_window_set_minimized(wlmtk_window_t *window_ptr, bool minimized);
 
 /**
  * Requests the window to be fullscreen (or end fullscreen).

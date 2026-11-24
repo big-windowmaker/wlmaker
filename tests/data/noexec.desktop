@@ -1,0 +1,5 @@
+# Made-up entry without Exec or TryExec: Left out of the applications menu.
+[Desktop Entry]
+Name=NoExec
+Type=Application
+Categories=System;

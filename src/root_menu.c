@@ -21,6 +21,8 @@
 
 #include "root_menu.h"
 
+#include "clip.h"
+
 #include <inttypes.h>
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
@@ -30,19 +32,27 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <string.h>
 #include <unistd.h>
+#include <linux/input-event-codes.h>
 #include <wayland-server-core.h>
 #define WLR_USE_UNSTABLE
+#include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
+#include <wlr/util/box.h>
 #undef WLR_USE_UNSTABLE
 
 #include "../etc/root_menu.h"
 #include "action.h"
 #include "action_item.h"
 #include "config.h"
+#include "context_menu.h"
+#include "i18n.h"
+#include "input/manager.h"
+#include "menu_scroll.h"
 #include "util/subprocess_monitor.h"
 #include "server.h"
 
@@ -61,6 +71,8 @@ struct _wlmaker_root_menu_t {
     struct wl_listener        menu_open_changed_listener;
     /** Listener for @ref wlmtk_menu_events_t::request_close. */
     struct wl_listener        menu_request_close_listener;
+    /** Listener for @ref wlmtk_menu_events_t::outside_press. */
+    struct wl_listener        menu_outside_press_listener;
 
     /** Listener for @ref wlmtk_window_events_t::request_close. */
     struct wl_listener        window_request_close_listener;
@@ -69,7 +81,54 @@ struct _wlmaker_root_menu_t {
 
     /** Back-link to the server. */
     wlmaker_server_t          *server_ptr;
+    /** Scrolls the menu at the edge of the output. */
+    wlmaker_menu_scroll_t     *menu_scroll_ptr;
+    /** Pinned (by dragging its title bar): Stays open after an action. */
+    bool                      pinned;
+    /** Style of the submenus' titles: That of the windows' title bar. */
+    struct wlmtk_menu_style   *title_style_ptr;
+    /** The submenus' titles (@ref _wlmaker_root_menu_title_t). */
+    bs_dllist_t               titles;
+    /** Torn-off submenus (@ref _wlmaker_root_menu_torn_t). */
+    bs_dllist_t               torn;
+    /** Listener for @ref wlmtk_menu_events_t::inside_press. */
+    struct wl_listener        menu_inside_press_listener;
 };
+
+/**
+ * The title of a submenu, as Window Maker draws it: Dragging it tears off a
+ * copy of the submenu, pinned, with the close button.
+ */
+typedef struct {
+    /** Node in @ref wlmaker_root_menu_t::titles. */
+    bs_dllist_node_t          dlnode;
+    /** Back-link. */
+    wlmaker_root_menu_t       *root_menu_ptr;
+    /** The title item (first of the submenu). */
+    wlmtk_menu_item_t         *item_ptr;
+    /** The submenu's definition, for the copy. */
+    bspl_array_t              *array_ptr;
+    /** Listener for the item's destroy event. */
+    struct wl_listener        destroy_listener;
+    /** The item element's original virtual methods. */
+    wlmtk_element_vmt_t       orig_vmt;
+} _wlmaker_root_menu_title_t;
+
+/** A torn-off submenu: A pinned menu window of its own. */
+typedef struct {
+    /** Node in @ref wlmaker_root_menu_t::torn. */
+    bs_dllist_node_t          dlnode;
+    /** Back-link. */
+    wlmaker_root_menu_t       *root_menu_ptr;
+    /** The menu. */
+    wlmtk_menu_t              *menu_ptr;
+    /** Its window. */
+    wlmtk_window_t            *window_ptr;
+    /** Listener for the window's close button. */
+    struct wl_listener        request_close_listener;
+    /** Destroys it after the close button's handler returned. */
+    struct wl_event_source    *idle_ptr;
+} _wlmaker_root_menu_torn_t;
 
 /** State of a menu generator, while waiting for subprocess to complete. */
 typedef struct {
@@ -95,6 +154,26 @@ static void _wlmaker_root_menu_handle_window_set_activated(
     void *data_ptr);
 
 static void _wlmaker_root_menu_handle_menu_open_changed(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static bool _wlmaker_root_menu_window_at_cursor(
+    wlmaker_root_menu_t *root_menu_ptr);
+static void _wlmaker_root_menu_update_title_style(
+    wlmaker_root_menu_t *root_menu_ptr);
+static bool _wlmaker_root_menu_add_title(
+    wlmaker_root_menu_t *root_menu_ptr,
+    wlmtk_menu_t *submenu_ptr,
+    bspl_array_t *array_ptr);
+static void _wlmaker_root_menu_handle_inside_press(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmaker_root_menu_tear_off(
+    _wlmaker_root_menu_title_t *title_ptr);
+static void _wlmaker_root_menu_torn_destroy(_wlmaker_root_menu_torn_t *torn_ptr);
+
+/** The root menu, for the titles' element handlers (there is one). */
+static wlmaker_root_menu_t *_wlmaker_root_menu_instance = NULL;
+static void _wlmaker_root_menu_handle_outside_press(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmaker_root_menu_handle_request_close(
@@ -146,6 +225,8 @@ static wlmtk_menu_item_t *_wlmaker_root_menu_create_disabled_item(
 
 /** Indicates to load the file specified in following argument. */
 static const char *_wlmaker_root_menu_statement_include = "IncludePlistMenu";
+/** How far above the menu a press counts as on its title bar, in pixels. */
+static const double _wlmaker_root_menu_titlebar_reach = 32;
 
 /**
  * Indicates to generate the menu using a shell command specified in the
@@ -195,6 +276,8 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
     if (NULL == root_menu_ptr) return NULL;
     root_menu_ptr->server_ptr = server_ptr;
     root_menu_ptr->server_ptr->root_menu_ptr = root_menu_ptr;
+    _wlmaker_root_menu_instance = root_menu_ptr;
+    _wlmaker_root_menu_update_title_style(root_menu_ptr);
 
     root_menu_ptr->menu_ptr = wlmtk_menu_create(menu_style_ref_ptr);
     if (NULL == root_menu_ptr->menu_ptr) {
@@ -219,6 +302,14 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
         &wlmtk_menu_events(root_menu_ptr->menu_ptr)->request_close,
         &root_menu_ptr->menu_request_close_listener,
         _wlmaker_root_menu_handle_request_close);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_menu_events(root_menu_ptr->menu_ptr)->outside_press,
+        &root_menu_ptr->menu_outside_press_listener,
+        _wlmaker_root_menu_handle_outside_press);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_menu_events(root_menu_ptr->menu_ptr)->inside_press,
+        &root_menu_ptr->menu_inside_press_listener,
+        _wlmaker_root_menu_handle_inside_press);
 
     root_menu_ptr->window_ptr = wlmtk_window_create(
         wlmtk_menu_element(root_menu_ptr->menu_ptr),
@@ -243,6 +334,14 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
         bspl_array_string_value_at(root_menu_array_ptr, 0));
     wlmtk_window_set_server_side_decorated(root_menu_ptr->window_ptr, true);
 
+    root_menu_ptr->menu_scroll_ptr = wlmaker_menu_scroll_create(
+        server_ptr, root_menu_ptr->window_ptr, root_menu_ptr->menu_ptr);
+    if (NULL == root_menu_ptr->menu_scroll_ptr) {
+        wlmaker_root_menu_destroy(root_menu_ptr);
+        bspl_array_unref(root_menu_array_ptr);
+        return NULL;
+    }
+
     bspl_array_unref(root_menu_array_ptr);
     return root_menu_ptr;
 }
@@ -250,6 +349,17 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
 /* ------------------------------------------------------------------------- */
 void wlmaker_root_menu_destroy(wlmaker_root_menu_t *root_menu_ptr)
 {
+    if (_wlmaker_root_menu_instance == root_menu_ptr) {
+        _wlmaker_root_menu_instance = NULL;
+    }
+    while (NULL != root_menu_ptr->torn.head_ptr) {
+        _wlmaker_root_menu_torn_destroy(BS_CONTAINER_OF(
+            root_menu_ptr->torn.head_ptr, _wlmaker_root_menu_torn_t, dlnode));
+    }
+    if (NULL != root_menu_ptr->menu_scroll_ptr) {
+        wlmaker_menu_scroll_destroy(root_menu_ptr->menu_scroll_ptr);
+        root_menu_ptr->menu_scroll_ptr = NULL;
+    }
     if (NULL != root_menu_ptr->server_ptr) {
         BS_ASSERT(root_menu_ptr->server_ptr->root_menu_ptr == root_menu_ptr);
         root_menu_ptr->server_ptr->root_menu_ptr = NULL;
@@ -278,11 +388,54 @@ void wlmaker_root_menu_destroy(wlmaker_root_menu_t *root_menu_ptr)
         wlmtk_util_disconnect_listener(
             &root_menu_ptr->menu_request_close_listener);
         wlmtk_util_disconnect_listener(
+            &root_menu_ptr->menu_outside_press_listener);
+        wlmtk_util_disconnect_listener(
+            &root_menu_ptr->menu_inside_press_listener);
+        wlmtk_util_disconnect_listener(
             &root_menu_ptr->menu_open_changed_listener);
         wlmtk_menu_destroy(root_menu_ptr->menu_ptr);
         root_menu_ptr->menu_ptr = NULL;
     }
+    if (NULL != root_menu_ptr->title_style_ptr) {
+        wlmtk_menu_style_ref_release(
+            wlmtk_menu_style_to_ref(root_menu_ptr->title_style_ptr));
+        root_menu_ptr->title_style_ptr = NULL;
+    }
     free(root_menu_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmaker_root_menu_reload(
+    wlmaker_server_t *server_ptr,
+    const char *arg_root_menu_file_ptr)
+{
+    wlmaker_root_menu_t *old_ptr = server_ptr->root_menu_ptr;
+    if (NULL != old_ptr &&
+        NULL != wlmtk_window_get_workspace(old_ptr->window_ptr)) {
+        bs_log(BS_WARNING, "Root menu is open, not reloading it.");
+        return false;
+    }
+
+    // wlmaker_root_menu_create() registers the new menu with the server.
+    server_ptr->root_menu_ptr = NULL;
+    wlmaker_root_menu_t *new_ptr = wlmaker_root_menu_create(
+        server_ptr,
+        arg_root_menu_file_ptr,
+        wlmtk_window_style_to_ref(server_ptr->style_ptr->window_style_ptr),
+        wlmtk_menu_style_to_ref(server_ptr->style_ptr->menu_style_ptr));
+    if (NULL == new_ptr) {
+        bs_log(BS_WARNING, "Failed to reload the root menu, keeping it.");
+        server_ptr->root_menu_ptr = old_ptr;
+        return false;
+    }
+    wlmtk_menu_set_open(wlmaker_root_menu_menu(new_ptr), false);
+
+    if (NULL != old_ptr) {
+        server_ptr->root_menu_ptr = old_ptr;
+        wlmaker_root_menu_destroy(old_ptr);
+    }
+    server_ptr->root_menu_ptr = new_ptr;
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -292,9 +445,96 @@ wlmtk_window_t *wlmaker_root_menu_window(wlmaker_root_menu_t *root_menu_ptr)
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmaker_root_menu_pinned(wlmaker_root_menu_t *root_menu_ptr)
+{
+    return root_menu_ptr->pinned;
+}
+
+/* ------------------------------------------------------------------------- */
 wlmtk_menu_t *wlmaker_root_menu_menu(wlmaker_root_menu_t *root_menu_ptr)
 {
     return root_menu_ptr->menu_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_root_menu_open(wlmaker_root_menu_t *root_menu_ptr,
+                            enum wlmtk_menu_mode mode)
+{
+    wlmaker_server_t *server_ptr = root_menu_ptr->server_ptr;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_desktop_get_current_workspace(
+        server_ptr->desktop_ptr);
+    struct wlr_cursor *wlr_cursor_ptr = wlmim_wlr_cursor(
+        server_ptr->input_manager_ptr);
+    int x = wlr_cursor_ptr->x, y = wlr_cursor_ptr->y;
+
+    wlmtk_workspace_map_window(workspace_ptr, root_menu_ptr->window_ptr);
+    wlmtk_workspace_set_window_position(
+        workspace_ptr, root_menu_ptr->window_ptr, x, y);
+
+    struct wlr_box area = wlmtk_desktop_get_usable_area(
+        server_ptr->desktop_ptr,
+        wlmaker_server_get_output_at_cursor(server_ptr));
+    struct wlr_box bbox = wlmtk_window_get_bounding_box(
+        root_menu_ptr->window_ptr);
+    struct wlr_box pos = wlmaker_context_menu_confine(
+        &area, bbox.x, bbox.y, bbox.width, bbox.height);
+    // Not under the icons of the Clip's grid, which are above the windows.
+    wlmaker_clip_grid_avoid(server_ptr, &pos, &area);
+    wlmtk_workspace_set_window_position(
+        workspace_ptr, root_menu_ptr->window_ptr,
+        x + pos.x - bbox.x, y + pos.y - bbox.y);
+    wlmtk_menu_set_bounds(root_menu_ptr->menu_ptr, &area);
+
+    wlmtk_menu_set_mode(root_menu_ptr->menu_ptr, mode);
+    wlmtk_menu_set_open(root_menu_ptr->menu_ptr, true);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_root_menu_open_by_button(wlmaker_root_menu_t *root_menu_ptr,
+                                      uint32_t button)
+{
+    wlmaker_root_menu_open(root_menu_ptr, WLMTK_MENU_MODE_RIGHTCLICK);
+    wlmtk_menu_set_open_button(root_menu_ptr->menu_ptr, button);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_root_menu_summon(wlmaker_root_menu_t *root_menu_ptr,
+                              enum wlmtk_menu_mode mode,
+                              uint32_t button)
+{
+    wlmaker_server_t *server_ptr = root_menu_ptr->server_ptr;
+    if (wlmtk_menu_is_open(root_menu_ptr->menu_ptr)) {
+        wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+            root_menu_ptr->window_ptr);
+        bool seen = false, pinned = root_menu_ptr->pinned;
+        if (NULL != workspace_ptr &&
+            workspace_ptr == wlmtk_desktop_get_current_workspace(
+                server_ptr->desktop_ptr) &&
+            wlmtk_workspace_get_windows_dllist(workspace_ptr)->head_ptr ==
+            wlmtk_dlnode_from_window(root_menu_ptr->window_ptr)) {
+            struct wlr_box b = wlmtk_window_get_bounding_box(
+                root_menu_ptr->window_ptr);
+            seen = wlr_output_layout_contains_point(
+                server_ptr->wlr_output_layout_ptr, NULL,
+                b.x + b.width / 2, b.y + b.height / 2);
+        }
+        // Closing also unpins it, and unmaps its window from any workspace.
+        wlmtk_menu_set_open(root_menu_ptr->menu_ptr, false);
+        // The key closes a menu that is seen, as Window Maker's does; the
+        // button opens it at the pointer, as on a menu opened by the button.
+        if (seen && !pinned && WLMTK_MENU_MODE_NORMAL == mode) return;
+    }
+    // Also when only the window was left on a workspace.
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+        root_menu_ptr->window_ptr);
+    if (NULL != workspace_ptr) {
+        wlmtk_workspace_unmap_window(workspace_ptr, root_menu_ptr->window_ptr);
+    }
+    if (WLMTK_MENU_MODE_RIGHTCLICK == mode) {
+        wlmaker_root_menu_open_by_button(root_menu_ptr, button);
+    } else {
+        wlmaker_root_menu_open(root_menu_ptr, mode);
+    }
 }
 
 /* == Local (static) methods =============================================== */
@@ -338,6 +578,9 @@ void _wlmaker_root_menu_handle_menu_open_changed(
 {
     wlmaker_root_menu_t *root_menu_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_root_menu_t, menu_open_changed_listener);
+    if (!wlmtk_menu_is_open(root_menu_ptr->menu_ptr)) {
+        root_menu_ptr->pinned = false;
+    }
     if (!wlmtk_menu_is_open(root_menu_ptr->menu_ptr) &&
         NULL != wlmtk_window_get_workspace(root_menu_ptr->window_ptr)) {
         wlmtk_workspace_unmap_window(
@@ -359,6 +602,375 @@ void _wlmaker_root_menu_handle_menu_open_changed(
         wlmtk_window_set_properties(root_menu_ptr->window_ptr, properties);
 
     }
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmaker_root_menu_restyle(wlmaker_root_menu_t *root_menu_ptr)
+{
+    wlmaker_server_t *server_ptr = root_menu_ptr->server_ptr;
+    if (NULL == server_ptr) return;
+    for (bs_dllist_node_t *d = root_menu_ptr->torn.head_ptr; NULL != d;
+         d = d->next_ptr) {
+        _wlmaker_root_menu_torn_t *t = BS_CONTAINER_OF(
+            d, _wlmaker_root_menu_torn_t, dlnode);
+        wlmtk_menu_set_style(
+            t->menu_ptr,
+            wlmtk_menu_style_to_ref(server_ptr->style_ptr->menu_style_ptr));
+        wlmtk_window_set_style(
+            t->window_ptr,
+            wlmtk_window_style_to_ref(server_ptr->style_ptr->window_style_ptr),
+            wlmtk_menu_style_to_ref(server_ptr->style_ptr->menu_style_ptr));
+    }
+    // The menus took the items' style: The titles get theirs again.
+    _wlmaker_root_menu_update_title_style(root_menu_ptr);
+    for (bs_dllist_node_t *d = root_menu_ptr->titles.head_ptr; NULL != d;
+         d = d->next_ptr) {
+        _wlmaker_root_menu_title_t *t = BS_CONTAINER_OF(
+            d, _wlmaker_root_menu_title_t, dlnode);
+        wlmtk_menu_item_set_style(
+            t->item_ptr, wlmtk_menu_style_to_ref(root_menu_ptr->title_style_ptr));
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** The titles' style: The menu's, with the fill, font, colors and height of
+ * the windows' title bar (Window Maker draws a submenu's title so). */
+void _wlmaker_root_menu_update_title_style(wlmaker_root_menu_t *root_menu_ptr)
+{
+    wlmaker_server_t *server_ptr = root_menu_ptr->server_ptr;
+    if (NULL == server_ptr || NULL == server_ptr->style_ptr ||
+        NULL == server_ptr->style_ptr->menu_style_ptr ||
+        NULL == server_ptr->style_ptr->window_style_ptr) return;
+    if (NULL == root_menu_ptr->title_style_ptr) {
+        root_menu_ptr->title_style_ptr = wlmtk_menu_style_create();
+        if (NULL == root_menu_ptr->title_style_ptr) return;
+    }
+    const struct wlmtk_titlebar_style *ts_ptr =
+        &server_ptr->style_ptr->window_style_ptr->titlebar;
+    struct wlmtk_menu_style *s_ptr = root_menu_ptr->title_style_ptr;
+    *s_ptr = *server_ptr->style_ptr->menu_style_ptr;
+    s_ptr->item.fill = ts_ptr->focussed_fill;
+    s_ptr->item.highlighted_fill = ts_ptr->focussed_fill;
+    s_ptr->item.font = ts_ptr->font;
+    s_ptr->item.height = ts_ptr->height;
+    s_ptr->item.enabled_text_color = ts_ptr->focussed_text_color;
+    s_ptr->item.highlighted_text_color = ts_ptr->focussed_text_color;
+    s_ptr->item.disabled_text_color = ts_ptr->focussed_text_color;
+}
+
+/* ------------------------------------------------------------------------- */
+/** Finds the title record of `element_ptr`. */
+static _wlmaker_root_menu_title_t *_wlmaker_root_menu_title_of(
+    wlmaker_root_menu_t *root_menu_ptr,
+    wlmtk_element_t *element_ptr)
+{
+    for (bs_dllist_node_t *d = root_menu_ptr->titles.head_ptr; NULL != d;
+         d = d->next_ptr) {
+        _wlmaker_root_menu_title_t *t = BS_CONTAINER_OF(
+            d, _wlmaker_root_menu_title_t, dlnode);
+        if (wlmtk_menu_item_element(t->item_ptr) == element_ptr) return t;
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------------- */
+/** A press on a title (menu in window mode: pinned, or torn off). */
+static bool _wlmaker_root_menu_title_pointer_button(
+    wlmtk_element_t *element_ptr,
+    const wlmtk_button_event_t *button_event_ptr)
+{
+    _wlmaker_root_menu_title_t *t = NULL;
+    if (NULL != _wlmaker_root_menu_instance) {
+        t = _wlmaker_root_menu_title_of(_wlmaker_root_menu_instance, element_ptr);
+    }
+    if (NULL == t) return false;
+    if (BTN_LEFT == button_event_ptr->button &&
+        WLMTK_BUTTON_DOWN == button_event_ptr->type) {
+        _wlmaker_root_menu_tear_off(t);
+        return true;
+    }
+    return t->orig_vmt.pointer_button(element_ptr, button_event_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** The title record goes with its item. */
+static void _wlmaker_root_menu_handle_title_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    _wlmaker_root_menu_title_t *t = BS_CONTAINER_OF(
+        listener_ptr, _wlmaker_root_menu_title_t, destroy_listener);
+    wlmtk_util_disconnect_listener(&t->destroy_listener);
+    bs_dllist_remove(&t->root_menu_ptr->titles, &t->dlnode);
+    if (NULL != t->array_ptr) bspl_array_unref(t->array_ptr);
+    free(t);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Puts the title on top of `submenu_ptr`, defined by `array_ptr`. */
+bool _wlmaker_root_menu_add_title(
+    wlmaker_root_menu_t *root_menu_ptr,
+    wlmtk_menu_t *submenu_ptr,
+    bspl_array_t *array_ptr)
+{
+    if (NULL == root_menu_ptr->title_style_ptr) return false;
+    _wlmaker_root_menu_title_t *t = logged_calloc(
+        1, sizeof(_wlmaker_root_menu_title_t));
+    if (NULL == t) return false;
+    t->root_menu_ptr = root_menu_ptr;
+    t->item_ptr = wlmtk_menu_item_create(
+        wlmtk_menu_style_to_ref(root_menu_ptr->title_style_ptr));
+    if (NULL == t->item_ptr) {
+        free(t);
+        return false;
+    }
+    wlmtk_menu_item_set_text(t->item_ptr,
+                             bspl_array_string_value_at(array_ptr, 0));
+    wlmtk_menu_item_set_enabled(t->item_ptr, false);
+    t->array_ptr = bspl_array_ref(array_ptr);
+    static const wlmtk_element_vmt_t vmt = {
+        .pointer_button = _wlmaker_root_menu_title_pointer_button,
+    };
+    t->orig_vmt = wlmtk_element_extend(wlmtk_menu_item_element(t->item_ptr), &vmt);
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_menu_item_events(t->item_ptr)->destroy,
+        &t->destroy_listener,
+        _wlmaker_root_menu_handle_title_destroy);
+    bs_dllist_push_back(&root_menu_ptr->titles, &t->dlnode);
+    wlmtk_menu_add_item(submenu_ptr, t->item_ptr);
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Whether the title is shown at (x, y), on top: Its submenu open (the scene
+ * nodes of the title and of all its ancestors enabled) and no other menu
+ * over it there. The title of a closed submenu keeps the position it had
+ * when last shown: Without this, a click on an item that is now at that
+ * place tore off the closed submenu (Aplicativos web > Telegram tore off
+ * Aparência > Papéis de parede).
+ */
+static bool _wlmaker_root_menu_title_under_cursor(
+    wlmaker_root_menu_t *root_menu_ptr,
+    _wlmaker_root_menu_title_t *t,
+    double x,
+    double y)
+{
+    wlmtk_element_t *e = wlmtk_menu_item_element(t->item_ptr);
+    if (!e->visible || NULL == e->wlr_scene_node_ptr) return false;
+    int lx, ly;
+    if (!wlr_scene_node_coords(e->wlr_scene_node_ptr, &lx, &ly)) return false;
+    int ex, ey, l, tp, r, b;
+    wlmtk_element_get_absolute_position(e, &ex, &ey);
+    wlmtk_element_get_dimensions(e, &l, &tp, &r, &b);
+    if (x < ex + l || x >= ex + r || y < ey + tp || y >= ey + b) return false;
+
+    struct wlr_scene *scene_ptr = root_menu_ptr->server_ptr->wlr_scene_ptr;
+    if (NULL == scene_ptr) return true;  // Unit tests: no scene.
+    double nx, ny;
+    struct wlr_scene_node *n = wlr_scene_node_at(
+        &scene_ptr->tree.node, x, y, &nx, &ny);
+    for (; NULL != n; n = (NULL != n->parent) ? &n->parent->node : NULL) {
+        if (n == e->wlr_scene_node_ptr) return true;
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
+/** A press inside the root menu opened by a click: On a title, tear off. */
+void _wlmaker_root_menu_handle_inside_press(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_root_menu_t *root_menu_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_root_menu_t, menu_inside_press_listener);
+    wlmtk_menu_outside_press_t *press_ptr = data_ptr;
+    if (BTN_LEFT != press_ptr->button_event_ptr->button) return;
+    struct wlr_cursor *c_ptr = wlmim_wlr_cursor(
+        root_menu_ptr->server_ptr->input_manager_ptr);
+    for (bs_dllist_node_t *d = root_menu_ptr->titles.head_ptr; NULL != d;
+         d = d->next_ptr) {
+        _wlmaker_root_menu_title_t *t = BS_CONTAINER_OF(
+            d, _wlmaker_root_menu_title_t, dlnode);
+        if (_wlmaker_root_menu_title_under_cursor(
+                root_menu_ptr, t, c_ptr->x, c_ptr->y)) {
+            press_ptr->claimed = true;
+            _wlmaker_root_menu_tear_off(t);
+            return;
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Closes (destroys) a torn-off submenu, after the close button's handler. */
+static void _wlmaker_root_menu_torn_idle(void *data_ptr)
+{
+    _wlmaker_root_menu_torn_t *t = data_ptr;
+    t->idle_ptr = NULL;  // An idle source frees itself once dispatched.
+    _wlmaker_root_menu_torn_destroy(t);
+}
+
+/* ------------------------------------------------------------------------- */
+/** The close button of a torn-off submenu. */
+static void _wlmaker_root_menu_handle_torn_close(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    _wlmaker_root_menu_torn_t *t = BS_CONTAINER_OF(
+        listener_ptr, _wlmaker_root_menu_torn_t, request_close_listener);
+    if (NULL != t->idle_ptr) return;
+    wlmtk_workspace_t *ws_ptr = wlmtk_window_get_workspace(t->window_ptr);
+    if (NULL != ws_ptr) wlmtk_workspace_unmap_window(ws_ptr, t->window_ptr);
+    t->idle_ptr = wl_event_loop_add_idle(
+        wl_display_get_event_loop(t->root_menu_ptr->server_ptr->wl_display_ptr),
+        _wlmaker_root_menu_torn_idle, t);
+}
+
+/* ------------------------------------------------------------------------- */
+void _wlmaker_root_menu_torn_destroy(_wlmaker_root_menu_torn_t *t)
+{
+    if (NULL != t->idle_ptr) {
+        wl_event_source_remove(t->idle_ptr);
+        t->idle_ptr = NULL;
+    }
+    wlmtk_util_disconnect_listener(&t->request_close_listener);
+    bs_dllist_remove(&t->root_menu_ptr->torn, &t->dlnode);
+    if (NULL != t->window_ptr) {
+        wlmtk_workspace_t *ws_ptr = wlmtk_window_get_workspace(t->window_ptr);
+        if (NULL != ws_ptr) wlmtk_workspace_unmap_window(ws_ptr, t->window_ptr);
+        wlmtk_window_destroy(t->window_ptr);
+    }
+    if (NULL != t->menu_ptr) wlmtk_menu_destroy(t->menu_ptr);
+    free(t);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Window Maker: Dragging a submenu's title tears it off: A copy of it, as a
+ * window of its own, pinned (with the close button), that moves with the
+ * pointer. The root menu closes, unless pinned.
+ */
+void _wlmaker_root_menu_tear_off(_wlmaker_root_menu_title_t *title_ptr)
+{
+    wlmaker_root_menu_t *root_menu_ptr = title_ptr->root_menu_ptr;
+    wlmaker_server_t *server_ptr = root_menu_ptr->server_ptr;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_desktop_get_current_workspace(
+        server_ptr->desktop_ptr);
+    if (NULL == workspace_ptr) return;
+    int x, y;
+    wlmtk_element_get_absolute_position(
+        wlmtk_menu_item_element(title_ptr->item_ptr), &x, &y);
+
+    _wlmaker_root_menu_torn_t *t = logged_calloc(
+        1, sizeof(_wlmaker_root_menu_torn_t));
+    if (NULL == t) return;
+    t->root_menu_ptr = root_menu_ptr;
+    bs_dllist_push_back(&root_menu_ptr->torn, &t->dlnode);
+    wlmtk_menu_style_ref_t *menu_style_ref_ptr = wlmtk_menu_style_to_ref(
+        server_ptr->style_ptr->menu_style_ptr);
+    t->menu_ptr = wlmtk_menu_create(menu_style_ref_ptr);
+    if (NULL == t->menu_ptr ||
+        !_wlmaker_root_menu_init_menu_from_array(
+            t->menu_ptr, title_ptr->array_ptr, menu_style_ref_ptr, server_ptr)) {
+        _wlmaker_root_menu_torn_destroy(t);
+        return;
+    }
+    t->window_ptr = wlmtk_window_create(
+        wlmtk_menu_element(t->menu_ptr),
+        wlmtk_window_style_to_ref(server_ptr->style_ptr->window_style_ptr),
+        menu_style_ref_ptr);
+    if (NULL == t->window_ptr) {
+        _wlmaker_root_menu_torn_destroy(t);
+        return;
+    }
+    wlmtk_util_connect_listener_signal(
+        &wlmtk_window_events(t->window_ptr)->request_close,
+        &t->request_close_listener,
+        _wlmaker_root_menu_handle_torn_close);
+    wlmtk_window_set_title(t->window_ptr,
+                           bspl_array_string_value_at(title_ptr->array_ptr, 0));
+    wlmtk_window_set_server_side_decorated(t->window_ptr, true);
+    wlmtk_window_set_properties(t->window_ptr, WLMTK_WINDOW_PROPERTY_CLOSABLE);
+    wlmtk_menu_set_mode(t->menu_ptr, WLMTK_MENU_MODE_NORMAL);
+    wlmtk_menu_set_open(t->menu_ptr, true);
+
+    if (!root_menu_ptr->pinned) {
+        wlmtk_menu_set_open(root_menu_ptr->menu_ptr, false);
+    }
+    wlmtk_workspace_map_window(workspace_ptr, t->window_ptr);
+    wlmtk_workspace_set_window_position(workspace_ptr, t->window_ptr, x, y);
+    wlmtk_workspace_begin_window_move(workspace_ptr, t->window_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** @return Whether a window (other than the root menu) is under the cursor. */
+bool _wlmaker_root_menu_window_at_cursor(wlmaker_root_menu_t *root_menu_ptr)
+{
+    wlmaker_server_t *server_ptr = root_menu_ptr->server_ptr;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_desktop_get_current_workspace(
+        server_ptr->desktop_ptr);
+    if (NULL == workspace_ptr) return false;
+    struct wlr_cursor *c_ptr = wlmim_wlr_cursor(server_ptr->input_manager_ptr);
+    bs_dllist_t *list_ptr = wlmtk_workspace_get_windows_dllist(workspace_ptr);
+    for (bs_dllist_node_t *d = list_ptr->head_ptr; NULL != d; d = d->next_ptr) {
+        wlmtk_window_t *w = wlmtk_window_from_dlnode(d);
+        if (w == root_menu_ptr->window_ptr || wlmtk_window_is_minimized(w)) {
+            continue;
+        }
+        struct wlr_box b = wlmtk_window_get_bounding_box(w);
+        if (wlr_box_contains_point(&b, c_ptr->x, c_ptr->y)) return true;
+    }
+    return false;
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Listens to @ref wlmtk_menu_events_t::outside_press. Window Maker: Dragging
+ * the title bar of a menu opened by a click pins it. It stays open (also
+ * after choosing an item), with the close button, and moves along.
+ */
+void _wlmaker_root_menu_handle_outside_press(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmaker_root_menu_t *root_menu_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmaker_root_menu_t, menu_outside_press_listener);
+    wlmtk_menu_outside_press_t *press_ptr = data_ptr;
+    wlmtk_element_t *e = wlmtk_menu_element(root_menu_ptr->menu_ptr);
+    int width = 0;
+    wlmtk_element_get_dimensions(e, NULL, NULL, &width, NULL);
+    uint32_t button = press_ptr->button_event_ptr->button;
+    // The title bar is right above the menu.
+    bool on_title = BTN_LEFT == button && press_ptr->y < 0 &&
+        press_ptr->y >= -_wlmaker_root_menu_titlebar_reach &&
+        press_ptr->x >= 0 && press_ptr->x < width;
+    // Window Maker: The menu's button (right, unless changed in WPrefs)
+    // elsewhere on the desktop opens the menu there at once (over a window,
+    // it just closes).
+    if (!on_title &&
+        !root_menu_ptr->pinned &&
+        0 == strcasecmp("ApplicationsMenu", wlmaker_server_root_button_action(
+                            root_menu_ptr->server_ptr, button)) &&
+        !_wlmaker_root_menu_window_at_cursor(root_menu_ptr)) {
+        press_ptr->claimed = true;
+        wlmtk_menu_set_open(root_menu_ptr->menu_ptr, false);
+        wlmaker_root_menu_open_by_button(root_menu_ptr, button);
+        return;
+    }
+    if (!on_title) return;
+    wlmtk_workspace_t *workspace_ptr = wlmtk_window_get_workspace(
+        root_menu_ptr->window_ptr);
+    if (NULL == workspace_ptr) return;
+
+    press_ptr->claimed = true;
+    root_menu_ptr->pinned = true;
+    if (NULL != e->parent_container_ptr) {
+        wlmtk_container_pointer_grab_release(e->parent_container_ptr, e);
+    }
+    wlmtk_menu_set_mode(root_menu_ptr->menu_ptr, WLMTK_MENU_MODE_NORMAL);
+    wlmtk_window_set_properties(root_menu_ptr->window_ptr,
+                                WLMTK_WINDOW_PROPERTY_CLOSABLE);
+    wlmtk_workspace_begin_window_move(workspace_ptr, root_menu_ptr->window_ptr);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -681,13 +1293,13 @@ void _wlmaker_root_menu_generator_handle_terminated(
         if (INT_MIN != state) {
             menu_item_ptr = _wlmaker_root_menu_create_disabled_item(
                 generator_ptr->style_ref_ptr,
-                "Failed, exit code %d", state);
+                wlmaker_i18n("Failed, exit code %d"), state);
             bs_log(BS_ERROR, "Subprocess %p failed, exit code %d",
                    subprocess_handle_ptr, state);
         } else {
             menu_item_ptr = _wlmaker_root_menu_create_disabled_item(
                 generator_ptr->style_ref_ptr,
-                "Failed, signal %d", code);
+                wlmaker_i18n("Failed, signal %d"), code);
             bs_log(BS_ERROR, "Subprocess %p failed, signal %d",
                    subprocess_handle_ptr, code);
         }
@@ -701,7 +1313,7 @@ void _wlmaker_root_menu_generator_handle_terminated(
             BSPL_ARRAY != bspl_object_type(object_ptr)) {
             menu_item_ptr = _wlmaker_root_menu_create_disabled_item(
                 generator_ptr->style_ref_ptr,
-                "Failed to parse Plist ARRAY from \"%.*s\"",
+                wlmaker_i18n("Failed to parse Plist ARRAY from \"%.*s\""),
                 (int)(generator_ptr->stdout_dynbuf_ptr->length),
                 (char*)(generator_ptr->stdout_dynbuf_ptr->data_ptr));
             bs_log(BS_ERROR,
@@ -717,7 +1329,8 @@ void _wlmaker_root_menu_generator_handle_terminated(
                     generator_ptr->server_ptr)) {
                 menu_item_ptr = _wlmaker_root_menu_create_disabled_item(
                     generator_ptr->style_ref_ptr,
-                    "Failed to populate menu from Plist ARRAY \"%.*s\"",
+                    wlmaker_i18n(
+                        "Failed to populate menu from Plist ARRAY \"%.*s\""),
                     (int)(generator_ptr->stdout_dynbuf_ptr->length),
                     (char*)(generator_ptr->stdout_dynbuf_ptr->data_ptr));
                 bs_log(BS_ERROR,
@@ -796,6 +1409,11 @@ wlmtk_menu_item_t *_wlmaker_root_menu_create_item_from_array(
         wlmtk_menu_t *submenu_ptr = wlmtk_menu_create(menu_style_ref_ptr);
         if (NULL == submenu_ptr) goto error;
         wlmtk_menu_item_set_submenu(menu_item_ptr, submenu_ptr);
+        // Window Maker: A submenu has its title on top (tear it off there).
+        if (NULL != server_ptr->root_menu_ptr) {
+            _wlmaker_root_menu_add_title(
+                server_ptr->root_menu_ptr, submenu_ptr, item_array_ptr);
+        }
 
         if (!_wlmaker_root_menu_init_menu_from_array(
                 submenu_ptr,
@@ -849,11 +1467,13 @@ wlmtk_menu_item_t *_wlmaker_root_menu_create_disabled_item(
 
 static void test_default_menu(bs_test_t *test_ptr);
 static void test_generated_menu(bs_test_t *test_ptr);
+static void test_summon(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t wlmaker_root_menu_test_cases[] = {
     { true, "default_menu", test_default_menu },
     { true, "generated_menu", test_generated_menu },
+    { true, "summon", test_summon },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -973,6 +1593,130 @@ void test_generated_menu(bs_test_t *test_ptr)
     wlr_scene_node_destroy(&server.wlr_scene_ptr->tree.node);
     wlmtk_window_style_ref_release(wsr);
     wlmtk_menu_style_ref_release(msr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests @ref wlmaker_root_menu_summon: Always gives a menu that is seen. */
+void test_summon(bs_test_t *test_ptr)
+{
+    wlmaker_server_t server = {
+        .wl_display_ptr = wl_display_create(),
+        .wlr_scene_ptr = wlr_scene_create()
+    };
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.wl_display_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.wlr_scene_ptr);
+    server.wlr_output_layout_ptr = wlr_output_layout_create(
+        server.wl_display_ptr);
+    struct wlr_output output = { .width = 1024, .height = 768, .scale = 1 };
+    wlmtk_test_wlr_output_init(&output);
+    wlr_output_layout_add_auto(server.wlr_output_layout_ptr, &output);
+    struct wlmtk_desktop_style ds = {};
+    server.desktop_ptr = wlmtk_desktop_create(
+        server.wlr_scene_ptr, &ds, server.wlr_output_layout_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.desktop_ptr);
+    struct wlmtk_tile_style tile_style = {};
+    wlmtk_workspace_t *ws1_ptr = wlmtk_workspace_create(
+        server.wlr_output_layout_ptr, "1", &tile_style);
+    wlmtk_workspace_t *ws2_ptr = wlmtk_workspace_create(
+        server.wlr_output_layout_ptr, "2", &tile_style);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws1_ptr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, ws2_ptr);
+    wlmtk_desktop_add_workspace(server.desktop_ptr, ws1_ptr);
+    wlmtk_desktop_add_workspace(server.desktop_ptr, ws2_ptr);
+    server.wlr_seat_ptr = wlr_seat_create(server.wl_display_ptr, "seat0");
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.wlr_seat_ptr);
+    // The cursor (at 0, 0) gets a layout of its own, without the output: A
+    // test output cannot hold a cursor.
+    struct wlr_output_layout *cursor_layout_ptr = wlr_output_layout_create(
+        server.wl_display_ptr);
+    struct wlmim_cursor_style cs = { .name_ptr = "default", .size = 24 };
+    server.input_manager_ptr = wlmim_input_manager_create(
+        server.wl_display_ptr, NULL, cursor_layout_ptr,
+        server.wlr_seat_ptr, NULL, &cs, NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, server.input_manager_ptr);
+
+    wlmtk_window_style_ref_t *wsr = wlmtk_window_style_to_ref(
+        wlmtk_window_style_create());
+    wlmtk_menu_style_ref_t *msr = wlmtk_menu_style_to_ref(
+        wlmtk_menu_style_create());
+    wlmaker_root_menu_t *rm_ptr = wlmaker_root_menu_create(
+        &server, NULL, wsr, msr);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, rm_ptr);
+    wlmtk_menu_t *m_ptr = wlmaker_root_menu_menu(rm_ptr);
+    wlmtk_window_t *w_ptr = wlmaker_root_menu_window(rm_ptr);
+
+    // Opens; again, closes (Window Maker).
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, ws1_ptr, wlmtk_window_get_workspace(w_ptr));
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlmtk_window_get_workspace(w_ptr));
+
+    // Left open on another workspace: Opens on the current one.
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    wlmtk_desktop_switch_to_next_workspace(server.desktop_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, ws2_ptr, wlmtk_desktop_get_current_workspace(
+                          server.desktop_ptr));
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, ws2_ptr, wlmtk_window_get_workspace(w_ptr));
+
+    // Behind a window: Comes to the top, open.
+    wlmtk_window_t *other_ptr = wlmtk_test_window_create(NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, other_ptr);
+    wlmtk_workspace_map_window(ws2_ptr, other_ptr);
+    bs_dllist_t *wl_ptr = wlmtk_workspace_get_windows_dllist(ws2_ptr);
+    BS_TEST_VERIFY_EQ(test_ptr, wlmtk_dlnode_from_window(other_ptr),
+                      wl_ptr->head_ptr);
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, wlmtk_dlnode_from_window(w_ptr),
+                      wl_ptr->head_ptr);
+
+    // The button, on a menu that is seen: Opens it at the pointer.
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_RIGHTCLICK, BTN_RIGHT);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, WLMTK_MENU_MODE_RIGHTCLICK,
+                      wlmtk_menu_get_mode(m_ptr));
+    wlmtk_menu_set_open(m_ptr, false);
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+
+    // Pinned and seen: The key opens it at the pointer, unpinned.
+    rm_ptr->pinned = true;
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_FALSE(test_ptr, rm_ptr->pinned);
+    // Pinned on another workspace: Comes here.
+    rm_ptr->pinned = true;
+    wlmtk_desktop_switch_to_previous_workspace(server.desktop_ptr);
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_EQ(test_ptr, ws1_ptr, wlmtk_window_get_workspace(w_ptr));
+
+    // Off every output (eg. its monitor went away): Opens again, on it.
+    wlmtk_workspace_set_window_position(ws1_ptr, w_ptr, 5000, 5000);
+    wlmaker_root_menu_summon(rm_ptr, WLMTK_MENU_MODE_NORMAL, 0);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_menu_is_open(m_ptr));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmtk_window_element(w_ptr)->x < 1024);
+
+    wlmtk_menu_set_open(m_ptr, false);
+    BS_TEST_VERIFY_EQ(test_ptr, NULL, wlmtk_window_get_workspace(w_ptr));
+    wlmtk_workspace_unmap_window(ws2_ptr, other_ptr);
+    wlmtk_window_destroy(other_ptr);
+    wlmaker_root_menu_destroy(rm_ptr);
+    wlmtk_window_style_ref_release(wsr);
+    wlmtk_menu_style_ref_release(msr);
+    wlmim_input_manager_destroy(server.input_manager_ptr);
+    wlr_output_layout_destroy(cursor_layout_ptr);
+    wlr_seat_destroy(server.wlr_seat_ptr);
+    wlmtk_desktop_remove_workspace(server.desktop_ptr, ws2_ptr);
+    wlmtk_workspace_destroy(ws2_ptr);
+    wlmtk_desktop_remove_workspace(server.desktop_ptr, ws1_ptr);
+    wlmtk_workspace_destroy(ws1_ptr);
+    wlmtk_desktop_destroy(server.desktop_ptr);
+    wl_display_destroy(server.wl_display_ptr);
+    wlr_scene_node_destroy(&server.wlr_scene_ptr->tree.node);
 }
 
 /* == End of root_menu.c =================================================== */

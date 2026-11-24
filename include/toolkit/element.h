@@ -223,6 +223,11 @@ struct _wlmtk_element_t {
 
     /** Whether the element is visible (drawn, when part of a scene graph). */
     bool                      visible;
+    /**
+     * Whether the element only holds a place in a @ref wlmtk_box_t, eg. an
+     * empty tile of a dock: No margin is drawn between two of these.
+     */
+    bool                      placeholder;
 
     /** Whether the pointer is currently within the element's bounds. */
     bool                      pointer_inside;
@@ -322,6 +327,20 @@ void wlmtk_element_invalidate_parent_layout(wlmtk_element_t *element_ptr);
  * @param y_ptr               Optional, may be NULL.
  */
 void wlmtk_element_get_position(
+    wlmtk_element_t *element_ptr,
+    int *x_ptr,
+    int *y_ptr);
+
+/**
+ * Gets the position of the element relative to its top-most container: The
+ * sum of the positions of the element and of all its parents. For elements
+ * of the compositor's scene, these are layout coordinates.
+ *
+ * @param element_ptr
+ * @param x_ptr               Optional, may be NULL.
+ * @param y_ptr               Optional, may be NULL.
+ */
+void wlmtk_element_get_absolute_position(
     wlmtk_element_t *element_ptr,
     int *x_ptr,
     int *y_ptr);

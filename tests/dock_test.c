@@ -22,6 +22,8 @@
 #include <stdlib.h>
 
 #include "dock/launcher.h"
+#include "dock/maintile.h"
+#include "dock/tilebox.h"
 #include "dock/toplevel.h"
 
 #if !defined(TEST_DATA_DIR)
@@ -35,6 +37,8 @@ int main(int argc, const char **argv)
     const bs_test_param_t params = { .test_data_dir_ptr = TEST_DATA_DIR };
     const bs_test_set_t* sets[] = {
         &wlmdock_launcher_test_set,
+        &wlmdock_maintile_test_set,
+        &wlmdock_tilebox_test_set,
         &wlmdock_toplevel_test_set,
         NULL
     };

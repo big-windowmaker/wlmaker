@@ -23,6 +23,8 @@
 
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
+#include <libintl.h>
+#include <locale.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -34,6 +36,11 @@
 #include "workspace.h"
 
 /* == Declarations ========================================================= */
+
+#ifndef WLMAKER_LOCALEDIR
+/** Where the catalogs are installed. Set by CMake. */
+#define WLMAKER_LOCALEDIR "/usr/share/locale"
+#endif  // WLMAKER_LOCALEDIR
 
 static bool print_version(int argc, const char **argv);
 static bool print_help(int argc, const char **argv);
@@ -208,6 +215,15 @@ bool generate_themes_menu(__UNUSED__ int argc, __UNUSED__ const char **argv)
 /** The main program. */
 int main(int argc, const char **argv)
 {
+    // Texts of the generated menus (categories, titles) in the language of
+    // the locale; numbers with a dot. As wlmaker's wlmaker_i18n_init().
+    setlocale(LC_ALL, "");
+    setlocale(LC_NUMERIC, "C");
+    const char *dir_ptr = getenv("WLMAKER_LOCALEDIR");
+    bindtextdomain("wlmaker", NULL != dir_ptr && '\0' != *dir_ptr ?
+                   dir_ptr : WLMAKER_LOCALEDIR);
+    bind_textdomain_codeset("wlmaker", "UTF-8");
+
     if (!bs_arg_parse(wlmtool_args, BS_ARG_MODE_EXTRA_ARGS, &argc, argv)) {
         fprintf(stderr, "Failed to parse commandline arguments.\n");
         bs_arg_print_usage(stderr, wlmtool_args);

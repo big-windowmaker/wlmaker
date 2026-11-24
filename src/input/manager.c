@@ -31,7 +31,10 @@
 #include <wlr/backend.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_virtual_keyboard_v1.h>
+#include <wlr/types/wlr_virtual_pointer_v1.h>
 #undef WLR_USE_UNSTABLE
 #include <xkbcommon/xkbcommon-keysyms.h>
 
@@ -50,9 +53,24 @@ struct _wlmim_t {
     bs_dllist_t               devices;
     /** List of all bound keys, see @ref wlmim_keybinding_t::dlnode */
     bs_dllist_t               keybindings;
+    /** Keyboard grab: gets every key press while set. */
+    wlmim_key_grab_callback_t key_grab_callback;
+    /** Argument to @ref _wlmim_t::key_grab_callback. */
+    void                      *key_grab_ud_ptr;
 
     /** Listener for `new_input` signals raised by `wlr_backend`. */
     struct wl_listener        backend_new_input_device_listener;
+    /** Listener for `destroy` signals raised by `wlr_backend`. */
+    struct wl_listener        backend_destroy_listener;
+
+    /** Virtual keyboard manager. Owned by wl_display. */
+    struct wlr_virtual_keyboard_manager_v1 *wlr_virtual_keyboard_manager_v1_ptr;
+    /** Listener for `new_virtual_keyboard` of the virtual keyboard manager. */
+    struct wl_listener        new_virtual_keyboard_listener;
+    /** Virtual pointer manager. Owned by wl_display. */
+    struct wlr_virtual_pointer_manager_v1 *wlr_virtual_pointer_manager_v1_ptr;
+    /** Listener for `new_virtual_pointer` of the virtual pointer manager. */
+    struct wl_listener        new_virtual_pointer_listener;
 
     /** The last-used group of the keyboard layout. Used when using groups. */
     uint32_t                  last_keyboard_group_index;
@@ -75,6 +93,14 @@ struct _wlmim_t {
     /** The compositor's root wrapper. */
     wlmtk_root_t              *root_ptr;
 
+    /** Optional filter for axis events, eg. for wheel bindings. */
+    wlmim_axis_filter_t       axis_filter;
+    /** Argument to @ref wlmim_t::axis_filter. */
+    void                      *axis_filter_ud_ptr;
+    /** Optional filter for button events, eg. to select a window. */
+    wlmim_button_filter_t     button_filter;
+    /** Argument to @ref wlmim_t::button_filter. */
+    void                      *button_filter_ud_ptr;
 };
 
 /** Wraps an input device. */
@@ -111,7 +137,19 @@ struct _wlmim_process_arg {
     uint32_t modifiers;
 };
 
+static void _wlmim_add_input_device(
+    wlmim_t *input_manager_ptr,
+    struct wlr_input_device *wlr_input_device_ptr);
 static void _wlmim_handle_new_input_device(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_handle_backend_destroy(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_handle_new_virtual_keyboard(
+    struct wl_listener *listener_ptr,
+    void *data_ptr);
+static void _wlmim_handle_new_virtual_pointer(
     struct wl_listener *listener_ptr,
     void *data_ptr);
 static void _wlmim_handle_destroy_input_device(
@@ -128,6 +166,9 @@ static void _wlmim_device_update_capabilities(
     bs_dllist_node_t *dlnode_ptr,
     void *ud_ptr);
 static void _wlmim_device_configure_keyboard(
+    bs_dllist_node_t *dlnode_ptr,
+    void *ud_ptr);
+static void _wlmim_device_configure_pointer(
     bs_dllist_node_t *dlnode_ptr,
     void *ud_ptr);
 static bool _wlmim_process_keybinding(
@@ -157,6 +198,9 @@ static const bspl_desc_t _wlmim_manager_config[] = {
     BSPL_DESC_DICT("Touchpad", false,
                    wlmim_t, pointer_options, pointer_options,
                    wlmim_pointer_options_desc),
+    BSPL_DESC_DICT("Mouse", false,
+                   wlmim_t, pointer_options, pointer_options.mouse.present,
+                   wlmim_mouse_options_desc),
     BSPL_DESC_DICT("Cursor", false,
                    wlmim_t, cursor_options, cursor_options,
                    wlmim_cursor_options_desc),
@@ -219,6 +263,40 @@ wlmim_t *wlmim_input_manager_create(
             &wlr_backend_ptr->events.new_input,
             &input_manager_ptr->backend_new_input_device_listener,
             _wlmim_handle_new_input_device);
+        // The backend may go away first, eg. a nested Wayland backend when
+        // the parent compositor terminates.
+        wlmtk_util_connect_listener_signal(
+            &wlr_backend_ptr->events.destroy,
+            &input_manager_ptr->backend_destroy_listener,
+            _wlmim_handle_backend_destroy);
+    }
+
+    if (NULL != wl_display_ptr && NULL != wlr_seat_ptr) {
+        input_manager_ptr->wlr_virtual_keyboard_manager_v1_ptr =
+            wlr_virtual_keyboard_manager_v1_create(wl_display_ptr);
+        if (NULL == input_manager_ptr->wlr_virtual_keyboard_manager_v1_ptr) {
+            bs_log(BS_ERROR, "Failed wlr_virtual_keyboard_manager_v1_create(%p)",
+                   wl_display_ptr);
+            wlmim_input_manager_destroy(input_manager_ptr);
+            return NULL;
+        }
+        wlmtk_util_connect_listener_signal(
+            &input_manager_ptr->wlr_virtual_keyboard_manager_v1_ptr->events.new_virtual_keyboard,
+            &input_manager_ptr->new_virtual_keyboard_listener,
+            _wlmim_handle_new_virtual_keyboard);
+
+        input_manager_ptr->wlr_virtual_pointer_manager_v1_ptr =
+            wlr_virtual_pointer_manager_v1_create(wl_display_ptr);
+        if (NULL == input_manager_ptr->wlr_virtual_pointer_manager_v1_ptr) {
+            bs_log(BS_ERROR, "Failed wlr_virtual_pointer_manager_v1_create(%p)",
+                   wl_display_ptr);
+            wlmim_input_manager_destroy(input_manager_ptr);
+            return NULL;
+        }
+        wlmtk_util_connect_listener_signal(
+            &input_manager_ptr->wlr_virtual_pointer_manager_v1_ptr->events.new_virtual_pointer,
+            &input_manager_ptr->new_virtual_pointer_listener,
+            _wlmim_handle_new_virtual_pointer);
     }
 
     return input_manager_ptr;
@@ -227,6 +305,12 @@ wlmim_t *wlmim_input_manager_create(
 /* ------------------------------------------------------------------------- */
 void wlmim_input_manager_destroy(wlmim_t *input_manager_ptr)
 {
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->new_virtual_pointer_listener);
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->new_virtual_keyboard_listener);
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->backend_destroy_listener);
     wlmtk_util_disconnect_listener(
         &input_manager_ptr->backend_new_input_device_listener);
 
@@ -273,9 +357,102 @@ bool wlmim_set_style(
 }
 
 /* ------------------------------------------------------------------------- */
+void wlmim_set_button_filter(
+    wlmim_t *input_manager_ptr,
+    wlmim_button_filter_t filter,
+    void *ud_ptr)
+{
+    input_manager_ptr->button_filter = filter;
+    input_manager_ptr->button_filter_ud_ptr = ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_filter_button(
+    wlmim_t *input_manager_ptr,
+    const struct wlr_pointer_button_event *wlr_pointer_button_event_ptr,
+    uint32_t modifiers)
+{
+    if (NULL == input_manager_ptr->button_filter) return false;
+    return input_manager_ptr->button_filter(
+        input_manager_ptr->button_filter_ud_ptr,
+        wlr_pointer_button_event_ptr,
+        modifiers);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_set_cursor_magnification(
+    wlmim_t *input_manager_ptr,
+    double magnification,
+    double max_magnification)
+{
+    if (NULL == input_manager_ptr->cursor_ptr) return;
+    wlmim_cursor_set_magnification(
+        input_manager_ptr->cursor_ptr, magnification, max_magnification);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_set_cursor_override(
+    wlmim_t *input_manager_ptr,
+    struct wlr_buffer *wlr_buffer_ptr,
+    int32_t hotspot_x,
+    int32_t hotspot_y,
+    float scale)
+{
+    if (NULL == input_manager_ptr->cursor_ptr) return;
+    wlmim_cursor_set_override(
+        input_manager_ptr->cursor_ptr, wlr_buffer_ptr,
+        hotspot_x, hotspot_y, scale);
+}
+
+/* ------------------------------------------------------------------------- */
+struct wlr_buffer *wlmim_create_cursor_buffer(
+    wlmim_t *input_manager_ptr,
+    const char *theme_name_ptr,
+    const char *const *names_ptr,
+    int32_t *hotspot_x_ptr,
+    int32_t *hotspot_y_ptr,
+    float *scale_ptr)
+{
+    if (NULL == input_manager_ptr->cursor_ptr) return NULL;
+    return wlmim_cursor_create_xcursor_buffer(
+        input_manager_ptr->cursor_ptr, theme_name_ptr, names_ptr,
+        hotspot_x_ptr, hotspot_y_ptr, scale_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_cursor_visible(wlmim_t *input_manager_ptr)
+{
+    if (NULL == input_manager_ptr->cursor_ptr) return false;
+    return wlmim_cursor_image_visible(input_manager_ptr->cursor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
 struct wlr_cursor *wlmim_wlr_cursor(wlmim_t *input_manager_ptr)
 {
     return wlmim_cursor_wlr_cursor(input_manager_ptr->cursor_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_set_axis_filter(
+    wlmim_t *input_manager_ptr,
+    wlmim_axis_filter_t filter,
+    void *ud_ptr)
+{
+    input_manager_ptr->axis_filter = filter;
+    input_manager_ptr->axis_filter_ud_ptr = ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_filter_axis(
+    wlmim_t *input_manager_ptr,
+    const struct wlr_pointer_axis_event *wlr_pointer_axis_event_ptr,
+    uint32_t modifiers)
+{
+    if (NULL == input_manager_ptr->axis_filter) return false;
+    return input_manager_ptr->axis_filter(
+        input_manager_ptr->axis_filter_ud_ptr,
+        wlr_pointer_axis_event_ptr,
+        modifiers);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -317,6 +494,45 @@ void wlmim_input_manager_set_keymap(
         &input_manager_ptr->devices,
         _wlmim_device_configure_keyboard,
         input_manager_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_input_manager_reconfigure(
+    wlmim_t *input_manager_ptr,
+    bspl_dict_t *config_dict_ptr)
+{
+    struct xkb_keymap *xkb_keymap_ptr = wlmim_keyboard_xkb_from_config(
+        config_dict_ptr);
+    if (NULL == xkb_keymap_ptr) {
+        bs_log(BS_WARNING, "Failed to load the keymap from the configuration.");
+        return false;
+    }
+
+    wlmim_t *new_ptr = logged_calloc(1, sizeof(*new_ptr));
+    if (NULL == new_ptr) {
+        xkb_keymap_unref(xkb_keymap_ptr);
+        return false;
+    }
+    if (!bspl_decode_dict(config_dict_ptr, _wlmim_manager_config, new_ptr)) {
+        bs_log(BS_WARNING, "Failed to decode the input configuration.");
+        free(new_ptr);
+        xkb_keymap_unref(xkb_keymap_ptr);
+        return false;
+    }
+    input_manager_ptr->keyboard_options = new_ptr->keyboard_options;
+    input_manager_ptr->pointer_options = new_ptr->pointer_options;
+    input_manager_ptr->cursor_options = new_ptr->cursor_options;
+    bspl_decoded_destroy(_wlmim_manager_config, new_ptr);
+    free(new_ptr);
+
+    // Applies the keymap and the keyboard options to all keyboards.
+    wlmim_input_manager_set_keymap(input_manager_ptr, xkb_keymap_ptr);
+    xkb_keymap_unref(xkb_keymap_ptr);
+    bs_dllist_for_each(
+        &input_manager_ptr->devices,
+        _wlmim_device_configure_pointer,
+        input_manager_ptr);
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -374,8 +590,31 @@ bool wlmim_process_key(
         bs_log(BS_DEBUG, "Process key '%s' (sym %d, modifiers %"PRIx32")",
                keysym_name, keysym, modifiers);
     }
+    if (NULL != im_ptr->key_grab_callback) {
+        // A modal part of the compositor (eg. the zone picker) has the
+        // keyboard: The presses it consumes run no binding. One it declines
+        // goes on as usual.
+        if (im_ptr->key_grab_callback(
+                keysym, modifiers, im_ptr->key_grab_ud_ptr)) return true;
+    }
     struct _wlmim_process_arg a = { .keysym = keysym, .modifiers = modifiers };
     return bs_dllist_any(&im_ptr->keybindings, _wlmim_process_keybinding, &a);
+}
+
+/* ------------------------------------------------------------------------- */
+void wlmim_set_key_grab(
+    wlmim_t *im_ptr,
+    wlmim_key_grab_callback_t callback,
+    void *ud_ptr)
+{
+    im_ptr->key_grab_callback = callback;
+    im_ptr->key_grab_ud_ptr = ud_ptr;
+}
+
+/* ------------------------------------------------------------------------- */
+bool wlmim_has_key_grab(wlmim_t *im_ptr)
+{
+    return NULL != im_ptr->key_grab_callback;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -389,19 +628,16 @@ const struct wlmim_cursor_options *wlmim_cursor_options(
 
 /* ------------------------------------------------------------------------- */
 /**
- * Handler for the `new_input` signal raised by `wlr_backend`.
+ * Adds an input device: Creates the keyboard or pointer handle, registers it
+ * and updates the seat's capabilities.
  *
- * @param listener_ptr
- * @param data_ptr
+ * @param input_manager_ptr
+ * @param wlr_input_device_ptr
  */
-void _wlmim_handle_new_input_device(
-    struct wl_listener *listener_ptr,
-    void *data_ptr)
+void _wlmim_add_input_device(
+    wlmim_t *input_manager_ptr,
+    struct wlr_input_device *wlr_input_device_ptr)
 {
-    struct wlr_input_device *wlr_input_device_ptr = data_ptr;
-    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
-        listener_ptr, wlmim_t, backend_new_input_device_listener);
-
     void *handle_ptr = NULL;
     switch (wlr_input_device_ptr->type) {
     case WLR_INPUT_DEVICE_KEYBOARD:
@@ -472,6 +708,91 @@ void _wlmim_handle_new_input_device(
         _wlmim_device_update_capabilities,
         &capabilities);
     wlr_seat_set_capabilities(input_manager_ptr->wlr_seat_ptr, capabilities);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handler for the `new_input` signal raised by `wlr_backend`.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to the new struct wlr_input_device.
+ */
+void _wlmim_handle_new_input_device(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_t, backend_new_input_device_listener);
+    _wlmim_add_input_device(input_manager_ptr, data_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handler for `new_virtual_keyboard` of `wlr_virtual_keyboard_manager_v1`.
+ *
+ * Adds the virtual keyboard like any other keyboard device. It keeps the
+ * keymap provided by the client, see @ref wlmim_keyboard_configure.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to struct wlr_virtual_keyboard_v1.
+ */
+void _wlmim_handle_new_virtual_keyboard(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_t, new_virtual_keyboard_listener);
+    struct wlr_virtual_keyboard_v1 *wlr_virtual_keyboard_v1_ptr = data_ptr;
+
+    _wlmim_add_input_device(
+        input_manager_ptr,
+        &wlr_virtual_keyboard_v1_ptr->keyboard.base);
+}
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Handler for `new_virtual_pointer` of `wlr_virtual_pointer_manager_v1`.
+ *
+ * Adds the virtual pointer like any other pointer device, and maps it to
+ * the output suggested by the client, if any.
+ *
+ * @param listener_ptr
+ * @param data_ptr            Points to a struct
+ *                            wlr_virtual_pointer_v1_new_pointer_event.
+ */
+void _wlmim_handle_new_virtual_pointer(
+    struct wl_listener *listener_ptr,
+    void *data_ptr)
+{
+    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_t, new_virtual_pointer_listener);
+    struct wlr_virtual_pointer_v1_new_pointer_event *event_ptr = data_ptr;
+    struct wlr_input_device *wlr_input_device_ptr =
+        &event_ptr->new_pointer->pointer.base;
+
+    _wlmim_add_input_device(input_manager_ptr, wlr_input_device_ptr);
+
+    if (NULL != event_ptr->suggested_output &&
+        NULL != input_manager_ptr->cursor_ptr) {
+        wlr_cursor_map_input_to_output(
+            wlmim_cursor_wlr_cursor(input_manager_ptr->cursor_ptr),
+            wlr_input_device_ptr,
+            event_ptr->suggested_output);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/** Handler for the `destroy` signal of `wlr_backend`: Detaches from it. */
+void _wlmim_handle_backend_destroy(
+    struct wl_listener *listener_ptr,
+    __UNUSED__ void *data_ptr)
+{
+    wlmim_t *input_manager_ptr = BS_CONTAINER_OF(
+        listener_ptr, wlmim_t, backend_destroy_listener);
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->backend_new_input_device_listener);
+    wlmtk_util_disconnect_listener(
+        &input_manager_ptr->backend_destroy_listener);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -609,6 +930,28 @@ void _wlmim_device_configure_keyboard(
 
 /* ------------------------------------------------------------------------- */
 /**
+ * Configures devices of type pointer. Iterator for `bs_dllist_for_each`.
+ *
+ * @param dlnode_ptr
+ * @param ud_ptr              Points to a @ref wlmim_t.
+ */
+void _wlmim_device_configure_pointer(
+    bs_dllist_node_t *dlnode_ptr,
+    void *ud_ptr)
+{
+    struct wlmim_device *device_ptr = BS_CONTAINER_OF(
+        dlnode_ptr, struct wlmim_device, dlnode);
+    wlmim_t *input_manager_ptr = ud_ptr;
+
+    if (device_ptr->wlr_input_device_ptr->type == WLR_INPUT_DEVICE_POINTER) {
+        wlmim_pointer_configure(
+            device_ptr->handle_ptr,
+            &input_manager_ptr->pointer_options);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/**
  * Process one keybinding, as iterator to `bs_dllist_all`.
  *
  * @param dlnode_ptr
@@ -657,8 +1000,11 @@ void _wlmim_unbind_node(
 static void _wlmim_test_bind(bs_test_t *test_ptr);
 
 /** Test cases for the input manager. */
+static void _wlmim_test_reconfigure(bs_test_t *test_ptr);
+
 static const bs_test_case_t   _wlmim_test_cases[] = {
     { true, "bind", _wlmim_test_bind },
+    { true, "reconfigure", _wlmim_test_reconfigure },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -669,6 +1015,14 @@ const bs_test_set_t wlmim_test_set = BS_TEST_SET(
 bool _wlmim_test_binding_callback(
     __UNUSED__ const struct wlmim_keybinding_combo *keybinding_combo_ptr) {
     return true;
+}
+
+/** Test helper: A grab that consumes the press if `*ud_ptr` says so. */
+static bool _wlmim_test_grab_callback(
+    __UNUSED__ xkb_keysym_t keysym,
+    __UNUSED__ uint32_t modifiers,
+    void *ud_ptr) {
+    return *(bool*)ud_ptr;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -721,8 +1075,59 @@ void _wlmim_test_bind(bs_test_t *test_ptr)
         test_ptr,
         wlmim_process_key(&im, XKB_KEY_B, 0));
 
+    // A grab takes the presses; one it declines goes to the bindings.
+    bool consume = true;
+    wlmim_set_key_grab(&im, _wlmim_test_grab_callback, &consume);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmim_process_key(&im, XKB_KEY_z, 0));
+    consume = false;
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmim_process_key(&im, XKB_KEY_z, 0));
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmim_process_key(&im, XKB_KEY_b, 0));
+    wlmim_set_key_grab(&im, NULL, NULL);
+
     wlmim_unbind_key(&im, kb2_ptr);
     wlmim_unbind_key(&im, kb1_ptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/** Tests re-reading the configuration. */
+void _wlmim_test_reconfigure(bs_test_t *test_ptr)
+{
+    wlmim_t *im_ptr = wlmim_input_manager_create(
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, im_ptr);
+
+    bspl_dict_t *d = bspl_dict_from_object(
+        bspl_create_object_from_plist_string(
+            "{"
+            "Keyboard = { Repeat = { Delay = 250; Rate = 40; };"
+            "  XkbRMLVO = { Rules = evdev; Model = pc105; Layout = us;"
+            "    Variant = \"\"; Options = \"\"; }; };"
+            "Mouse = { AccelSpeed = 0.5; };"
+            "Cursor = { MoveWindowModifier = Logo; };"
+            "}"));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmim_input_manager_reconfigure(im_ptr, d));
+    BS_TEST_VERIFY_EQ(test_ptr, 250, im_ptr->keyboard_options.repeat.delay);
+    BS_TEST_VERIFY_EQ(test_ptr, 40, im_ptr->keyboard_options.repeat.rate);
+    BS_TEST_VERIFY_TRUE(test_ptr, im_ptr->pointer_options.mouse.present);
+    BS_TEST_VERIFY_TRUE(
+        test_ptr, 0.5 == im_ptr->pointer_options.mouse.accel_speed);
+    BS_TEST_VERIFY_EQ(
+        test_ptr, WLR_MODIFIER_LOGO,
+        wlmim_cursor_options(im_ptr)->move_window_modifier);
+    BS_TEST_VERIFY_NEQ(test_ptr, NULL, im_ptr->xkb_keymap_ptr);
+    bspl_dict_unref(d);
+
+    // An invalid configuration keeps the current one.
+    d = bspl_dict_from_object(
+        bspl_create_object_from_plist_string(
+            "{ Keyboard = { Repeat = { Delay = Slow; }; }; }"));
+    BS_TEST_VERIFY_NEQ_OR_RETURN(test_ptr, NULL, d);
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmim_input_manager_reconfigure(im_ptr, d));
+    BS_TEST_VERIFY_EQ(test_ptr, 250, im_ptr->keyboard_options.repeat.delay);
+    bspl_dict_unref(d);
+
+    wlmim_input_manager_destroy(im_ptr);
 }
 
 /* == End of manager.c ===================================================== */

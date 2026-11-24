@@ -26,6 +26,8 @@
 #include <libbase/libbase.h>
 #include <libbase/plist.h>
 
+#include "zoom.h"
+
 struct wl_display;
 struct wlr_output_layout;
 struct wlr_scene;
@@ -105,6 +107,9 @@ size_t wlmbe_num_outputs(struct wlr_output_layout *wlr_output_layout_ptr);
 void wlmbe_backend_magnify(wlmbe_backend_t *backend_ptr);
 /** Reduces all backend outputs by @ref _wlmbke_backend_magnification. */
 void wlmbe_backend_reduce(wlmbe_backend_t *backend_ptr);
+
+/** @return The accessibility zoom of the outputs. */
+wlmbe_zoom_t *wlmbe_backend_zoom(wlmbe_backend_t *backend_ptr);
 
 /** Saves the output's ephemeral state into the state file. */
 bool wlmbe_backend_save_ephemeral_output_configs(wlmbe_backend_t *backend_ptr);

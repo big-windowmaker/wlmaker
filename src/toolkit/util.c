@@ -68,6 +68,19 @@ void wlmtk_util_connect_listener_signal(
 }
 
 /* ------------------------------------------------------------------------- */
+struct wlr_box wlmtk_util_box_union(const struct wlr_box *a_ptr,
+                                    const struct wlr_box *b_ptr)
+{
+    if (wlr_box_empty(a_ptr)) return *b_ptr;
+    if (wlr_box_empty(b_ptr)) return *a_ptr;
+    int x1 = BS_MIN(a_ptr->x, b_ptr->x), y1 = BS_MIN(a_ptr->y, b_ptr->y);
+    int x2 = BS_MAX(a_ptr->x + a_ptr->width, b_ptr->x + b_ptr->width);
+    int y2 = BS_MAX(a_ptr->y + a_ptr->height, b_ptr->y + b_ptr->height);
+    return (struct wlr_box){
+        .x = x1, .y = y1, .width = x2 - x1, .height = y2 - y1 };
+}
+
+/* ------------------------------------------------------------------------- */
 void wlmtk_util_disconnect_listener(
     struct wl_listener *listener_ptr)
 {

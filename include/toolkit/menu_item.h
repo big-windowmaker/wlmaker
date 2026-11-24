@@ -68,6 +68,19 @@ typedef enum {
     WLMTK_MENU_ITEM_DISABLED
 } wlmtk_menu_item_state_t;
 
+/**
+ * An indicator, drawn at the right of a menu item: For an option that can be
+ * turned on or off, or for one of several choices.
+ */
+typedef enum {
+    /** No indicator. */
+    WLMTK_MENU_ITEM_INDICATOR_NONE,
+    /** A check box, showing a check mark when checked. */
+    WLMTK_MENU_ITEM_INDICATOR_CHECK,
+    /** A radio button, one of several choices: Filled when checked. */
+    WLMTK_MENU_ITEM_INDICATOR_RADIO
+} wlmtk_menu_item_indicator_t;
+
 /** Events of the menu item. */
 typedef struct {
     /** The menu item was triggered, by a click or key action. */
@@ -122,6 +135,21 @@ bool wlmtk_menu_item_set_style(
 void wlmtk_menu_item_set_parent_menu(
     wlmtk_menu_item_t *menu_item_ptr,
     wlmtk_menu_t *menu_ptr);
+
+/** @return the menu the item belongs to, or NULL. */
+wlmtk_menu_t *wlmtk_menu_item_get_parent_menu(
+    wlmtk_menu_item_t *menu_item_ptr);
+
+/**
+ * Updates the item's buffer for whether its menu is open: An item of a
+ * closed menu holds no buffer, it is drawn when the menu opens. The item's
+ * dimensions are those of its style, with or without a buffer.
+ *
+ * Private: Should only be called by @ref wlmtk_menu_set_open.
+ *
+ * @param menu_item_ptr
+ */
+void wlmtk_menu_item_update_shown(wlmtk_menu_item_t *menu_item_ptr);
 
 /**
  * Sets the submenu for this menu item.
@@ -203,6 +231,24 @@ bool wlmtk_menu_item_set_highlighted(
  * @param menu_item_ptr
  */
 void wlmtk_menu_item_trigger(wlmtk_menu_item_t *menu_item_ptr);
+
+/**
+ * Sets an indicator for the menu item, eg. a check box. It is drawn at the
+ * right end of the item, where a submenu's hint would be.
+ *
+ * @param menu_item_ptr
+ * @param indicator
+ * @param checked             Whether the check box or radio button is set.
+ *
+ * @return true on success.
+ */
+bool wlmtk_menu_item_set_indicator(
+    wlmtk_menu_item_t *menu_item_ptr,
+    wlmtk_menu_item_indicator_t indicator,
+    bool checked);
+
+/** @return whether the item's indicator is checked. */
+bool wlmtk_menu_item_checked(wlmtk_menu_item_t *menu_item_ptr);
 
 /** Returns pointer to @ref wlmtk_menu_item_t::dlnode. */
 bs_dllist_node_t *wlmtk_dlnode_from_menu_item(

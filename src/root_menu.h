@@ -57,11 +57,77 @@ wlmaker_root_menu_t *wlmaker_root_menu_create(
  */
 void wlmaker_root_menu_destroy(wlmaker_root_menu_t *root_menu_ptr);
 
+/**
+ * After a theme change: Restyles the torn-off submenus and the submenus'
+ * titles (the title bar's look).
+ *
+ * @param root_menu_ptr
+ */
+void wlmaker_root_menu_restyle(wlmaker_root_menu_t *root_menu_ptr);
+
+/**
+ * Replaces the server's root menu with one loaded anew, eg. after the menu
+ * file changed. Uses the server's current styles. Does nothing while the
+ * root menu is open.
+ *
+ * @param server_ptr
+ * @param arg_root_menu_file_ptr  As for @ref wlmaker_root_menu_create.
+ *
+ * @return true if replaced. On error, the current root menu stays.
+ */
+bool wlmaker_root_menu_reload(
+    wlmaker_server_t *server_ptr,
+    const char *arg_root_menu_file_ptr);
+
 /** @return the window holding the root menu. */
 wlmtk_window_t *wlmaker_root_menu_window(wlmaker_root_menu_t *root_menu_ptr);
 
 /** @return Pointer to @ref wlmtk_menu_t of the root menu. */
 wlmtk_menu_t *wlmaker_root_menu_menu(wlmaker_root_menu_t *root_menu_ptr);
+
+/**
+ * @return Whether the root menu is pinned (its title bar was dragged, as in
+ *     Window Maker): It stays open after an action.
+ */
+bool wlmaker_root_menu_pinned(wlmaker_root_menu_t *root_menu_ptr);
+
+/**
+ * Opens the root menu at the pointer, on the current workspace. It is kept
+ * within the usable area of the output: Not under docks and panels. That is
+ * also the bounds for its submenus, see @ref wlmtk_menu_set_bounds.
+ *
+ * @param root_menu_ptr
+ * @param mode
+ */
+void wlmaker_root_menu_open(wlmaker_root_menu_t *root_menu_ptr,
+                            enum wlmtk_menu_mode mode);
+
+/**
+ * Opens the root menu at the cursor, by a press of `button`: Held, its
+ * release over an item runs it; a click leaves the menu open (Window Maker).
+ *
+ * @param root_menu_ptr
+ * @param button              BTN_RIGHT, BTN_LEFT...
+ */
+void wlmaker_root_menu_open_by_button(wlmaker_root_menu_t *root_menu_ptr,
+                                      uint32_t button);
+
+/**
+ * The RootMenu key binding, and the root window's button: Opens the menu at
+ * the cursor, also when it is open already (and then unpinned), so the key
+ * and the button always give a menu that is seen, even if it was left open on
+ * another workspace, on an output that went away or behind windows. As Window
+ * Maker's OpenRootMenu, the key closes the menu when it is open, seen (on the
+ * current workspace, on an output, above the windows) and not pinned.
+ *
+ * @param root_menu_ptr
+ * @param mode                WLMTK_MENU_MODE_NORMAL for the key binding,
+ *                            WLMTK_MENU_MODE_RIGHTCLICK for a button.
+ * @param button              The button for WLMTK_MENU_MODE_RIGHTCLICK.
+ */
+void wlmaker_root_menu_summon(wlmaker_root_menu_t *root_menu_ptr,
+                              enum wlmtk_menu_mode mode,
+                              uint32_t button);
 
 /** Unit test set. */
 extern const bs_test_set_t wlmaker_root_menu_test_set;
