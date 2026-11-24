@@ -120,6 +120,10 @@ static void _wlmaker_tile_drag_full_balloon(
 static size_t _wlmaker_tile_drag_grid_icon(
     const wlmaker_tile_drag_source_t *source_ptr,
     size_t launchers);
+static bool _wlmaker_tile_drag_can_push(
+    const wlmaker_clip_grid_t *grid_ptr,
+    const wlmaker_clip_cell_t *cell_ptr,
+    size_t own);
 static bool _wlmaker_tile_drag_apply_grid(wlmaker_tile_drag_t *tile_drag_ptr);
 
 /* == Data ================================================================= */
@@ -589,6 +593,7 @@ bool _wlmaker_tile_drag_try_column(
         const wlmaker_clip_grid_t *g_ptr = wlmaker_clip_grid(
             server_ptr, &launchers);
         if (NULL == g_ptr) return false;
+        bool push = false;
         size_t own_icon = (own && tile_drag_ptr->has_origin) ?
             _wlmaker_tile_drag_grid_icon(&tile_drag_ptr->source, launchers) :
             SIZE_MAX;
@@ -599,8 +604,15 @@ bool _wlmaker_tile_drag_try_column(
         case WLMAKER_CLIP_GRID_ATTACH:
             break;
         case WLMAKER_CLIP_GRID_OCCUPIED:
-            tile_drag_ptr->over_taken = true;
-            return false;
+            // Another icon there: It takes that cell, and the icons from
+            // there on move down to the first free cell. Without room
+            // (or on the Clip itself): Refused.
+            if (!_wlmaker_tile_drag_can_push(g_ptr, &cell, own_icon)) {
+                tile_drag_ptr->over_taken = true;
+                return false;
+            }
+            push = true;
+            break;
         default:
             // Down the Clip's column, past its icons: At its end.
             if (!wlmaker_clip_grid_column_end(g_ptr, &cell, own_icon)) {
@@ -609,7 +621,7 @@ bool _wlmaker_tile_drag_try_column(
             break;
         }
         *target_ptr = (wlmaker_tile_drag_target_t){
-            .column = id, .grid = true, .cell = cell };
+            .column = id, .grid = true, .cell = cell, .push = push };
         if (own) {
             target_ptr->index = tile_drag_ptr->source.index;
         } else {
@@ -867,6 +879,22 @@ void _wlmaker_tile_drag_remove(
 }
 
 /* ------------------------------------------------------------------------- */
+/** @return Whether a drop at the taken `cell_ptr` can move the icons down. */
+bool _wlmaker_tile_drag_can_push(
+    const wlmaker_clip_grid_t *grid_ptr,
+    const wlmaker_clip_cell_t *cell_ptr,
+    size_t own)
+{
+    if (0 == grid_ptr->n) return false;
+    wlmaker_clip_cell_t *cells_ptr = logged_calloc(
+        grid_ptr->n, sizeof(wlmaker_clip_cell_t));
+    if (NULL == cells_ptr) return false;
+    bool rv = wlmaker_clip_grid_push(grid_ptr, cell_ptr, own, cells_ptr);
+    free(cells_ptr);
+    return rv;
+}
+
+/* ------------------------------------------------------------------------- */
 /** @return The icon of the source on the Clip's grid (launchers first). */
 size_t _wlmaker_tile_drag_grid_icon(
     const wlmaker_tile_drag_source_t *source_ptr,
@@ -899,6 +927,15 @@ bool _wlmaker_tile_drag_apply_grid(wlmaker_tile_drag_t *tile_drag_ptr)
     }
     char buf[32];
     wlmaker_clip_cell_format(&t_ptr->cell, buf, sizeof(buf));
+    if (t_ptr->push) {
+        // The icons from the cell on move down, making room.
+        bs_log(BS_INFO, "Clip's cell %s taken: Moving the icons from there "
+               "down.", buf);
+        wlmaker_clip_push_icons(
+            server_ptr, &t_ptr->cell,
+            tile_drag_ptr->has_origin ?
+            _wlmaker_tile_drag_grid_icon(s_ptr, launchers) : SIZE_MAX);
+    }
 
     if (WLMAKER_TILE_DRAG_DOCKAPP == s_ptr->kind) {
         if (NULL != s_ptr->lift) s_ptr->lift(s_ptr->lift_ud_ptr, false);

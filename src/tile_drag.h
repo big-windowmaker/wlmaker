@@ -140,6 +140,11 @@ typedef struct {
     bool                      grid;
     /** The cell, see @ref wlmaker_tile_drag_target_t::grid. */
     wlmaker_clip_cell_t       cell;
+    /**
+     * The cell holds another icon: The icons from there on move down, see
+     * @ref wlmaker_clip_grid_push.
+     */
+    bool                      push;
 } wlmaker_tile_drag_target_t;
 
 /**

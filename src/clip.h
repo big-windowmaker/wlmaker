@@ -437,6 +437,17 @@ bool wlmaker_clip_grid_avoid(
 void wlmaker_clip_freeze_grid(wlmaker_server_t *server_ptr);
 
 /**
+ * Makes room at the Clip's cell `cell_ptr`, taken by another icon: The icons
+ * from there on in its lane move one slot down, up to the first free cell
+ * (see @ref wlmaker_clip_grid_push). `own` is the icon being moved there
+ * (SIZE_MAX: one coming from elsewhere), which gets the cell. Stores it.
+ */
+void wlmaker_clip_push_icons(
+    wlmaker_server_t *server_ptr,
+    const wlmaker_clip_cell_t *cell_ptr,
+    size_t own);
+
+/**
  * Attaches the dock-app of `tile_ptr` (on the Clip, the Dock or a drawer)
  * to the Clip, at `cell_ptr`. Stores it.
  */

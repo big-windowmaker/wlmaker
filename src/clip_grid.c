@@ -250,6 +250,37 @@ bool wlmaker_clip_grid_column_end(
 }
 
 /* ------------------------------------------------------------------------- */
+bool wlmaker_clip_grid_push(
+    const wlmaker_clip_grid_t *grid_ptr,
+    const wlmaker_clip_cell_t *cell_ptr,
+    size_t own,
+    wlmaker_clip_cell_t *cells_ptr)
+{
+    if ((0 == cell_ptr->lane && 0 == cell_ptr->slot) ||
+        !wlmaker_clip_grid_contains(grid_ptr, cell_ptr) ||
+        SIZE_MAX == wlmaker_clip_grid_icon_at(grid_ptr, cell_ptr, own)) {
+        return false;
+    }
+    // The first free slot of the lane from the cell on.
+    wlmaker_clip_cell_t c = *cell_ptr;
+    while (SIZE_MAX != wlmaker_clip_grid_icon_at(grid_ptr, &c, own)) {
+        ++c.slot;
+        if (!wlmaker_clip_grid_contains(grid_ptr, &c)) return false;
+    }
+    for (size_t i = 0; i < grid_ptr->n; ++i) {
+        cells_ptr[i] = grid_ptr->cells_ptr[i];
+        if (i == own) {
+            cells_ptr[i] = *cell_ptr;
+        } else if (cells_ptr[i].lane == cell_ptr->lane &&
+                   cells_ptr[i].slot >= cell_ptr->slot &&
+                   cells_ptr[i].slot < c.slot) {
+            ++cells_ptr[i].slot;
+        }
+    }
+    return true;
+}
+
+/* ------------------------------------------------------------------------- */
 bool wlmaker_clip_grid_free_cell(
     const wlmaker_clip_grid_t *grid_ptr,
     wlmaker_clip_cell_t *cell_ptr)
@@ -432,6 +463,7 @@ static void test_snap(bs_test_t *test_ptr);
 static void test_resolve(bs_test_t *test_ptr);
 static void test_free_cell(bs_test_t *test_ptr);
 static void test_column_end(bs_test_t *test_ptr);
+static void test_push(bs_test_t *test_ptr);
 
 /** Unit test cases. */
 static const bs_test_case_t _wlmaker_clip_grid_test_cases[] = {
@@ -441,6 +473,7 @@ static const bs_test_case_t _wlmaker_clip_grid_test_cases[] = {
     { true, "resolve", test_resolve },
     { true, "free_cell", test_free_cell },
     { true, "column_end", test_column_end },
+    { true, "push", test_push },
     BS_TEST_CASE_SENTINEL()
 };
 
@@ -470,6 +503,54 @@ void test_column_end(bs_test_t *test_ptr)
     // Between icons of the column: The grid's own rules.
     c = (wlmaker_clip_cell_t){ 0, 1 };
     BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_clip_grid_column_end(&g, &c, SIZE_MAX));
+}
+
+/* ------------------------------------------------------------------------- */
+/** A drop on a taken cell: The icons there move down, to the first hole. */
+void test_push(bs_test_t *test_ptr)
+{
+    // Launchers at (0,1), (0,2), (0,3); a hole at (0,4); a dock-app at (0,5)
+    // and one beside, at (1,1).
+    wlmaker_clip_cell_t cells[] = {
+        { 0, 1 }, { 0, 2 }, { 0, 3 }, { 0, 5 }, { 1, 1 } };
+    wlmaker_clip_grid_t g = { .n = 5, .cells_ptr = cells,
+                              .lanes = 4, .slots = 6 };
+    wlmaker_clip_cell_t out[5];
+    // A new icon at (0,1): (0,1) .. (0,3) move down; (0,5) stays.
+    wlmaker_clip_cell_t c = { 0, 1 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_clip_grid_push(&g, &c, SIZE_MAX, out));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, out[0].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 3, out[1].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 4, out[2].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 5, out[3].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, out[4].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, out[4].lane);
+    // The last of the column to the top: Its own cell is the hole.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_clip_grid_push(&g, &c, 3, out));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, out[3].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 0, out[3].lane);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, out[0].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 4, out[2].slot);
+    // Moving within the run: (0,2) to (0,1) swaps down by one.
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_clip_grid_push(&g, &c, 1, out));
+    BS_TEST_VERIFY_EQ(test_ptr, 1, out[1].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 2, out[0].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 3, out[2].slot);
+    // No room at the end of the lane: Not done.
+    c = (wlmaker_clip_cell_t){ 0, 5 };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_clip_grid_push(&g, &c, SIZE_MAX, out));
+    // A free cell, the Clip itself, off the grid: Not a push.
+    c = (wlmaker_clip_cell_t){ 0, 4 };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_clip_grid_push(&g, &c, SIZE_MAX, out));
+    c = (wlmaker_clip_cell_t){ 0, 0 };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_clip_grid_push(&g, &c, SIZE_MAX, out));
+    c = (wlmaker_clip_cell_t){ 0, 9 };
+    BS_TEST_VERIFY_FALSE(test_ptr, wlmaker_clip_grid_push(&g, &c, SIZE_MAX, out));
+    // In another lane: Only that lane moves.
+    c = (wlmaker_clip_cell_t){ 1, 1 };
+    BS_TEST_VERIFY_TRUE(test_ptr, wlmaker_clip_grid_push(&g, &c, SIZE_MAX, out));
+    BS_TEST_VERIFY_EQ(test_ptr, 2, out[4].slot);
+    BS_TEST_VERIFY_EQ(test_ptr, 1, out[0].slot);
 }
 
 const bs_test_set_t wlmaker_clip_grid_test_set = BS_TEST_SET(

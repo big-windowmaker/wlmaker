@@ -193,6 +193,25 @@ bool wlmaker_clip_grid_column_end(
     size_t own);
 
 /**
+ * A drop on a cell taken by another icon: The dropped icon takes that cell,
+ * and the icons from there on in the same lane move one slot away from the
+ * Clip, up to the first free cell (as a column makes room for a tile put
+ * between two others). The Clip's own tile is never taken.
+ *
+ * @param grid_ptr
+ * @param cell_ptr            The cell of the drop.
+ * @param own                 The icon being moved (SIZE_MAX: none). Its
+ *                            cell counts as free, and is set to `cell_ptr`.
+ * @param cells_ptr           Receives the cells of all `grid_ptr->n` icons.
+ * @return true if the cell was taken, and the icons there fit when moved.
+ */
+bool wlmaker_clip_grid_push(
+    const wlmaker_clip_grid_t *grid_ptr,
+    const wlmaker_clip_cell_t *cell_ptr,
+    size_t own,
+    wlmaker_clip_cell_t *cells_ptr);
+
+/**
  * Finds a free cell for an icon newly attached to the Clip, without one: The
  * first free slot of the Clip's column, from the Clip on (the column is the
  * room kept off the windows), then the next lanes.
