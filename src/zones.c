@@ -47,6 +47,7 @@ void wlmaker_zones_command(__UNUSED__ wlmaker_zones_t *zones_ptr,
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -74,6 +75,7 @@ void wlmaker_zones_command(__UNUSED__ wlmaker_zones_t *zones_ptr,
 #include "wz-layout.h"
 #include "wz-theme.h"
 #include "wz-tile.h"
+#include "wz-scroll.h"
 
 /**
  * Translates a text of wmake-zones (names of its built-in layouts and their
@@ -132,7 +134,45 @@ typedef struct {
     int                       fit_cell_w;
     /** See @ref zones_window_t::fit_cell_w. */
     int                       fit_cell_h;
+    /** Scrolling: The window is in a strip. */
+    bool                      scrolled;
+    /** Scrolling: Out of the view, parked beyond every output. */
+    bool                      parked;
+    /** Scrolling: Index of its strip in @ref wlmaker_zones_t::ssets. */
+    int                       sset;
+    /** Free mode (Zones or off) memory: Whether it holds a box. */
+    bool                      has_free;
+    /** Its box (with decorations) when the free mode was left. */
+    struct wlr_box            free_box;
+    /** Its zone then, -1 if none. */
+    int                       free_zone;
+    /** Whether it was maximized then. */
+    bool                      free_max;
+    /** Back-link, for the listener. */
+    struct _wlmaker_zones_t   *zones_ptr;
+    /** Listener for @ref wlmtk_window_events_t::set_activated. */
+    struct wl_listener        activated_listener;
+    /** Whether `activated_listener` is connected. */
+    bool                      activated_connected;
 } zones_window_t;
+
+/** Scrolling strip: One output on one workspace. */
+typedef struct {
+    /** Whether the slot is in use. */
+    bool                      used;
+    /** Output name. */
+    char                      output[64];
+    /** Workspace, from 1. */
+    int                       workspace;
+    /** The columns. Window IDs are window pointers. */
+    wz_scroll                 s;
+    /** The user scrolled without moving the focus. */
+    bool                      keep_view;
+    /** Hidden columns on the left (dock app, status). */
+    int                       nleft;
+    /** Hidden columns on the right. */
+    int                       nright;
+} zones_sset_t;
 
 /** Tiling set: One output on one workspace. */
 typedef struct {
@@ -259,6 +299,8 @@ struct _wlmaker_zones_t {
     long                      order_seq;
     /** Tiling sets. */
     zones_tset_t              tsets[TSETS_MAX];
+    /** Scrolling strips. */
+    zones_sset_t              ssets[TSETS_MAX];
     /** Undo and redo. */
     wz_history                history;
     /** Window whose interactive resize ended, read when the timer fires. */
@@ -307,6 +349,14 @@ static void _wlmaker_zones_tile_mark(wlmaker_zones_t *zones_ptr);
 static int _wlmaker_zones_tile_run(void *data_ptr);
 static void _picker_close(wlmaker_zones_t *zones_ptr);
 static void _drag_update(wlmaker_zones_t *zones_ptr);
+static void _scroll_drop(wlmaker_zones_t *zones_ptr, zones_window_t *w, double px);
+static void _scroll_user_resize(wlmaker_zones_t *zones_ptr, zones_window_t *w);
+static bool _scroll_cmd(wlmaker_zones_t *zones_ptr, const char *op, const char *arg,
+                        char *out_ptr, size_t out_len);
+static void _wlmaker_zones_apply_drag_modifier(wlmaker_zones_t *zones_ptr,
+                                               wlmtk_window_t *window_ptr);
+static bool _free_restore(zones_window_t *w);
+static void _free_save(zones_window_t *w);
 
 /* == Helpers ============================================================== */
 
@@ -346,8 +396,8 @@ static zones_window_t *_win(wlmaker_zones_t *zones_ptr,
     }
     if (!create || NULL == free_ptr) return NULL;
     *free_ptr = (zones_window_t){
-        .window_ptr = window_ptr, .zone = -1,
-        .order = ++zones_ptr->order_seq };
+        .window_ptr = window_ptr, .zone = -1, .sset = -1, .free_zone = -1,
+        .zones_ptr = zones_ptr, .order = ++zones_ptr->order_seq };
     return free_ptr;
 }
 
@@ -629,12 +679,14 @@ static void _hist_push(wlmaker_zones_t *zones_ptr,
 static void _hist_push_all(wlmaker_zones_t *zones_ptr,
                            const char *s1, const char *k1,
                            const char *s2, const char *k2,
-                           const char *s3, const char *k3)
+                           const char *s3, const char *k3,
+                           const char *s4, const char *k4)
 {
     wz_hist_entry *e = _hist_begin(zones_ptr);
     if (NULL != s1) _hist_add_cfg(zones_ptr, e, s1, k1);
     if (NULL != s2) _hist_add_cfg(zones_ptr, e, s2, k2);
     if (NULL != s3) _hist_add_cfg(zones_ptr, e, s3, k3);
+    if (NULL != s4) _hist_add_cfg(zones_ptr, e, s4, k4);
     for (int i = 0; i < WINDOWS_MAX; ++i) {
         if (NULL != zones_ptr->windows[i].window_ptr) {
             _hist_add(zones_ptr, e, zones_ptr->windows[i].window_ptr, NULL);
@@ -1401,7 +1453,7 @@ static void _wlmaker_zones_handle_move_begin(struct wl_listener *listener_ptr,
     wlmtk_window_move_event_t *ev = data_ptr;
     _picker_close(zones_ptr);
     zones_window_t *w = _win(zones_ptr, ev->window_ptr, false);
-    bool tiled = NULL != w && w->tiled;
+    bool tiled = NULL != w && (w->tiled || w->scrolled);
     if (!zones_ptr->cfg.zones && !tiled) return;
     if (!tiled && !_snappable(zones_ptr, ev->window_ptr)) return;
     zones_ptr->drag_window_ptr = ev->window_ptr;
@@ -1464,6 +1516,11 @@ void _drag_update(wlmaker_zones_t *zones_ptr)
     if (NULL == output_ptr) return;
     struct wlr_box g = _output_box(zones_ptr, output_ptr);
     zones_window_t *w = _win(zones_ptr, window_ptr, false);
+    if (NULL != w && w->scrolled) {
+        // In a strip, dropping only reorders the columns: No zones.
+        _wlmaker_zones_overlay_hide(zones_ptr);
+        return;
+    }
     bool tile_mode = NULL != w && w->tiled && _autotile_on(zones_ptr, output_ptr);
     bool active = true;
     if (tile_mode) {
@@ -1649,12 +1706,19 @@ static void _wlmaker_zones_handle_move_end(struct wl_listener *listener_ptr,
 
     if (zones_ptr->cancelled) {
         _wlmaker_zones_overlay_hide(zones_ptr);
-        if (NULL != w && w->tiled) {
+        if (NULL != w && (w->tiled || w->scrolled)) {
+            if (w->scrolled) memset(&w->expect, 0, sizeof(w->expect));
             _wlmaker_zones_tile_mark(zones_ptr);
         } else {
             wlmtk_window_request_bounding_box(window_ptr, &zones_ptr->drag_start);
         }
         _drag_layout_clear(zones_ptr);
+        return;
+    }
+    if (NULL != w && w->scrolled) {
+        _wlmaker_zones_overlay_hide(zones_ptr);
+        _drag_layout_clear(zones_ptr);
+        _scroll_drop(zones_ptr, w, ev->x);
         return;
     }
     if (NULL != w && w->tiled) {
@@ -1740,6 +1804,10 @@ static void _wlmaker_zones_handle_move_end(struct wl_listener *listener_ptr,
         _sync_tiled(w);
         w->has_restore = false;
         wlmtk_window_request_bounding_box(window_ptr, &r);
+    } else if (NULL != w && 0 <= w->zone) {
+        // Dragged out of the zones, the size the user gave it stays.
+        w->zone = -1;
+        _sync_tiled(w);
     }
     _wlmaker_zones_overlay_hide(zones_ptr);
     _drag_layout_clear(zones_ptr);
@@ -1753,7 +1821,7 @@ static void _wlmaker_zones_handle_resize_end(struct wl_listener *listener_ptr,
         listener_ptr, wlmaker_zones_t, resize_end_listener);
     wlmtk_window_move_event_t *ev = data_ptr;
     zones_window_t *w = _win(zones_ptr, ev->window_ptr, false);
-    if (NULL == w || !w->tiled || NULL == zones_ptr->resize_timer_ptr) return;
+    if (NULL == w || !(w->tiled || w->scrolled) || NULL == zones_ptr->resize_timer_ptr) return;
     zones_ptr->resized_window_ptr = ev->window_ptr;
     // The client adopts the size with its next commit.
     wl_event_source_timer_update(zones_ptr->resize_timer_ptr, 150);
@@ -1927,6 +1995,431 @@ static int _tile_compute(zones_tset_t *ts,
 }
 
 /** Tiles the windows of the current workspace, per output. */
+
+
+/** @return the WLR_MODIFIER_* bits of "Ctrl+Alt"; 0 if empty or unknown. */
+static uint32_t _drag_mods(const char *spec_ptr)
+{
+    if (NULL == spec_ptr) return 0;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s", spec_ptr);
+    uint32_t m = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, "+ ", &save); NULL != tok;
+         tok = strtok_r(NULL, "+ ", &save)) {
+        if (0 == strcasecmp(tok, "Ctrl") || 0 == strcasecmp(tok, "Control")) {
+            m |= WLR_MODIFIER_CTRL;
+        } else if (0 == strcasecmp(tok, "Alt") || 0 == strcasecmp(tok, "Mod1")) {
+            m |= WLR_MODIFIER_ALT;
+        } else if (0 == strcasecmp(tok, "Super") || 0 == strcasecmp(tok, "Logo") ||
+                   0 == strcasecmp(tok, "Mod4")) {
+            m |= WLR_MODIFIER_LOGO;
+        } else if (0 == strcasecmp(tok, "Shift")) {
+            m |= WLR_MODIFIER_SHIFT;
+        } else {
+            return 0;  // Unknown: Grab nothing by mistake.
+        }
+    }
+    return m;
+}
+
+/** Gives the window the drag modifier of the configuration (Ctrl+Alt). */
+static void _wlmaker_zones_apply_drag_modifier(wlmaker_zones_t *zones_ptr,
+                                               wlmtk_window_t *window_ptr)
+{
+    if (NULL == window_ptr) return;
+    wlmtk_window_set_drag_modifier(window_ptr, _drag_mods(zones_ptr->cfg.drag_modifier));
+}
+
+/* == Scrolling and the memory of the free mode ============================ */
+
+/** @return the output named `name_ptr`, NULL if it is gone. */
+static struct wlr_output *_output_named(wlmaker_zones_t *zones_ptr,
+                                        const char *name_ptr)
+{
+    struct wlr_output_layout_output *lo;
+    wl_list_for_each(lo, &zones_ptr->server_ptr->wlr_output_layout_ptr->outputs, link) {
+        if (0 == strcmp(lo->output->name, name_ptr)) return lo->output;
+    }
+    return NULL;
+}
+
+/** @return the strip of the output and workspace. */
+static zones_sset_t *_sset(wlmaker_zones_t *zones_ptr,
+                           const char *output_ptr, int ws, bool create)
+{
+    for (int i = 0; i < TSETS_MAX; ++i) {
+        zones_sset_t *s = &zones_ptr->ssets[i];
+        if (s->used && s->workspace == ws && 0 == strcmp(s->output, output_ptr)) return s;
+    }
+    if (!create) return NULL;
+    for (int i = 0; i < TSETS_MAX; ++i) {
+        zones_sset_t *s = &zones_ptr->ssets[i];
+        if (s->used) continue;
+        wz_scroll_free(&s->s);
+        memset(s, 0, sizeof(*s));
+        wz_scroll_init(&s->s);
+        s->used = true;
+        snprintf(s->output, sizeof(s->output), "%s", output_ptr);
+        s->workspace = ws;
+        return s;
+    }
+    return NULL;
+}
+
+/** Remembers how the window is in the free mode (Zones or off). */
+static void _free_save(zones_window_t *w)
+{
+    w->free_box = wlmtk_window_get_bounding_box(w->window_ptr);
+    w->free_zone = w->zone;
+    w->free_max = wlmtk_window_is_maximized(w->window_ptr);
+    w->has_free = true;
+}
+
+/** Puts the window back as it was in the free mode. @return false if none. */
+static bool _free_restore(zones_window_t *w)
+{
+    if (!w->has_free) return false;
+    w->has_free = false;
+    if (w->free_max) {
+        wlmtk_window_request_maximized(w->window_ptr, true);
+    } else {
+        wlmtk_window_request_bounding_box(w->window_ptr, &w->free_box);
+    }
+    w->zone = w->free_zone;
+    // Snapped: The box from before the snap stays (for "restore");
+    // floating: That box was the one from before the tiling.
+    if (0 > w->zone) w->has_restore = false;
+    _sync_tiled(w);
+    return true;
+}
+
+/** @return the output of a window in a strip (its strip's, if still there). */
+static struct wlr_output *_scroll_output(wlmaker_zones_t *zones_ptr,
+                                         zones_window_t *w)
+{
+    if (w->scrolled && 0 <= w->sset && zones_ptr->ssets[w->sset].used) {
+        struct wlr_output *o = _output_named(zones_ptr, zones_ptr->ssets[w->sset].output);
+        if (NULL != o) return o;
+    }
+    if (w->parked) return wlmaker_server_get_output_at_cursor(zones_ptr->server_ptr);
+    return wlmtk_window_get_wlr_output(w->window_ptr);
+}
+
+/** Takes the window out of its strip; back to the free mode if `restore`. */
+static void _unscroll(wlmaker_zones_t *zones_ptr, zones_window_t *w, bool restore)
+{
+    if (restore && !_free_restore(w) && w->parked) {
+        // Opened while scrolling: Back on its output, centered.
+        struct wlr_output *o = _scroll_output(zones_ptr, w);
+        struct wlr_box u = wlmtk_desktop_get_usable_area(
+            zones_ptr->server_ptr->desktop_ptr, o);
+        struct wlr_box b = wlmtk_window_get_bounding_box(w->window_ptr);
+        b.width = BS_MIN(b.width, u.width);
+        b.height = BS_MIN(b.height, u.height);
+        b.x = u.x + (u.width - b.width) / 2;
+        b.y = u.y + (u.height - b.height) / 2;
+        wlmtk_window_request_bounding_box(w->window_ptr, &b);
+    }
+    w->scrolled = false;
+    w->parked = false;
+    w->sset = -1;
+    memset(&w->expect, 0, sizeof(w->expect));
+}
+
+/** @return whether any window is in a strip. */
+static bool _scroll_any(wlmaker_zones_t *zones_ptr)
+{
+    for (int i = 0; i < WINDOWS_MAX; ++i) {
+        if (NULL != zones_ptr->windows[i].window_ptr &&
+            zones_ptr->windows[i].scrolled) return true;
+    }
+    return false;
+}
+
+/**
+ * Leaves the scrolling. A window stays for the tiling only on an output
+ * where the tiling is on (`to_tiling`); elsewhere it goes back to the free
+ * memory (it would stay parked off screen otherwise).
+ */
+static void _scroll_leave(wlmaker_zones_t *zones_ptr, bool to_tiling)
+{
+    for (int i = 0; i < WINDOWS_MAX; ++i) {
+        zones_window_t *w = &zones_ptr->windows[i];
+        if (NULL == w->window_ptr || !w->scrolled) continue;
+        struct wlr_output *o = _scroll_output(zones_ptr, w);
+        bool tiles = to_tiling && NULL != o && _autotile_on(zones_ptr, o);
+        _unscroll(zones_ptr, w, !tiles);
+    }
+}
+
+/** Sorts by the horizontal center on screen, then by the tiling order. */
+static int _by_center_x(const void *a, const void *b)
+{
+    const zones_window_t *x = *(zones_window_t *const *)a;
+    const zones_window_t *y = *(zones_window_t *const *)b;
+    struct wlr_box bx = wlmtk_window_get_bounding_box(x->window_ptr);
+    struct wlr_box by = wlmtk_window_get_bounding_box(y->window_ptr);
+    int cx = bx.x + bx.width / 2, cy = by.x + by.width / 2;
+    if (cx != cy) return cx < cy ? -1 : 1;
+    return x->order < y->order ? -1 : x->order > y->order;
+}
+
+/** Lays out the strips of the current workspace. */
+static void _scroll_run(wlmaker_zones_t *zones_ptr)
+{
+    wlmtk_workspace_t *ws_ptr = wlmtk_desktop_get_current_workspace(
+        zones_ptr->server_ptr->desktop_ptr);
+    if (NULL == ws_ptr) return;
+    int wsn = _workspace_number(zones_ptr);
+    const wz_scroll_params *p = &zones_ptr->cfg.scroll_p;
+    struct wlr_box lb;
+    wlr_output_layout_get_box(zones_ptr->server_ptr->wlr_output_layout_ptr, NULL, &lb);
+    int park_x = lb.x + lb.width + 256;
+    bs_dllist_t *list_ptr = wlmtk_workspace_get_windows_dllist(ws_ptr);
+    wlmtk_window_t *active_ptr = wlmtk_workspace_get_activated_window(ws_ptr);
+
+    struct wlr_output_layout_output *lo;
+    wl_list_for_each(lo, &zones_ptr->server_ptr->wlr_output_layout_ptr->outputs, link) {
+        struct wlr_output *o = lo->output;
+        zones_window_t *set[WINDOWS_MAX];
+        int n = 0;
+        for (bs_dllist_node_t *d = list_ptr->head_ptr; NULL != d; d = d->next_ptr) {
+            wlmtk_window_t *window_ptr = wlmtk_window_from_dlnode(d);
+            zones_window_t *w = _win(zones_ptr, window_ptr, true);
+            if (NULL == w || !_tileable(zones_ptr, window_ptr)) continue;
+            if (_scroll_output(zones_ptr, w) != o || n >= WINDOWS_MAX) continue;
+            set[n++] = w;
+        }
+        zones_sset_t *s = _sset(zones_ptr, o->name, wsn, 0 < n);
+        if (NULL == s) continue;
+        struct wlr_box u = wlmtk_desktop_get_usable_area(
+            zones_ptr->server_ptr->desktop_ptr, o);
+        wz_rect area = { u.x, u.y, u.width, u.height };
+        int width = wz_scroll_default_width(p, area.w);
+        if (0 == s->s.ncol && 1 < n) {
+            // Entering: Columns in the order on screen, each as wide as the
+            // window was (up to the area).
+            qsort(set, (size_t)n, sizeof(set[0]), _by_center_x);
+            for (int i = 0; i < n; ++i) {
+                struct wlr_box b = wlmtk_window_get_bounding_box(set[i]->window_ptr);
+                int cw = b.width < area.w - 2 * p->gap_out ? b.width : width;
+                wz_scroll_insert(&s->s, (long)(uintptr_t)set[i]->window_ptr, cw,
+                                 WZ_SCROLL_INSERT_COLUMN);
+            }
+        } else {
+            qsort(set, (size_t)n, sizeof(set[0]), _by_order);
+            long ids[WINDOWS_MAX];
+            for (int i = 0; i < n; ++i) ids[i] = (long)(uintptr_t)set[i]->window_ptr;
+            // A window that enters the strip takes the focus: the view
+            // follows it again, even after a scroll without focus.
+            for (int i = 0; i < n; ++i) {
+                if (!wz_scroll_has(&s->s, ids[i])) s->keep_view = false;
+            }
+            wz_scroll_sync(&s->s, ids, n, width, p->insert);
+        }
+        if (0 == s->s.ncol) {
+            // Empty strip: Its slot is free again.
+            s->used = false;
+            continue;
+        }
+        if (NULL != active_ptr && !s->keep_view) {
+            wz_scroll_activate(&s->s, (long)(uintptr_t)active_ptr);
+        }
+        long ids[WINDOWS_MAX];
+        wz_rect rects[WINDOWS_MAX];
+        int vis[WINDOWS_MAX];
+        int k = wz_scroll_layout(&s->s, p, area, s->keep_view, ids, rects, vis,
+                                 WINDOWS_MAX, &s->nleft, &s->nright);
+        for (int i = 0; i < k; ++i) {
+            zones_window_t *w = _win(zones_ptr, (wlmtk_window_t *)(uintptr_t)ids[i], false);
+            if (NULL == w) continue;
+            if (!w->scrolled && !w->tiled) _free_save(w);
+            if (w->tiled) {
+                // From the tiling: The free memory was kept when it began.
+                w->tiled = false;
+                _tsets_forget(zones_ptr, w->window_ptr);
+            }
+            w->scrolled = true;
+            w->sset = (int)(s - zones_ptr->ssets);
+            w->zone = -1;
+            _sync_tiled(w);
+            struct wlr_box box = { vis[i] ? rects[i].x : park_x, rects[i].y,
+                                   rects[i].w, rects[i].h };
+            w->parked = !vis[i];
+            if (0 != memcmp(&box, &w->expect, sizeof(box))) {
+                w->expect = box;
+                if (wlmtk_window_is_maximized(w->window_ptr)) {
+                    wlmtk_window_request_maximized(w->window_ptr, false);
+                }
+                wlmtk_window_request_bounding_box(w->window_ptr, &box);
+            }
+        }
+    }
+    // Who left a strip (minimized, fullscreen, floating) leaves the
+    // scrolling; taken out by the user, it goes back to the free memory.
+    for (int i = 0; i < WINDOWS_MAX; ++i) {
+        zones_window_t *w = &zones_ptr->windows[i];
+        if (NULL == w->window_ptr || !w->scrolled) continue;
+        if (wlmtk_window_get_workspace(w->window_ptr) != ws_ptr) continue;
+        bool member = 0 <= w->sset && zones_ptr->ssets[w->sset].used &&
+            wz_scroll_has(&zones_ptr->ssets[w->sset].s, (long)(uintptr_t)w->window_ptr) &&
+            _tileable(zones_ptr, w->window_ptr);
+        if (!member) _unscroll(zones_ptr, w, w->user_float || w->parked);
+    }
+}
+
+
+/** Dropped a window of a strip: Between the columns under the pointer. */
+static void _scroll_drop(wlmaker_zones_t *zones_ptr, zones_window_t *w, double px)
+{
+    if (0 > w->sset || !zones_ptr->ssets[w->sset].used) {
+        _wlmaker_zones_tile_mark(zones_ptr);
+        return;
+    }
+    zones_sset_t *s = &zones_ptr->ssets[w->sset];
+    struct wlr_output *o = _scroll_output(zones_ptr, w);
+    struct wlr_box u = wlmtk_desktop_get_usable_area(zones_ptr->server_ptr->desktop_ptr, o);
+    wz_rect area = { u.x, u.y, u.width, u.height };
+    wz_scroll tmp;
+    wz_scroll_init(&tmp);
+    wz_scroll_copy(&tmp, &s->s);
+    long ids[WINDOWS_MAX];
+    wz_rect rects[WINDOWS_MAX];
+    int vis[WINDOWS_MAX];
+    int k = wz_scroll_layout(&tmp, &zones_ptr->cfg.scroll_p, area, 1, ids, rects, vis,
+                             WINDOWS_MAX, NULL, NULL);
+    wz_scroll_free(&tmp);
+    int at = -1, last = -1;
+    for (int i = 0; i < k && 0 > at; ++i) {
+        if (!vis[i] || ids[i] == (long)(uintptr_t)w->window_ptr) continue;
+        int c = wz_scroll_find(&s->s, ids[i], NULL);
+        last = c;
+        if (px < rects[i].x + rects[i].w / 2) at = c;
+    }
+    if (0 > at) at = 0 <= last ? last + 1 : s->s.ncol;
+    s->keep_view = false;
+    wz_scroll_move_to(&s->s, (long)(uintptr_t)w->window_ptr, at);
+    memset(&w->expect, 0, sizeof(w->expect));  // Back to its column anyway.
+    _wlmaker_zones_tile_mark(zones_ptr);
+}
+
+/** A window of a strip was resized by the user: Its column takes the width. */
+static void _scroll_user_resize(wlmaker_zones_t *zones_ptr, zones_window_t *w)
+{
+    if (0 > w->sset || !zones_ptr->ssets[w->sset].used) return;
+    zones_sset_t *s = &zones_ptr->ssets[w->sset];
+    struct wlr_box b = wlmtk_window_get_bounding_box(w->window_ptr);
+    if (wz_scroll_activate(&s->s, (long)(uintptr_t)w->window_ptr)) {
+        wz_scroll_set_width(&s->s, b.width);
+    }
+    memset(&w->expect, 0, sizeof(w->expect));
+    _wlmaker_zones_tile_mark(zones_ptr);
+}
+
+/** Direction from a word; -1 if none. */
+static int _sdir(const char *s)
+{
+    if (NULL == s) return -1;
+    return 0 == strcmp(s, "left") ? WZ_LEFT : 0 == strcmp(s, "right") ? WZ_RIGHT
+        : 0 == strcmp(s, "up") ? WZ_UP : 0 == strcmp(s, "down") ? WZ_DOWN : -1;
+}
+
+/**
+ * Scrolling commands on the strip of the active window (focus, move,
+ * consume, expel, center, width, view). @return false if the active window
+ * is not in a strip (the command is not for the scrolling).
+ */
+static bool _scroll_cmd(wlmaker_zones_t *zones_ptr, const char *op, const char *arg,
+                        char *out_ptr, size_t out_len)
+{
+    if (!zones_ptr->cfg.scroll) return false;
+    wlmtk_window_t *window_ptr = wlmtk_workspace_get_activated_window(
+        wlmtk_desktop_get_current_workspace(zones_ptr->server_ptr->desktop_ptr));
+    zones_window_t *w = _win(zones_ptr, window_ptr, false);
+    if (NULL == w || !w->scrolled || 0 > w->sset || !zones_ptr->ssets[w->sset].used) {
+        return false;
+    }
+    zones_sset_t *s = &zones_ptr->ssets[w->sset];
+    struct wlr_output *o = _scroll_output(zones_ptr, w);
+    struct wlr_box u = wlmtk_desktop_get_usable_area(zones_ptr->server_ptr->desktop_ptr, o);
+    wz_rect area = { u.x, u.y, u.width, u.height };
+    const wz_scroll_params *p = &zones_ptr->cfg.scroll_p;
+    int width = wz_scroll_default_width(p, area.w);
+    bool changed = false, refocus = false;
+    s->keep_view = false;
+    if (0 == strcmp(op, "focus")) {
+        if (NULL != arg && 0 == strcmp(arg, "first")) {
+            changed = wz_scroll_focus_first(&s->s);
+        } else if (NULL != arg && 0 == strcmp(arg, "last")) {
+            changed = wz_scroll_focus_last(&s->s);
+        } else {
+            changed = 0 <= _sdir(arg) && wz_scroll_focus(&s->s, _sdir(arg));
+        }
+        refocus = changed;
+    } else if (0 == strcmp(op, "move")) {
+        changed = 0 <= _sdir(arg) && wz_scroll_move(&s->s, _sdir(arg), width);
+    } else if (0 == strcmp(op, "consume")) {
+        changed = wz_scroll_consume(
+            &s->s, NULL != arg && 0 == strcmp(arg, "right") ? WZ_RIGHT : WZ_LEFT);
+    } else if (0 == strcmp(op, "expel")) {
+        changed = wz_scroll_expel(&s->s, width);
+    } else if (0 == strcmp(op, "center")) {
+        wz_scroll_center(&s->s, p, area);
+        s->keep_view = true;
+        changed = true;
+    } else if (0 == strcmp(op, "width")) {
+        if (NULL != arg && (0 == strcmp(arg, "+") || 0 == strcmp(arg, "next"))) {
+            wz_scroll_cycle_width(&s->s, p, area.w, 1);
+        } else if (NULL != arg && (0 == strcmp(arg, "-") || 0 == strcmp(arg, "prev"))) {
+            wz_scroll_cycle_width(&s->s, p, area.w, -1);
+        } else if (NULL != arg && NULL != strchr(arg, '%')) {
+            wz_scroll_params q = *p;
+            q.width_pct = atoi(arg);
+            if (10 <= q.width_pct && 100 >= q.width_pct) {
+                wz_scroll_set_width(&s->s, wz_scroll_default_width(&q, area.w));
+            }
+        } else if (NULL != arg && 0 < atoi(arg)) {
+            wz_scroll_set_width(&s->s, atoi(arg));
+        }
+        changed = true;
+    } else if (0 == strcmp(op, "view")) {
+        wz_scroll_view(&s->s, NULL != arg && 0 == strcmp(arg, "left") ? -1 : 1);
+        s->keep_view = true;
+        changed = true;
+    } else {
+        return false;
+    }
+    if (refocus) {
+        wlmtk_window_t *t2 = (wlmtk_window_t *)(uintptr_t)wz_scroll_active_id(&s->s);
+        if (NULL != t2) {
+            wlmtk_workspace_t *ws_ptr = wlmtk_window_get_workspace(t2);
+            wlmtk_workspace_activate_window(ws_ptr, t2);
+            wlmtk_workspace_raise_window(ws_ptr, t2);
+        }
+    }
+    if (changed) _wlmaker_zones_tile_mark(zones_ptr);
+    _out(out_ptr, out_len, "scroll=%s\n", changed ? "ok" : "unchanged");
+    return true;
+}
+
+/** A window was activated: Its strip scrolls to show it. */
+static void _wlmaker_zones_handle_activated(struct wl_listener *listener_ptr,
+                                            __UNUSED__ void *data_ptr)
+{
+    zones_window_t *w = BS_CONTAINER_OF(listener_ptr, zones_window_t, activated_listener);
+    wlmaker_zones_t *zones_ptr = w->zones_ptr;
+    if (NULL == zones_ptr || NULL == w->window_ptr || !zones_ptr->cfg.scroll) return;
+    if (!w->scrolled || 0 > w->sset || !wlmtk_window_is_activated(w->window_ptr)) return;
+    zones_sset_t *s = &zones_ptr->ssets[w->sset];
+    s->keep_view = false;
+    long before = wz_scroll_active_id(&s->s);
+    if (wz_scroll_activate(&s->s, (long)(uintptr_t)w->window_ptr) &&
+        (before != (long)(uintptr_t)w->window_ptr || w->parked)) {
+        _wlmaker_zones_tile_mark(zones_ptr);
+    }
+}
+
 int _wlmaker_zones_tile_run(void *data_ptr)
 {
     wlmaker_zones_t *zones_ptr = data_ptr;
@@ -1941,6 +2434,20 @@ int _wlmaker_zones_tile_run(void *data_ptr)
             zones_window_t *w = _win(zones_ptr, wlmtk_window_from_dlnode(d), true);
             if (NULL != w && !w->rule_done) _apply_rules(zones_ptr, w);
         }
+    }
+    if (zones_ptr->cfg.scroll) {
+        _scroll_run(zones_ptr);
+        return 0;
+    }
+    if (_scroll_any(zones_ptr)) {
+        // Leaving the scrolling: To the tiling, the windows stay for it; to
+        // Zones or off, back to the free memory.
+        bool any = false;
+        struct wlr_output_layout_output *lo;
+        wl_list_for_each(lo, &zones_ptr->server_ptr->wlr_output_layout_ptr->outputs, link) {
+            any |= _autotile_on(zones_ptr, lo->output);
+        }
+        _scroll_leave(zones_ptr, any);
     }
 
     zones_window_t *members[WINDOWS_MAX];
@@ -1963,7 +2470,9 @@ int _wlmaker_zones_tile_run(void *data_ptr)
                 _sync_tiled(w);
                 _tsets_forget(zones_ptr, window_ptr);
                 memset(&w->expect, 0, sizeof(w->expect));
-                if (w->has_restore) {
+                if (_free_restore(w)) {
+                    // As it was in the free mode (memory per mode).
+                } else if (w->has_restore) {
                     wlmtk_window_request_bounding_box(window_ptr, &w->restore);
                     w->has_restore = false;
                     w->zone = -1;
@@ -2066,7 +2575,9 @@ int _wlmaker_zones_tile_run(void *data_ptr)
                 _sync_tiled(w);
                 _tsets_forget(zones_ptr, w->window_ptr);
                 memset(&w->expect, 0, sizeof(w->expect));
-                if (w->has_restore) {
+                if (_free_restore(w)) {
+                    // As it was in the free mode.
+                } else if (w->has_restore) {
                     wlmtk_window_request_bounding_box(w->window_ptr, &w->restore);
                     w->has_restore = false;
                     w->zone = -1;
@@ -2079,6 +2590,8 @@ int _wlmaker_zones_tile_run(void *data_ptr)
         for (int j = 0; j < k; ++j) {
             zones_window_t *w = set[j];
             if (!w->tiled) {
+                // Memory of the free mode (Zones or off), when entering.
+                if (!w->scrolled && !w->has_free) _free_save(w);
                 if (!w->has_restore) {
                     w->restore = wlmtk_window_get_bounding_box(w->window_ptr);
                     w->has_restore = true;
@@ -2110,6 +2623,10 @@ static int _wlmaker_zones_resize_done(void *data_ptr)
     wlmaker_zones_t *zones_ptr = data_ptr;
     zones_window_t *w = _win(zones_ptr, zones_ptr->resized_window_ptr, false);
     zones_ptr->resized_window_ptr = NULL;
+    if (NULL != w && w->scrolled) {
+        _scroll_user_resize(zones_ptr, w);
+        return 0;
+    }
     if (NULL == w || !w->tiled) return 0;
     struct wlr_output *o = wlmtk_window_get_wlr_output(w->window_ptr);
     zones_tset_t *ts = _tset(zones_ptr, o, true);
@@ -2171,7 +2688,9 @@ static void _wlmaker_zones_untile_all(wlmaker_zones_t *zones_ptr)
         w->tiled = false;
         _sync_tiled(w);
         memset(&w->expect, 0, sizeof(w->expect));
-        if (w->has_restore) {
+        if (_free_restore(w)) {
+            // As it was in the free mode.
+        } else if (w->has_restore) {
             wlmtk_window_request_bounding_box(w->window_ptr, &w->restore);
             w->has_restore = false;
             w->zone = -1;
@@ -2190,7 +2709,15 @@ static void _wlmaker_zones_handle_window_mapped(
     wlmaker_zones_t *zones_ptr = BS_CONTAINER_OF(
         listener_ptr, wlmaker_zones_t, window_mapped_listener);
     // Remembered from the start: The tiling order follows the mapping order.
-    _win(zones_ptr, data_ptr, true);
+    zones_window_t *w = _win(zones_ptr, data_ptr, true);
+    if (NULL != w && !w->activated_connected) {
+        w->zones_ptr = zones_ptr;
+        wlmtk_util_connect_listener_signal(
+            &wlmtk_window_events(w->window_ptr)->set_activated,
+            &w->activated_listener, _wlmaker_zones_handle_activated);
+        w->activated_connected = true;
+    }
+    _wlmaker_zones_apply_drag_modifier(zones_ptr, data_ptr);
     _wlmaker_zones_tile_mark(zones_ptr);
 }
 
@@ -2203,6 +2730,10 @@ static void _wlmaker_zones_handle_window_unmapped(
     zones_window_t *w = _win(zones_ptr, data_ptr, false);
     // A window moved to another workspace is unmapped too; it is mapped
     // again right away and starts over (as a new window would).
+    if (NULL != w && w->activated_connected) {
+        wlmtk_util_disconnect_listener(&w->activated_listener);
+        w->activated_connected = false;
+    }
     if (NULL != w) w->window_ptr = NULL;
     _tsets_forget(zones_ptr, data_ptr);
     wz_history_forget(&zones_ptr->history, (uintptr_t)data_ptr);
@@ -2540,9 +3071,10 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
         _out(out_ptr, out_len, "pong\n");
     } else if (0 == strcmp(buf, "status")) {
         _out(out_ptr, out_len, "backend=wlmaker\nversion=%s\nzones=%s\n"
-             "autotile=%s\nmode=%s\nlayout=%s\nalgorithm=%s\ndesktop=%d\n",
+             "autotile=%s\nscroll=%s\nmode=%s\nlayout=%s\nalgorithm=%s\ndesktop=%d\n",
              wz_version(), zones_ptr->cfg.zones ? "on" : "off",
              zones_ptr->cfg.autotile ? "on" : "off",
+             zones_ptr->cfg.scroll ? "on" : "off",
              wz_mode_name(wz_config_mode(&zones_ptr->cfg)), zones_ptr->cfg.layout,
              wz_algo_name(zones_ptr->cfg.tile.algo), _workspace_number(zones_ptr));
         struct wlr_output_layout_output *lo;
@@ -2558,16 +3090,30 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
                  u.x, u.y, NULL != l ? l->id : "?",
                  _autotile_on(zones_ptr, lo->output) ? "on" : "off",
                  lo->output->scale);
+            zones_sset_t *ss = _sset(zones_ptr, lo->output->name,
+                                     _workspace_number(zones_ptr), false);
+            if (NULL != ss && 0 < ss->s.ncol) {
+                _out(out_ptr, out_len, "strip=%s columns=%d active=%d left=%d right=%d\n",
+                     lo->output->name, ss->s.ncol, ss->s.active + 1, ss->nleft, ss->nright);
+                for (int c = 0; c < ss->s.ncol; ++c) {
+                    _out(out_ptr, out_len, "%s%d", 0 == c ? "widths=" : ",",
+                         ss->s.col[c].width);
+                }
+                _out(out_ptr, out_len, "\n");
+            }
         }
-        int tiled = 0, snapped = 0, windows = 0;
+        int tiled = 0, snapped = 0, windows = 0, scrolled = 0, parked = 0;
         for (int i = 0; i < WINDOWS_MAX; ++i) {
             if (NULL == zones_ptr->windows[i].window_ptr) continue;
             ++windows;
             tiled += zones_ptr->windows[i].tiled;
-            snapped += !zones_ptr->windows[i].tiled && 0 <= zones_ptr->windows[i].zone;
+            scrolled += zones_ptr->windows[i].scrolled;
+            parked += zones_ptr->windows[i].parked;
+            snapped += !zones_ptr->windows[i].tiled && !zones_ptr->windows[i].scrolled &&
+                0 <= zones_ptr->windows[i].zone;
         }
-        _out(out_ptr, out_len, "windows=%d tiled=%d snapped=%d\n", windows,
-             tiled, snapped);
+        _out(out_ptr, out_len, "windows=%d tiled=%d snapped=%d scrolled=%d parked=%d\n",
+             windows, tiled, snapped, scrolled, parked);
         char title[256];
         wlmtk_window_t *active_ptr = _active(zones_ptr);
         _out(out_ptr, out_len, "active=%s\n", _field(
@@ -2584,7 +3130,7 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
             bool was = zones_ptr->cfg.autotile;
             if (m != (int)wz_config_mode(&zones_ptr->cfg)) {
                 _hist_push_all(zones_ptr, "General", "Zones", "General", "Autotile",
-                               "General", "LastMode");
+                               "General", "Scroll", "General", "LastMode");
             }
             wz_config_set_mode(&zones_ptr->cfg, zones_ptr->cfg_path_ptr, arg_ptr);
             if (was && !zones_ptr->cfg.autotile) _wlmaker_zones_untile_all(zones_ptr);
@@ -2605,7 +3151,7 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
         _out(out_ptr, out_len, "zones=%s\n", v ? "on" : "off");
     } else if (0 == strcmp(buf, "autotile")) {
         bool v = _onoff(arg_ptr, zones_ptr->cfg.autotile);
-        _hist_push_all(zones_ptr, "General", "Autotile", NULL, NULL, NULL, NULL);
+        _hist_push_all(zones_ptr, "General", "Autotile", NULL, NULL, NULL, NULL, NULL, NULL);
         zones_ptr->cfg.autotile = v;
         _save(zones_ptr, "General", "Autotile", v ? "true" : "false");
         if (!v) _wlmaker_zones_untile_all(zones_ptr);
@@ -2746,17 +3292,52 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
             _snap_to(zones_ptr, window_ptr, wlmtk_window_get_wlr_output(window_ptr),
                      atoi(arg_ptr) - 1);
         }
+    } else if (0 == strcmp(buf, "scroll") || 0 == strcmp(buf, "column")) {
+        // Scrolling: scroll left|right|up|down|first|last|center|view-left|
+        // view-right; column next|previous|move-left|move-right|merge|split|
+        // width N%|+|-.
+        char op[32] = "", a2[32] = "";
+        if (NULL != arg_ptr) sscanf(arg_ptr, "%31s %31s", op, a2);
+        const char *o = op, *a = a2[0] ? a2 : NULL;
+        if (0 == strcmp(buf, "scroll")) {
+            if (0 <= _sdir(op) || 0 == strcmp(op, "first") || 0 == strcmp(op, "last")) {
+                o = "focus";
+                a = op;
+            } else if (0 == strncmp(op, "view-", 5)) {
+                o = "view";
+                a = op + 5;
+            }
+        } else if (0 == strcmp(op, "next") || 0 == strcmp(op, "previous")) {
+            o = "focus";
+            a = 'n' == op[0] ? "right" : "left";
+        } else if (0 == strcmp(op, "move-left") || 0 == strcmp(op, "move-right")) {
+            o = "move";
+            a = op + 5;
+        } else if (0 == strcmp(op, "merge")) {
+            o = "consume";
+            a = a2[0] ? a2 : "left";
+        } else if (0 == strcmp(op, "split")) {
+            o = "expel";
+        }
+        if (!zones_ptr->cfg.scroll) {
+            _out(out_ptr, out_len, "error=a Rolagem está desligada (wmake-zones mode scroll)\n");
+        } else if (!_scroll_cmd(zones_ptr, o, a, out_ptr, out_len)) {
+            _out(out_ptr, out_len, "error=a janela ativa não está na faixa ou comando "
+                 "desconhecido: %s\n", NULL != arg_ptr ? arg_ptr : "");
+        }
     } else if (0 == strcmp(buf, "move") && 0 <= _dir(arg_ptr)) {
-        _move(zones_ptr, _dir(arg_ptr));
+        if (!_scroll_cmd(zones_ptr, "move", arg_ptr, NULL, 0)) _move(zones_ptr, _dir(arg_ptr));
     } else if (0 == strcmp(buf, "swap") && 0 <= _dir(arg_ptr)) {
         zones_window_t *w = _win(zones_ptr, _active(zones_ptr), false);
-        if (NULL != w && w->tiled) {
+        if (_scroll_cmd(zones_ptr, "move", arg_ptr, NULL, 0)) {
+            // Done by the scrolling.
+        } else if (NULL != w && w->tiled) {
             _swap(zones_ptr, w, _dir(arg_ptr));
         } else {
             _move(zones_ptr, _dir(arg_ptr));
         }
     } else if (0 == strcmp(buf, "focus") && 0 <= _dir(arg_ptr)) {
-        _focus(zones_ptr, _dir(arg_ptr));
+        if (!_scroll_cmd(zones_ptr, "focus", arg_ptr, NULL, 0)) _focus(zones_ptr, _dir(arg_ptr));
     } else if (0 == strcmp(buf, "picker")) {
         _picker_open(zones_ptr);
     } else if (0 == strcmp(buf, "undo") || 0 == strcmp(buf, "redo")) {
@@ -2770,7 +3351,7 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
             _restore(zones_ptr, w);
         }
     } else if (0 == strcmp(buf, "restore-all")) {
-        _hist_push_all(zones_ptr, NULL, NULL, NULL, NULL, NULL, NULL);
+        _hist_push_all(zones_ptr, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         for (int i = 0; i < WINDOWS_MAX; ++i) {
             zones_window_t *w = &zones_ptr->windows[i];
             if (NULL != w->window_ptr && !w->tiled) _restore(zones_ptr, w);
@@ -2811,6 +3392,10 @@ void wlmaker_zones_command(wlmaker_zones_t *zones_ptr,
                 _wlmaker_zones_tile_mark(zones_ptr);
             }
         }
+    } else if ((0 == strcmp(buf, "grow") || 0 == strcmp(buf, "shrink")) &&
+               _scroll_cmd(zones_ptr, "width", 0 == strcmp(buf, "grow") ? "+" : "-",
+                           NULL, 0)) {
+        // Column width, in the scrolling.
     } else if (0 == strcmp(buf, "grow") || 0 == strcmp(buf, "shrink")) {
         wlmtk_window_t *window_ptr = _active(zones_ptr);
         zones_window_t *w = _win(zones_ptr, window_ptr, false);
@@ -3072,6 +3657,16 @@ wlmaker_zones_t *wlmaker_zones_create(wlmaker_server_t *server_ptr)
 void wlmaker_zones_destroy(wlmaker_zones_t *zones_ptr)
 {
     if (NULL == zones_ptr) return;
+    // The windows outlive the zones (the server closes the clients later):
+    // Their activation signal must not reach the freed slots.
+    for (int i = 0; i < WINDOWS_MAX; ++i) {
+        zones_window_t *w = &zones_ptr->windows[i];
+        if (w->activated_connected) {
+            wlmtk_util_disconnect_listener(&w->activated_listener);
+            w->activated_connected = false;
+        }
+    }
+    for (int i = 0; i < TSETS_MAX; ++i) wz_scroll_free(&zones_ptr->ssets[i].s);
     _picker_close(zones_ptr);
     _wlmaker_zones_overlay_hide(zones_ptr);
     if (NULL != zones_ptr->esc_binding_ptr) {
@@ -3137,6 +3732,9 @@ void wlmaker_zones_reload(wlmaker_zones_t *zones_ptr)
     wz_history_set_depth(&zones_ptr->history, zones_ptr->cfg.history_depth);
     // Rules may have changed: Look them up again for new windows only.
     if (was && !zones_ptr->cfg.autotile) _wlmaker_zones_untile_all(zones_ptr);
+    for (int i = 0; i < WINDOWS_MAX; ++i) {
+        _wlmaker_zones_apply_drag_modifier(zones_ptr, zones_ptr->windows[i].window_ptr);
+    }
     _wlmaker_zones_tile_mark(zones_ptr);
 }
 
